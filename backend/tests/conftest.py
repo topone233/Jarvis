@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +87,11 @@ def profile(core: CoreServices) -> dict[str, Any]:
 
 
 @pytest.fixture
-def client(core: CoreServices, tmp_path: Path) -> TestClient:
+def client(core: CoreServices, tmp_path: Path) -> Iterator[TestClient]:
     runtime = Runtime(BootstrapStore(tmp_path / "bootstrap"))
     runtime._services = core
-    return TestClient(create_app(runtime))
+    # Entered as a context manager on purpose: without it each request gets its
+    # own event loop, and a run detached from the response that started it would
+    # be torn down the moment that response finished.
+    with TestClient(create_app(runtime)) as test_client:
+        yield test_client

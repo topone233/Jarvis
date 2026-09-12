@@ -109,3 +109,47 @@ stayed and the words were corrected.
 **Invariant.** Name a function for what it does to the data, not for what the
 user believes is happening. When those diverge, fix the name or fix the
 behavior. Leaving the gap unstated is how a privacy expectation quietly breaks.
+
+## A long task must not be owned by the HTTP response that started it
+
+**Symptom.** Reloading the page while the model was still answering threw the
+answer away. The run stayed in the database as `running` forever, with a partial
+or empty message.
+
+**Investigation.** Not a frontend bug, and not a provider bug — the request was
+being aborted. uvicorn 0.34.0 advertises ASGI `spec_version: "2.3"`
+(`uvicorn/protocols/http/h11_impl.py:203`), and starlette 0.46.2's
+`StreamingResponse.__call__` takes the `spec_version < (2, 4)` branch for that
+version: it runs the body inside a task group alongside `listen_for_disconnect`
+and calls `task_group.cancel_scope.cancel()` on `http.disconnect`
+(`starlette/responses.py:253-270`). The generator driving the run got a
+`GeneratorExit`, and the provider request went with it.
+
+**Root cause.** The run had exactly one driver — the response body generator —
+so the run was owned by the connection. Any network hiccup, reload, or closed
+tab was a kill signal. Nothing in the code said the answer should depend on a
+browser staying open; the architecture said it by accident.
+
+**Resolution.** The producer became a task of its own (`RunService.launch`)
+publishing into a `RunBroadcast`, and the response became a subscriber to it
+(`RunService.follow`). Disconnecting now costs nothing. Reconnecting is free
+because text is published as a cumulative snapshot rather than a queue of
+deltas: a subscriber only tracks how much it has already sent, so joining late
+converges instead of needing the backlog replayed to it. The run also checkpoints
+to the database every half second or 400 characters, and startup closes any run
+a previous process left stranded.
+
+**The harness had the same bug.** `TestClient` builds and tears down an anyio
+portal per request (`starlette/testclient.py:335`) unless it is used as a context
+manager (`__enter__`, line 661). With the fixture returning a bare
+`TestClient(...)`, every detached task was destroyed when its request ended —
+the tests reproduced the production bug in miniature. The fixture now enters the
+client. A test double that quietly kills background work is worse than no test,
+because it makes the new architecture look broken when it is only the harness.
+
+**Invariant.** Work that must outlive a request does not belong in that
+request's response body. The response is a view onto the work; if cancelling the
+view cancels the work, the two are the same object and that is the bug. Concretely
+here: a client that closes its connection should not be able to reach the
+generator, the task, or the provider call.
+

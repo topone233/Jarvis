@@ -29,8 +29,11 @@ def test_project_conversation_and_streaming_run(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert "event: run.started" in response.text
-    assert "event: message.delta" in response.text
+    # A reply that finishes before the client attaches arrives whole in the
+    # terminal event instead of as deltas; the client renders the same answer
+    # either way, which is what makes reconnecting safe.
     assert "event: message.completed" in response.text
+    assert "这是测试回复。" in response.text
     messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
     assert messages[-1]["content"] == "这是测试回复。"
     memories = client.get("/api/memories").json()

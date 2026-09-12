@@ -28,14 +28,24 @@ from app.schemas import (
 )
 
 
-def _stream_run(
+def _start_run(
     run_service: RunService,
     run: dict[str, Any],
     profile: dict[str, Any],
     reasoning_level: str,
 ) -> StreamingResponse:
+    """Kick the run off detached, then attach this client to it.
+
+    The run is not owned by this response, so closing the connection - a reload,
+    a navigation, a crash of the browser - leaves the answer generating.
+    """
+    run_service.launch(run, profile=profile, reasoning_level=reasoning_level)
+    return _stream_run(run_service, run["id"])
+
+
+def _stream_run(run_service: RunService, run_id: str) -> StreamingResponse:
     return StreamingResponse(
-        run_service.stream(run["id"], profile=profile, reasoning_level=reasoning_level or None),
+        run_service.follow(run_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -239,7 +249,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             model_profile_id=payload.model_profile_id if payload else None,
             reasoning_level=payload.reasoning_level if payload else None,
         )
-        return _stream_run(run_service, run, profile, reasoning_level)
+        return _start_run(run_service, run, profile, reasoning_level)
 
     @app.post("/api/conversations/{conversation_id}/runs")
     async def create_run(
@@ -254,7 +264,16 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             model_profile_id=payload.model_profile_id,
             reasoning_level=payload.reasoning_level,
         )
-        return _stream_run(run_service, run, profile, reasoning_level)
+        return _start_run(run_service, run, profile, reasoning_level)
+
+    @app.get("/api/runs/{run_id}")
+    async def get_run(run_id: str, core: CoreServices = Depends(services)) -> dict[str, Any]:
+        return core.store.get_run(run_id)
+
+    @app.get("/api/runs/{run_id}/stream")
+    async def stream_run(run_id: str, core: CoreServices = Depends(services)) -> StreamingResponse:
+        """Reattach to a run, whether it is still going or long finished."""
+        return _stream_run(RunService(core), run_id)
 
     @app.post("/api/runs/{run_id}/cancel")
     async def cancel_run(run_id: str, core: CoreServices = Depends(services)) -> dict[str, Any]:

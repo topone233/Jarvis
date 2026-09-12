@@ -48,16 +48,51 @@ data payload:
 | run.started | Returns run and placeholder assistant-message IDs. |
 | audit | Internal stage progress: compact, context retrieval, model stream, memory write. |
 | context.ready | Estimated context budget and structured knowledge citations. |
-| message.delta | Incremental assistant text. |
-| reasoning.delta | Optional compatible-provider reasoning text. |
+| message.delta | Assistant text produced since the last delta this client received. |
+| reasoning.delta | Optional compatible-provider reasoning text, same rule. |
 | message.completed | Persisted final message and metadata. |
 | run.cancelled / run.failed | Terminal status. |
 
 Use POST /api/runs/{run_id}/cancel for the stop button. Use
 POST /api/conversations/{id}/compact for an explicit compact action.
 
+### A run outlives the connection that started it
+
+The response is a view onto a run, not the run itself. Closing the connection -
+a reload, a navigation, a browser crash - leaves the answer generating, and the
+run still finishes and persists. Two routes serve a client that comes back:
+
+- GET /api/runs/{run_id} returns the run's real status, the authority on whether
+  it is still going. The assistant message carries this ID at
+  metadata.run_id, so a client that reloaded can find the run it was watching.
+- GET /api/runs/{run_id}/stream reattaches, whether the run is in flight or long
+  finished.
+
+Text is delivered as cumulative snapshots: each message.delta carries everything
+produced since the last one *that client* received, not a fixed chunk. A client
+that attaches halfway through therefore renders the whole answer in its first
+flush and then continues token by token, with no gap and no duplication, and two
+clients watching at once each get their own complete copy. A client that attaches
+after the run ended gets run.started and the terminal event, whose content field
+holds the finished answer - so one code path renders both cases.
+
+The streaming answer is checkpointed to the database roughly every half second
+or 400 characters, whichever comes first. That interval is what a power cut can
+cost; everything already written survives.
+
+### When the service itself is killed
+
+A run is driven by an in-process task, so killing the process strands it with
+nobody left to finish it. On the next startup the service closes every such run
+as interrupted, with an explanation, and keeps whatever partial answer and
+reasoning had been checkpointed. GET /api/runs/{run_id} reports interrupted and
+GET /api/runs/{run_id}/stream reports it as run.failed, so a client that comes
+back is told the answer stopped rather than left waiting on one that will never
+arrive. Deciding what to do with a half-finished answer is the user's call.
+
 GET /api/runs/{run_id}/events replays the persisted audit trail for a run, so a
-frontend that reloaded mid-stream can rebuild the progress log it missed.
+frontend that reloaded mid-stream can rebuild the progress log it missed. The
+audit trail is the durable record; the broadcast above is only for the live run.
 
 ## Memory and knowledge
 

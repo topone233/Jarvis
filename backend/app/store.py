@@ -8,6 +8,10 @@ from app.database import Database
 from app.errors import NotFoundError
 from app.utils import json_dump, json_load, new_id, segment_for_index, utc_now
 
+# What the user is told when a run was cut off by the service stopping rather
+# than by anything they did. Shared with the run producer so both agree.
+INTERRUPTED_ERROR = "服务在生成过程中被终止，这一轮没有完成。"
+
 
 @overload
 def _record(
@@ -517,6 +521,23 @@ class Store:
                 tuple(parameters),
             )
         return self.get_run(run_id)
+
+    def interrupt_orphaned_runs(self) -> int:
+        """Close out runs that a shutdown left mid-flight.
+
+        A run is driven by an in-process task, so killing the process strands it
+        in 'running' with nobody left to finish it. Without this repair the
+        frontend would wait on a run that is already over, and would keep
+        waiting after every restart. Returns how many were repaired.
+        """
+        with self.database.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE assistant_runs SET status = 'interrupted', error_message = ?,"
+                " completed_at = ? WHERE completed_at IS NULL"
+                " AND status IN ('running', 'cancelling')",
+                (INTERRUPTED_ERROR, utc_now()),
+            )
+            return cursor.rowcount
 
     def create_run_event(
         self, run_id: str, sequence: int, stage: str, state: str, payload: dict[str, Any]
