@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any, overload
 
 from app.database import Database
@@ -453,7 +453,24 @@ class Store:
         return self.get_message(message_id)
 
     def delete_message(self, message_id: str) -> None:
-        self._soft_delete("messages", "message", message_id)
+        """Delete a message, and the answer too when the message is a question.
+
+        A question and the reply it produced are one unit in the UI, so removing
+        the question removes its answer as well. The reverse does not hold:
+        deleting an answer leaves its question in place. Neighbouring turns are
+        never touched - ordinals are not renumbered and nothing is compacted.
+        """
+        message = self.get_message(message_id)
+        replies: list[str] = []
+        if message["role"] == "user":
+            replies = [
+                row["id"]
+                for row in self.database.fetchall(
+                    "SELECT id FROM messages WHERE parent_id = ? AND deleted_at IS NULL",
+                    (message_id,),
+                )
+            ]
+        self._soft_delete("messages", "message", message_id, related_ids=replies)
 
     # Runs and audit events
     def create_run(
@@ -1003,7 +1020,15 @@ class Store:
             "restored": True,
         }
 
-    def permanently_delete_trash_item(self, trash_id: str) -> None:
+    def discard_trash_item(self, trash_id: str) -> None:
+        """Remove a trash entry so the item can no longer be restored.
+
+        This drops the recycle-bin record only. The soft-deleted row stays in
+        its table, because assistant_runs references messages by foreign key and
+        the run log is the audit trail - erasing rows here would break both. The
+        content therefore remains in the database file and is not recoverable
+        through the API.
+        """
         with self.database.transaction() as connection:
             self._require(
                 connection.execute(
@@ -1020,28 +1045,42 @@ class Store:
         entity_id: str,
         *,
         set_status_deleted: bool = False,
+        related_ids: Sequence[str] = (),
     ) -> None:
+        """Move an entity, and any rows that share its lifecycle, to the trash.
+
+        related_ids covers the one case where deleting a row on its own would
+        strand a partner: a question and the answer it produced. Everything runs
+        in a single transaction so a pair can never end up half deleted, and
+        callers are responsible for having verified those extra ids exist.
+        """
+        ids = (entity_id, *related_ids)
         with self.database.transaction() as connection:
-            row = self._require(
-                connection.execute(
-                    f"SELECT * FROM {table} WHERE id = ? AND deleted_at IS NULL", (entity_id,)
-                ).fetchone(),
-                entity_type,
-            )
-            self._add_trash(connection, entity_type, entity_id, self._snapshot(row))
+            rows = [
+                self._require(
+                    connection.execute(
+                        f"SELECT * FROM {table} WHERE id = ? AND deleted_at IS NULL", (item,)
+                    ).fetchone(),
+                    entity_type,
+                )
+                for item in ids
+            ]
+            for item, row in zip(ids, rows, strict=True):
+                self._add_trash(connection, entity_type, item, self._snapshot(row))
             now = utc_now()
             if set_status_deleted:
-                connection.execute(
+                connection.executemany(
                     f"UPDATE {table} SET deleted_at = ?, status = 'deleted', updated_at = ?"
                     " WHERE id = ?",
-                    (now, now, entity_id),
+                    [(now, now, item) for item in ids],
                 )
             elif table in {"projects", "conversations", "messages", "model_profiles"}:
-                connection.execute(
+                connection.executemany(
                     f"UPDATE {table} SET deleted_at = ?, updated_at = ? WHERE id = ?",
-                    (now, now, entity_id),
+                    [(now, now, item) for item in ids],
                 )
             else:
-                connection.execute(
-                    f"UPDATE {table} SET deleted_at = ? WHERE id = ?", (now, entity_id)
+                connection.executemany(
+                    f"UPDATE {table} SET deleted_at = ? WHERE id = ?",
+                    [(now, item) for item in ids],
                 )

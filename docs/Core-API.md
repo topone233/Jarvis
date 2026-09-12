@@ -21,7 +21,8 @@ key.
 - GET and POST /api/conversations?project_id={id}
 - GET, PATCH, and DELETE /api/conversations/{id}
 - GET /api/conversations/{id}/messages
-- DELETE /api/messages/{id}
+- DELETE /api/messages/{id} moves the message to the trash. When the message is
+  a question it takes its answer with it; see Trash below for the exact rule.
 - POST /api/messages/{id}/regenerate
 
 POST /api/messages/{id}/regenerate re-runs the answer to the user message the
@@ -76,5 +77,17 @@ document moves it to the trash instead of erasing it.
 
 - GET /api/trash lists the trashed items newest first.
 - POST /api/trash/{trash_id}/restore puts the item back and returns it.
-- DELETE /api/trash/{trash_id} discards the item permanently.
+- DELETE /api/trash/{trash_id} removes the entry from the trash, after which it
+  can no longer be restored.
+
+DELETE /api/trash/{trash_id} is not a physical erase. The soft-deleted row stays
+in its table and its content remains in the database file, because
+assistant_runs references messages by foreign key and the run log is the audit
+trail. The item simply stops being reachable through the API. If you need data
+actually gone from disk, that is a separate feature and does not exist yet.
+
+Deleting a message deletes its answer too when the message is a question: the
+two are one unit in the UI. The reverse does not hold, so deleting an answer
+leaves its question in place. Neither direction touches any other turn in the
+conversation.
 

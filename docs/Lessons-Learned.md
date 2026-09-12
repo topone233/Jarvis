@@ -76,3 +76,35 @@ old indexes, and old derived rows while the code assumed the new shape.
 **Invariant.** Adding or changing anything that already exists in a released
 database means adding a branch to `_apply_migrations` keyed on the recorded
 version. Changing only `SCHEMA_SQL` upgrades fresh installs and nothing else.
+
+## `Database.transaction()` does not nest
+
+It opens a fresh connection, commits, and closes it — no savepoints, no
+re-entrancy. Two calls to a `_soft_delete`-style helper therefore run as two
+independent transactions: a failure between them commits half the work, and the
+second connection can fight the first for the write lock.
+
+**Invariant.** Anything that must land together goes inside one
+`with self.database.transaction() as connection:` block. When a caller needs to
+extend an existing helper, pass the extra rows into it — see `related_ids` on
+`Store._soft_delete` — rather than calling it twice.
+
+## A name can promise more than the code does
+
+**Symptom.** `permanently_delete_trash_item` read like the one place that erases
+data. It deleted the `trash_items` row and nothing else; the entity row stayed in
+its table with its content intact, so a "permanently deleted" message was still
+readable in the database file.
+
+**Root cause.** The recycle bin is soft deletion end to end, and physical
+deletion was never built. The name described an intent no code carried out.
+
+**Resolution.** Renamed to `discard_trash_item` and documented the real
+behavior. Erasing rows for real is a feature with sharp edges — it would have to
+clear `assistant_runs` and `run_events`, which reference `messages` by foreign
+key, and it would destroy the audit trail. Not wanted yet, so the behavior
+stayed and the words were corrected.
+
+**Invariant.** Name a function for what it does to the data, not for what the
+user believes is happening. When those diverge, fix the name or fix the
+behavior. Leaving the gap unstated is how a privacy expectation quietly breaks.

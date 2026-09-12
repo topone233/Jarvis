@@ -389,10 +389,8 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         return core.store.restore_trash_item(trash_id)
 
     @app.delete("/api/trash/{trash_id}", status_code=204, response_model=None)
-    async def permanently_delete_trash(
-        trash_id: str, core: CoreServices = Depends(services)
-    ) -> None:
-        core.store.permanently_delete_trash_item(trash_id)
+    async def discard_trash_item(trash_id: str, core: CoreServices = Depends(services)) -> None:
+        core.store.discard_trash_item(trash_id)
 
     return app
 
