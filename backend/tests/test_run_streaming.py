@@ -162,6 +162,50 @@ async def test_thinking_is_on_disk_before_the_run_ends(
     assert (await _settle(core, run["id"]))["status"] == "completed"
 
 
+async def test_the_run_is_findable_before_a_single_token_arrives(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """A reload in the opening moment still finds the run.
+
+    Until the first checkpoint writes content, the assistant message is empty.
+    Without the run id on it there would be nothing for a client to attach to,
+    so a reload would leave an empty bubble over a run that is producing fine.
+    """
+    provider = paced([])
+    _, run = _begin(core, profile)
+
+    message = core.store.get_message(run["assistant_message_id"])
+    assert message["content"] == ""
+    assert message["metadata"]["run_id"] == run["id"]
+
+    provider.release.set()
+    await _settle(core, run["id"])
+
+
+async def test_regenerating_points_the_message_at_its_new_run(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """Regenerate clears the old answer, so the pointer has to be replaced.
+
+    Clearing the metadata is what stops the model continuing from the reply
+    being replaced; the new run id then has to go back on, or the same reload
+    window reopens on every regeneration.
+    """
+    provider = paced(["第一段。"])
+    _, run = _begin(core, profile)
+    provider.release.set()
+    await _settle(core, run["id"])
+
+    new_run, _, _ = RunService(core).start_regenerate(
+        run["assistant_message_id"], model_profile_id=None, reasoning_level=None
+    )
+
+    message = core.store.get_message(run["assistant_message_id"])
+    assert new_run["id"] != run["id"]
+    assert message["content"] == ""
+    assert message["metadata"]["run_id"] == new_run["id"]
+
+
 async def test_a_subscriber_arriving_mid_answer_receives_all_of_it(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:

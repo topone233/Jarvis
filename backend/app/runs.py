@@ -44,6 +44,10 @@ class RunService:
         user = store.append_message(conversation_id, "user", content)
         assistant = store.append_message(conversation_id, "assistant", "", parent_id=user["id"])
         run = store.create_run(conversation_id, user["id"], assistant["id"], profile["id"])
+        # Point the message at its run straight away. Leaving this to the first
+        # checkpoint would mean a reload inside the first half second shows an
+        # empty bubble for a run that is very much alive and unfindable.
+        store.update_message(assistant["id"], "", {"run_id": run["id"]})
         if conversation["title"] == "新对话":
             store.update_conversation(
                 conversation_id,
@@ -80,6 +84,10 @@ class RunService:
         run = store.create_run(
             conversation["id"], user_message["id"], assistant["id"], profile["id"]
         )
+        # The clear above wiped the previous run's id, so the new one goes back
+        # on for the same reason `start` sets it: a reload has to be able to find
+        # the run behind an answer that has not produced any text yet.
+        store.update_message(assistant["id"], "", {"run_id": run["id"]})
         return run, profile, reasoning_level or ""
 
     def launch(
