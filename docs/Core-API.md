@@ -21,8 +21,12 @@ key.
 - GET and POST /api/conversations?project_id={id}
 - GET, PATCH, and DELETE /api/conversations/{id}
 - GET /api/conversations/{id}/messages
-- DELETE /api/messages/{id} moves a single message to the trash.
 - POST /api/messages/{id}/regenerate
+
+Messages are never deleted on their own; the API has no endpoint for it. A
+conversation is the unit the user removes, from the conversation list. A turn
+therefore cannot end up half-removed, which is what lets regenerate treat the
+latest reply as always present.
 
 POST /api/messages/{id}/regenerate re-runs the answer to the user message the
 target replied to, and returns text/event-stream exactly like a new run. It
@@ -71,8 +75,8 @@ service never alters the original source file or folder.
 
 ## Trash
 
-Deleting a project, conversation, message, memory, model profile, or knowledge
-document moves it to the trash instead of erasing it.
+Deleting a project, conversation, memory, model profile, or knowledge document
+moves it to the trash instead of erasing it.
 
 - GET /api/trash lists the trashed items newest first.
 - POST /api/trash/{trash_id}/restore puts the item back and returns it.
@@ -84,10 +88,4 @@ in its table and its content remains in the database file, because
 assistant_runs references messages by foreign key and the run log is the audit
 trail. The item simply stops being reachable through the API. If you need data
 actually gone from disk, that is a separate feature and does not exist yet.
-
-Messages are deleted one at a time, whatever their role. A question and its
-answer are independent rows, so removing the question leaves the answer in
-place and the caller decides whether to remove that too. Removing a message
-never renumbers, reorders, or hides any other message; the ordinal gap it
-leaves is harmless, since nothing reads ordinals as a contiguous sequence.
 

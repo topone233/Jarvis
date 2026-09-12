@@ -227,10 +227,6 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     ) -> list[dict[str, Any]]:
         return core.store.list_messages(conversation_id)
 
-    @app.delete("/api/messages/{message_id}", status_code=204, response_model=None)
-    async def delete_message(message_id: str, core: CoreServices = Depends(services)) -> None:
-        core.store.delete_message(message_id)
-
     @app.post("/api/messages/{message_id}/regenerate")
     async def regenerate_message(
         message_id: str,

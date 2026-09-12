@@ -22,20 +22,6 @@ def _run(client: TestClient, conversation_id: str, content: str) -> None:
     assert response.status_code == 200
 
 
-def test_delete_message_hides_it_and_files_it_in_the_trash(
-    client: TestClient, profile: dict[str, Any]
-) -> None:
-    conversation = _open_conversation(client, profile)
-    _run(client, conversation["id"], "你好。")
-    before = _messages(client, conversation["id"])
-
-    response = client.delete(f"/api/messages/{before[-1]['id']}")
-
-    assert response.status_code == 204
-    assert [item["id"] for item in _messages(client, conversation["id"])] == [before[0]["id"]]
-    assert any(item["entity_type"] == "message" for item in client.get("/api/trash").json())
-
-
 def test_regenerate_replaces_the_reply_in_place(
     client: TestClient, core: CoreServices, profile: dict[str, Any]
 ) -> None:
@@ -98,42 +84,3 @@ def test_regenerate_rejects_a_user_message(client: TestClient, profile: dict[str
 
     assert response.status_code == 422
     assert response.json()["code"] == "domain_validation"
-
-
-def test_deleting_a_message_leaves_the_rest_of_the_conversation_intact(
-    client: TestClient, profile: dict[str, Any]
-) -> None:
-    """Messages are deleted independently, so removing a turn is purely local.
-
-    Deleting a question must not touch its answer, and must not renumber,
-    reorder, or hide the turns around it. Nothing downstream reads ordinals as a
-    contiguous sequence, so the resulting gap is harmless.
-    """
-    conversation = _open_conversation(client, profile)
-    _run(client, conversation["id"], "第一问。")
-    first = _messages(client, conversation["id"])
-    _run(client, conversation["id"], "第二问。")
-    second = _messages(client, conversation["id"])
-
-    response = client.delete(f"/api/messages/{first[0]['id']}")
-
-    assert response.status_code == 204
-    remaining = _messages(client, conversation["id"])
-    assert [message["id"] for message in remaining] == [
-        first[1]["id"],
-        second[2]["id"],
-        second[3]["id"],
-    ]
-    assert [message["content"] for message in remaining] == [REPLY, "第二问。", REPLY]
-
-
-def test_deleting_an_answer_leaves_its_question_in_place(
-    client: TestClient, profile: dict[str, Any]
-) -> None:
-    conversation = _open_conversation(client, profile)
-    _run(client, conversation["id"], "你好。")
-    question, answer = _messages(client, conversation["id"])
-
-    client.delete(f"/api/messages/{answer['id']}")
-
-    assert [message["id"] for message in _messages(client, conversation["id"])] == [question["id"]]

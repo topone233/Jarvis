@@ -452,14 +452,9 @@ class Store:
             )
         return self.get_message(message_id)
 
-    def delete_message(self, message_id: str) -> None:
-        """Move one message to the trash. No other message is affected.
-
-        A question and its answer are deleted independently, so the user decides
-        whether to remove both. Removing a message leaves a gap in the ordinals,
-        which is harmless: nothing requires them to be contiguous.
-        """
-        self._soft_delete("messages", "message", message_id)
+    # Messages are never deleted on their own. Individual turns are not a unit
+    # the user removes; a conversation leaves as a whole, from the conversation
+    # list. Regenerate therefore never has to cope with a half-removed turn.
 
     # Runs and audit events
     def create_run(
