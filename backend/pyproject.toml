@@ -1,0 +1,53 @@
+[project]
+name = "jarvis-core"
+version = "0.1.0"
+description = "Local-first core services for Jarvis"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "charset-normalizer==3.4.1",
+    "fastapi==0.115.12",
+    "httpx==0.28.1",
+    "keyring==25.6.0",
+    "pydantic==2.10.6",
+    "python-multipart==0.0.20",
+    "uvicorn[standard]==0.34.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy==2.3.1",
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.3",
+    "ruff==0.9.10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008 flags FastAPI's Depends(...)/File(...)/Form(...) parameter defaults, which
+# is the framework's intended dependency-injection syntax rather than a bug.
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "tests"]
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.uv]
+package = false
+

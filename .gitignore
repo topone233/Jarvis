@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+coverage.xml
+htmlcov/
+.jarvis/
+backend/.venv/
+backend/.coverage
+# uv's local caches, which land next to the project when UV_CACHE_DIR is
+# relative. They are re-downloadable and must never be committed.
+.uv-cache/
+.uv-python/
+frontend/node_modules/
+frontend/dist/
+
