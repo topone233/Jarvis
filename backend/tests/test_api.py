@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
+
+import app.main as main_module
+from app.config import BootstrapStore
+from app.main import create_app
+from app.runtime import CoreServices, Runtime
 
 
 def test_project_conversation_and_streaming_run(client: TestClient) -> None:
@@ -65,3 +73,30 @@ def test_import_search_and_restore_document(client: TestClient) -> None:
     document_trash = next(item for item in trash if item["entity_type"] == "knowledge_document")
     restored = client.post(f"/api/trash/{document_trash['id']}/restore")
     assert restored.status_code == 200
+
+
+def test_a_built_frontend_is_served_by_the_same_process(
+    core: CoreServices, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One process should serve the whole app once the frontend has been built.
+
+    The directory is faked here rather than built, because what is under test is
+    the routing: the SPA fallback, the assets mount, and the rule that a mistyped
+    API path must not answer with a page of HTML.
+    """
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><div id=root></div>", encoding="utf-8")
+    (dist / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    monkeypatch.setattr(main_module, "FRONTEND_DIST", dist)
+
+    runtime = Runtime(BootstrapStore(tmp_path / "bootstrap"))
+    runtime._services = core
+    with TestClient(create_app(runtime)) as client:
+        # A client-side route is answered by the app itself.
+        assert client.get("/c/abc").text == "<!doctype html><div id=root></div>"
+        assert client.get("/assets/app.js").text == "console.log(1)"
+
+        missing = client.get("/api/nope")
+        assert missing.status_code == 404
+        assert missing.json()["code"] == "not_found"

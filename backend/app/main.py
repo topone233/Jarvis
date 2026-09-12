@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.errors import NotFoundError, ProviderError, SetupRequiredError, ValidationError
 from app.knowledge import ImportItem
@@ -407,7 +409,43 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     async def discard_trash_item(trash_id: str, core: CoreServices = Depends(services)) -> None:
         core.store.discard_trash_item(trash_id)
 
+    _mount_frontend(app)
     return app
+
+
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """Serve the built frontend from this process, when one has been built.
+
+    Nothing here runs in development (Vite serves the app and proxies `/api`
+    back) or in tests, because `frontend/dist` only exists after `npm run build`.
+    That is precisely the case where one process should be able to serve the
+    whole application, which is how it ships.
+    """
+    index = FRONTEND_DIST / "index.html"
+    if not index.is_file():
+        return
+
+    assets = FRONTEND_DIST / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def serve_frontend(path: str) -> Any:
+        # A mistyped API path has to come back as JSON. Falling through to
+        # index.html would answer a JSON client with a page of HTML and turn a
+        # plain 404 into a parse error somewhere far away.
+        if path == "api" or path.startswith("api/"):
+            return JSONResponse(
+                status_code=404, content={"detail": "没有这个接口。", "code": "not_found"}
+            )
+        candidate = (FRONTEND_DIST / path).resolve()
+        if path != "" and candidate.is_file() and candidate.is_relative_to(FRONTEND_DIST):
+            return FileResponse(candidate)
+        # Everything else is a client-side route, so the app gets to answer it.
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 app = create_app()
