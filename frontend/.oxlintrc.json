@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc"],
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+
+    // Every load in this app is an effect that ends in setState: the health
+    // flag, the conversation list, a conversation's messages, the outcome of a
+    // run. The rule cannot see through the promise that separates the two, so
+    // it fires on all of them. Off deliberately, rather than sprinkled with
+    // disables that would hide the next real one.
+    "react/set-state-in-effect": "off"
+  }
+}

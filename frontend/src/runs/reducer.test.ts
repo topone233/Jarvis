@@ -1,0 +1,188 @@
+import { describe, expect, it } from 'vitest'
+
+import type { RunEventRecord } from '../api/types'
+import type { RunEvent } from './events'
+import { createTurn, reduce, type TurnAction, type TurnState } from './reducer'
+
+const MESSAGE_ID = 'msg_1'
+
+function run(events: RunEvent[], start?: TurnState, messageId = MESSAGE_ID): TurnState {
+  const initial = start ?? createTurn('local')
+  return events.reduce<TurnState>(
+    (state, event) => reduce(state, { type: 'event', event }),
+    reduce(initial, { type: 'event', event: started(messageId) }),
+  )
+}
+
+function started(messageId = MESSAGE_ID): RunEvent {
+  return { type: 'run.started', runId: 'run_1', assistantMessageId: messageId }
+}
+
+function delta(text: string, messageId = MESSAGE_ID): RunEvent {
+  return { type: 'message.delta', messageId, delta: text }
+}
+
+function audit(stage: string, state: string, sequence: number): RunEvent {
+  return {
+    type: 'audit',
+    record: {
+      id: `e${sequence}`,
+      run_id: 'run_1',
+      sequence,
+      stage,
+      state,
+      payload: {},
+      created_at: '',
+    },
+  }
+}
+
+function apply(state: TurnState, ...actions: TurnAction[]): TurnState {
+  return actions.reduce(reduce, state)
+}
+
+describe('reduce', () => {
+  it('appends deltas after the first', () => {
+    const state = run([delta('你好'), delta('，'), delta('世界')])
+    expect(state.content).toBe('你好，世界')
+    expect(state.phase).toBe('streaming')
+  })
+
+  it('replaces the seeded text with the first delta of a connection', () => {
+    // The seed comes from what is on disk; the server's first flush is the
+    // whole accumulated text, which is always at least that much. Appending
+    // here would duplicate the prefix.
+    const seeded = createTurn('local', { runId: 'run_1', content: '已经落盘的部分' })
+    const state = run([delta('已经落盘的部分，外加新的一段')], seeded)
+    expect(state.content).toBe('已经落盘的部分，外加新的一段')
+  })
+
+  it('replaces again after a reconnect', () => {
+    let state = run([delta('第一段')])
+    state = apply(state, { type: 'detached' }, { type: 'attached' })
+    state = run([delta('第一段第二段')], state)
+    expect(state.content).toBe('第一段第二段')
+    expect(state.detached).toBe(false)
+  })
+
+  it('does not duplicate when the terminal event repeats the accumulated text', () => {
+    const state = run([
+      delta('半'),
+      delta('句'),
+      { type: 'message.completed', messageId: MESSAGE_ID, content: '半句', metadata: {} },
+    ])
+    expect(state.content).toBe('半句')
+    expect(state.phase).toBe('completed')
+  })
+
+  it('ignores text that arrives after a terminal event', () => {
+    const state = run([
+      delta('完整回答'),
+      { type: 'message.completed', messageId: MESSAGE_ID, content: '完整回答', metadata: {} },
+      delta('迟到的碎片'),
+    ])
+    expect(state.content).toBe('完整回答')
+  })
+
+  it('keeps accepting audits after the answer is complete', () => {
+    // The memory write is reported once the text is already on screen, so
+    // gating audits on the phase would drop the last row of the progress strip.
+    const state = run([
+      delta('回答'),
+      { type: 'message.completed', messageId: MESSAGE_ID, content: '回答', metadata: {} },
+      audit('memory_write', 'running', 5),
+      audit('memory_write', 'completed', 6),
+    ])
+    expect(state.audits).toEqual([
+      { stage: 'memory_write', state: 'completed', sequence: 6, payload: {} },
+    ])
+  })
+
+  it('collapses a stage that reports running then completed', () => {
+    const state = run([
+      audit('context_compaction', 'running', 1),
+      audit('context_compaction', 'completed', 2),
+      audit('context_retrieval', 'running', 3),
+    ])
+    expect(state.audits.map((row) => [row.stage, row.state])).toEqual([
+      ['context_compaction', 'completed'],
+      ['context_retrieval', 'running'],
+    ])
+  })
+
+  it('keeps the partial text when a run fails', () => {
+    const state = run([delta('写到一半'), { type: 'run.failed', error: '连接被中断' }])
+    expect(state.content).toBe('写到一半')
+    expect(state.phase).toBe('failed')
+    expect(state.error).toBe('连接被中断')
+  })
+
+  it('takes the full text from a cancelled run', () => {
+    const state = run([
+      delta('半句'),
+      { type: 'run.cancelled', messageId: MESSAGE_ID, content: '半句' },
+    ])
+    expect(state.phase).toBe('cancelled')
+    expect(state.content).toBe('半句')
+  })
+
+  it('reads reasoning from the terminal metadata when no deltas arrived', () => {
+    const state = run([
+      {
+        type: 'message.completed',
+        messageId: MESSAGE_ID,
+        content: '答案',
+        metadata: { reasoning: '想过了' },
+      },
+    ])
+    expect(state.reasoning).toBe('想过了')
+  })
+
+  it('collects reasoning deltas separately from the answer', () => {
+    const state = run([
+      { type: 'reasoning.delta', messageId: MESSAGE_ID, delta: '先想' },
+      { type: 'reasoning.delta', messageId: MESSAGE_ID, delta: '再答' },
+      delta('答案'),
+    ])
+    expect(state.reasoning).toBe('先想再答')
+    expect(state.content).toBe('答案')
+  })
+
+  it('ignores events addressed to a different message', () => {
+    const state = run([delta('属于别人的字', 'msg_other')])
+    expect(state.content).toBe('')
+  })
+
+  it('records the run status without touching the phase', () => {
+    const state = apply(run([]), { type: 'snapshot', status: 'interrupted' })
+    expect(state.status).toBe('interrupted')
+    expect(state.phase).toBe('connecting')
+  })
+
+  it('leaves state untouched for an unrecognised event', () => {
+    const before = run([delta('稳定')])
+    const after = reduce(before, { type: 'event', event: { type: 'ignored', name: 'telemetry' } })
+    expect(after).toBe(before)
+  })
+
+  it('records progress from context.ready', () => {
+    const state = run([{ type: 'context.ready', citations: [], remainingTokens: 4096 }])
+    expect(state.remainingTokens).toBe(4096)
+  })
+
+  it('backfills audits fetched separately from the stream', () => {
+    const records: RunEventRecord[] = [
+      {
+        id: 'e1',
+        run_id: 'run_1',
+        sequence: 1,
+        stage: 'model_stream',
+        state: 'running',
+        payload: {},
+        created_at: '',
+      },
+    ]
+    const state = apply(run([]), { type: 'audits', records })
+    expect(state.audits.map((row) => row.stage)).toEqual(['model_stream'])
+  })
+})
