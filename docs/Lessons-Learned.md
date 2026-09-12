@@ -85,9 +85,10 @@ independent transactions: a failure between them commits half the work, and the
 second connection can fight the first for the write lock.
 
 **Invariant.** Anything that must land together goes inside one
-`with self.database.transaction() as connection:` block. When a caller needs to
-extend an existing helper, pass the extra rows into it — see `related_ids` on
-`Store._soft_delete` — rather than calling it twice.
+`with self.database.transaction() as connection:` block. Do not compose two
+helpers that each open their own — hand the helper every row it has to write, or
+open the transaction in the caller. Nothing in the codebase needs this today;
+it matters the moment a write touches two tables and must be all-or-nothing.
 
 ## A name can promise more than the code does
 

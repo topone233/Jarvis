@@ -100,40 +100,36 @@ def test_regenerate_rejects_a_user_message(client: TestClient, profile: dict[str
     assert response.json()["code"] == "domain_validation"
 
 
-def test_deleting_a_question_takes_its_answer_with_it(
+def test_deleting_a_message_leaves_the_rest_of_the_conversation_intact(
     client: TestClient, profile: dict[str, Any]
 ) -> None:
-    conversation = _open_conversation(client, profile)
-    _run(client, conversation["id"], "你好。")
-    question, answer = _messages(client, conversation["id"])
+    """Messages are deleted independently, so removing a turn is purely local.
 
-    response = client.delete(f"/api/messages/{question['id']}")
-
-    assert response.status_code == 204
-    assert _messages(client, conversation["id"]) == []
-    trashed = {item["entity_id"] for item in client.get("/api/trash").json()}
-    assert trashed == {question["id"], answer["id"]}
-
-
-def test_deleting_a_question_leaves_later_turns_untouched(
-    client: TestClient, profile: dict[str, Any]
-) -> None:
-    """The pair is the blast radius. Nothing after it may move or disappear."""
+    Deleting a question must not touch its answer, and must not renumber,
+    reorder, or hide the turns around it. Nothing downstream reads ordinals as a
+    contiguous sequence, so the resulting gap is harmless.
+    """
     conversation = _open_conversation(client, profile)
     _run(client, conversation["id"], "第一问。")
     first = _messages(client, conversation["id"])
     _run(client, conversation["id"], "第二问。")
     second = _messages(client, conversation["id"])
 
-    client.delete(f"/api/messages/{first[0]['id']}")
+    response = client.delete(f"/api/messages/{first[0]['id']}")
 
+    assert response.status_code == 204
     remaining = _messages(client, conversation["id"])
-    assert [message["id"] for message in remaining] == [second[2]["id"], second[3]["id"]]
-    assert [message["content"] for message in remaining] == ["第二问。", REPLY]
+    assert [message["id"] for message in remaining] == [
+        first[1]["id"],
+        second[2]["id"],
+        second[3]["id"],
+    ]
+    assert [message["content"] for message in remaining] == [REPLY, "第二问。", REPLY]
 
 
-def test_deleting_an_answer_keeps_its_question(client: TestClient, profile: dict[str, Any]) -> None:
-    """Cascade runs question to answer only, never the other way."""
+def test_deleting_an_answer_leaves_its_question_in_place(
+    client: TestClient, profile: dict[str, Any]
+) -> None:
     conversation = _open_conversation(client, profile)
     _run(client, conversation["id"], "你好。")
     question, answer = _messages(client, conversation["id"])
@@ -141,41 +137,3 @@ def test_deleting_an_answer_keeps_its_question(client: TestClient, profile: dict
     client.delete(f"/api/messages/{answer['id']}")
 
     assert [message["id"] for message in _messages(client, conversation["id"])] == [question["id"]]
-
-
-def test_deleting_a_question_whose_answer_is_already_gone(
-    client: TestClient, profile: dict[str, Any]
-) -> None:
-    conversation = _open_conversation(client, profile)
-    _run(client, conversation["id"], "你好。")
-    question, answer = _messages(client, conversation["id"])
-    client.delete(f"/api/messages/{answer['id']}")
-
-    response = client.delete(f"/api/messages/{question['id']}")
-
-    assert response.status_code == 204
-    assert _messages(client, conversation["id"]) == []
-
-
-def test_restoring_one_half_of_a_pair_brings_back_an_orphan(
-    client: TestClient, profile: dict[str, Any]
-) -> None:
-    """Delete cascades; restore does not.
-
-    Restoring is per trash entry, so restoring only the answer returns it
-    without its question. That is a known consequence of the current design,
-    not a guarantee - if restore ever becomes pair-aware, this test should go.
-    """
-    conversation = _open_conversation(client, profile)
-    _run(client, conversation["id"], "你好。")
-    question, answer = _messages(client, conversation["id"])
-    client.delete(f"/api/messages/{question['id']}")
-    entry = next(
-        (item for item in client.get("/api/trash").json() if item["entity_id"] == answer["id"]),
-        None,
-    )
-    assert entry is not None, "被删除的回答应已进入回收站"
-
-    client.post(f"/api/trash/{entry['id']}/restore")
-
-    assert [message["id"] for message in _messages(client, conversation["id"])] == [answer["id"]]

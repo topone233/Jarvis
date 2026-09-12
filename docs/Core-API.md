@@ -21,8 +21,7 @@ key.
 - GET and POST /api/conversations?project_id={id}
 - GET, PATCH, and DELETE /api/conversations/{id}
 - GET /api/conversations/{id}/messages
-- DELETE /api/messages/{id} moves the message to the trash. When the message is
-  a question it takes its answer with it; see Trash below for the exact rule.
+- DELETE /api/messages/{id} moves a single message to the trash.
 - POST /api/messages/{id}/regenerate
 
 POST /api/messages/{id}/regenerate re-runs the answer to the user message the
@@ -86,8 +85,9 @@ assistant_runs references messages by foreign key and the run log is the audit
 trail. The item simply stops being reachable through the API. If you need data
 actually gone from disk, that is a separate feature and does not exist yet.
 
-Deleting a message deletes its answer too when the message is a question: the
-two are one unit in the UI. The reverse does not hold, so deleting an answer
-leaves its question in place. Neither direction touches any other turn in the
-conversation.
+Messages are deleted one at a time, whatever their role. A question and its
+answer are independent rows, so removing the question leaves the answer in
+place and the caller decides whether to remove that too. Removing a message
+never renumbers, reorders, or hides any other message; the ordinal gap it
+leaves is harmless, since nothing reads ordinals as a contiguous sequence.
 
