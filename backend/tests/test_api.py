@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import shutil
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
+import app.runs as runs_module
 from app.config import BootstrapStore
 from app.main import create_app
+from app.provider import ProviderEvent
 from app.runtime import CoreServices, Runtime
+from app.schemas import ThinkingLevel
 
 
 def test_project_conversation_and_streaming_run(client: TestClient) -> None:
@@ -32,7 +40,7 @@ def test_project_conversation_and_streaming_run(client: TestClient) -> None:
 
     response = client.post(
         f"/api/conversations/{conversation['id']}/runs",
-        json={"content": "我喜欢简洁回答。", "reasoning_level": "low"},
+        json={"content": "我喜欢简洁回答。", "thinking": "high"},
     )
 
     assert response.status_code == 200
@@ -46,6 +54,155 @@ def test_project_conversation_and_streaming_run(client: TestClient) -> None:
     assert messages[-1]["content"] == "这是测试回复。"
     memories = client.get("/api/memories").json()
     assert memories[0]["content"] == "喜欢简洁回答"
+
+
+class QuietProvider:
+    """A model that says nothing for a while before it answers.
+
+    The silence is the point: it is what every subscriber sees while a model is
+    thinking, and it is the state the heartbeat exists to make visible.
+    """
+
+    def __init__(self, quiet: float) -> None:
+        self.quiet = quiet
+
+    async def stream_chat(
+        self,
+        profile: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        chat_model: str | None = None,
+        thinking: ThinkingLevel = "off",
+    ) -> AsyncIterator[ProviderEvent]:
+        del profile, messages, chat_model, thinking
+        await asyncio.sleep(self.quiet)
+        yield ProviderEvent("delta", {"text": "ready."})
+        yield ProviderEvent("done", {})
+
+
+def test_a_quiet_run_still_says_something(
+    client: TestClient,
+    core: CoreServices,
+    profile: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Silence and death have to look different from the client.
+
+    A model thinking for a minute and a process that died a minute ago both
+    arrive as "no bytes" - so the stream sends a comment line while it waits.
+    Nothing in the protocol requires it, and every SSE parser ignores it, which
+    is exactly why it can be the liveness signal. The body stays ASCII because
+    httpx guesses the charset of a short response, and a guess that lands on
+    anything but UTF-8 turns the answer into mojibake this test is not about.
+    """
+    monkeypatch.setattr(runs_module, "HEARTBEAT_SECONDS", 0.02)
+    core.provider = QuietProvider(quiet=0.3)  # type: ignore[assignment]
+    conversation = client.post("/api/conversations", json={"title": "安静"}).json()
+
+    with client.stream(
+        "POST",
+        f"/api/conversations/{conversation['id']}/runs",
+        json={"content": "think for a while"},
+    ) as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_lines())
+
+    assert ": keep-alive" in body
+    assert "ready." in body
+
+
+def _frames(body: str, name: str) -> list[str]:
+    """The data lines of every ``name`` frame, in the order they arrived."""
+    found: list[str] = []
+    current: str | None = None
+    for line in body.splitlines():
+        if line.startswith("event: "):
+            current = line.removeprefix("event: ")
+        elif line.startswith("data: ") and current == name:
+            found.append(line.removeprefix("data: "))
+    return found
+
+
+def test_the_audit_trail_of_a_conversation_comes_back_whole(
+    client: TestClient, profile: dict[str, Any]
+) -> None:
+    """What a reloaded page needs to redraw execution steps it never watched.
+
+    Every run in the conversation is included, keyed by run id, because steps
+    belong to an answer and only the newest answer is still being watched.
+    """
+    conversation = client.post("/api/conversations", json={"title": "轨迹"}).json()
+    response = client.post(
+        f"/api/conversations/{conversation['id']}/runs", json={"content": "记下轨迹"}
+    )
+    run_id = json.loads(_frames(response.text, "run.started")[0])["run_id"]
+
+    trail = client.get(f"/api/conversations/{conversation['id']}/run-events").json()
+    events = trail[run_id]
+
+    stages = [(event["stage"], event["state"]) for event in events]
+    assert ("model_stream", "running") in stages
+    assert ("model_stream", "completed") in stages
+    # Ordered, because a duration is one record's timestamp minus another's.
+    assert [event["sequence"] for event in events] == sorted(event["sequence"] for event in events)
+
+
+def test_a_live_audit_event_carries_its_own_timestamp(
+    client: TestClient,
+    core: CoreServices,
+    profile: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The screen times a stage while it runs, and the live event is all it has.
+
+    Reading the trail back is the other half - both have to agree on the clock
+    they are using, or a stage would change duration the moment the page is
+    reloaded.
+
+    The model is told to stay quiet so the run is still going while the response
+    is read; the keep-alive comment is the proof it was, since only the live
+    branch ever emits one.
+    """
+    monkeypatch.setattr(runs_module, "HEARTBEAT_SECONDS", 0.02)
+    core.provider = QuietProvider(quiet=0.3)  # type: ignore[assignment]
+    conversation = client.post("/api/conversations", json={"title": "计时"}).json()
+
+    with client.stream(
+        "POST", f"/api/conversations/{conversation['id']}/runs", json={"content": "计时"}
+    ) as response:
+        body = "".join(f"{line}\n" for line in response.iter_lines())
+
+    assert ": keep-alive" in body
+    audits = [json.loads(data) for data in _frames(body, "audit")]
+    assert audits, "这一轮没有产生任何审计事件"
+    for event in audits:
+        assert event["created_at"]
+        assert event["stage"]
+
+
+def test_a_finished_run_replays_the_steps_it_ran(
+    client: TestClient, profile: dict[str, Any]
+) -> None:
+    """A run that is already over is still worth the whole trail.
+
+    The producer drops its broadcast the instant it finishes, so reattaching a
+    moment later takes the replay branch. A page that attaches a second too late
+    is the ordinary case rather than the corner, and without this the steps
+    would be there or not depending on a race the user cannot see.
+    """
+    conversation = client.post("/api/conversations", json={"title": "回放"}).json()
+    posted = client.post(f"/api/conversations/{conversation['id']}/runs", json={"content": "回放"})
+    run_id = json.loads(_frames(posted.text, "run.started")[0])["run_id"]
+
+    body = client.get(f"/api/runs/{run_id}/stream").text
+
+    audits = [json.loads(data) for data in _frames(body, "audit")]
+    stages = [(event["stage"], event["state"]) for event in audits]
+    assert ("context_retrieval", "completed") in stages
+    assert ("model_stream", "completed") in stages
+    assert all(event["created_at"] for event in audits)
+    # Still the replay branch, not a live one that happened to be caught early.
+    assert _frames(body, "message.completed")
 
 
 def test_import_search_and_restore_document(client: TestClient) -> None:
@@ -100,3 +257,120 @@ def test_a_built_frontend_is_served_by_the_same_process(
         missing = client.get("/api/nope")
         assert missing.status_code == 404
         assert missing.json()["code"] == "not_found"
+
+
+def test_health_says_where_the_data_lives(core: CoreServices, tmp_path: Path) -> None:
+    """The setup screen displays this path, so it has to be the one in use.
+
+    It used to start from an empty box instead, so opening that screen and
+    pressing next pointed the app at a fresh directory - and every conversation
+    lives inside the directory, so they all appeared to vanish.
+    """
+    runtime = Runtime(BootstrapStore(tmp_path / "bootstrap"))
+    runtime._services = core
+    with TestClient(create_app(runtime)) as client:
+        body = client.get("/api/health").json()
+
+    assert body["configured"] is True
+    assert body["data_directory"] == str(core.database.data_directory)
+
+
+def test_health_says_there_is_no_directory_before_setup(tmp_path: Path) -> None:
+    runtime = Runtime(BootstrapStore(tmp_path / "bootstrap"))
+    with TestClient(create_app(runtime)) as client:
+        body = client.get("/api/health").json()
+
+    assert body["configured"] is False
+    assert body["data_directory"] is None
+
+
+def test_setup_refuses_a_directory_that_is_not_there(tmp_path: Path) -> None:
+    """A path that does not exist is not a data directory.
+
+    Making one used to be the app's decision, so a typo produced a brand new
+    directory with nothing in it - which looks exactly like a working setup whose
+    conversations have all gone. Choosing a directory that is already there is
+    the difference between the two.
+    """
+    runtime = Runtime(BootstrapStore(tmp_path / "bootstrap"))
+    missing = tmp_path / "typo"
+    with TestClient(create_app(runtime)) as client:
+        response = client.post("/api/setup", json={"data_directory": str(missing)})
+
+    assert response.status_code == 422
+    assert "不存在" in response.json()["detail"]
+    assert not missing.exists()
+    assert runtime.configured is False
+
+
+def test_setup_refuses_a_file(tmp_path: Path) -> None:
+    runtime = Runtime(BootstrapStore(tmp_path / "bootstrap"))
+    notes = tmp_path / "notes.txt"
+    notes.write_text("not a directory", encoding="utf-8")
+    with TestClient(create_app(runtime)) as client:
+        response = client.post("/api/setup", json={"data_directory": str(notes)})
+
+    assert response.status_code == 422
+    assert "不是目录" in response.json()["detail"]
+
+
+def test_setup_takes_a_directory_that_exists(tmp_path: Path) -> None:
+    """The half that must keep working: an existing directory is accepted."""
+    runtime = Runtime(BootstrapStore(tmp_path / "bootstrap"))
+    chosen = tmp_path / "data"
+    chosen.mkdir()
+    with TestClient(create_app(runtime)) as client:
+        response = client.post("/api/setup", json={"data_directory": str(chosen)})
+        body = client.get("/api/health").json()
+
+    assert response.status_code == 200
+    assert body["configured"] is True
+    assert body["data_directory_error"] is None
+    assert Path(body["data_directory"]) == chosen
+    assert (chosen / "jarvis.sqlite3").exists()
+
+
+def test_health_explains_a_data_directory_that_went_away(tmp_path: Path) -> None:
+    """The directory is chosen, then disappears - an unmounted drive, say.
+
+    The app used to recreate it and start with an empty database, which is
+    indistinguishable from every conversation having been deleted. It now says
+    which directory is missing, and leaves the disk alone.
+    """
+    bootstrap = BootstrapStore(tmp_path / "bootstrap")
+    chosen = tmp_path / "data"
+    chosen.mkdir()
+    bootstrap.select_data_directory(str(chosen))
+    shutil.rmtree(chosen)
+
+    runtime = Runtime(bootstrap)
+    with TestClient(create_app(runtime)) as client:
+        body = client.get("/api/health").json()
+
+    assert body["configured"] is False
+    # Named rather than blank: the settings screen shows this, and an empty box
+    # would ask the user to choose a directory they had already chosen.
+    assert Path(body["data_directory"]) == chosen
+    assert "不存在" in body["data_directory_error"]
+    assert not chosen.exists()
+
+
+def test_a_body_sent_without_a_content_type_is_told_so(client: TestClient) -> None:
+    """A 422 is the answer; a 500 is not.
+
+    The validation handler echoes the offending input, and for an unparsed body
+    that input is the raw `bytes` - which `json.dumps` refuses, so the response
+    meant to explain the problem failed to serialise and became a 500 with no
+    explanation in it at all. This is exactly what a client whose headers got
+    dropped by a proxy, or by a bug of its own, would have seen.
+    """
+    response = client.post(
+        "/api/conversations",
+        content=b'{"title": "x"}',
+        headers={"Content-Type": "text/plain;charset=UTF-8"},
+    )
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["code"] == "request_validation"
+    assert payload["detail"]

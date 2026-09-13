@@ -4,8 +4,8 @@ import json
 import re
 from typing import Any
 
-from app.prompts import MEMORY_EXTRACTION_INSTRUCTION
 from app.provider import OpenAICompatibleProvider
+from app.settings import MEMORY_PROMPT, read_prompt
 from app.store import Store
 from app.utils import normalize_key
 
@@ -49,7 +49,7 @@ class MemoryService:
         response = await self.provider.complete_chat(
             profile,
             [
-                {"role": "system", "content": MEMORY_EXTRACTION_INSTRUCTION},
+                {"role": "system", "content": read_prompt(self.store, MEMORY_PROMPT)},
                 {"role": "user", "content": user_content},
             ],
         )

@@ -6,8 +6,9 @@ from typing import Any
 
 from app.errors import ProviderError
 from app.knowledge import KnowledgeService
-from app.prompts import BASE_INSTRUCTION, COMPACTION_INSTRUCTION, PROMPT_VERSION
+from app.prompts import PROMPT_VERSION
 from app.provider import OpenAICompatibleProvider
+from app.settings import COMPACT_PERCENT_DEFAULT, COMPACTION_PROMPT, SYSTEM_PROMPT, read_prompt
 from app.store import Store
 from app.tokens import estimate_tokens
 
@@ -48,7 +49,8 @@ class ContextManager:
         uncompressed_tokens = sum(estimate_tokens(message["content"]) for message in raw_messages)
         artifact_tokens = artifact["token_estimate"] if artifact else 0
         input_budget = profile["context_window"] - profile["output_token_reserve"]
-        compact_threshold = max(2_000, int(input_budget * 0.72))
+        compact_percent = profile.get("compact_percent", COMPACT_PERCENT_DEFAULT)
+        compact_threshold = max(2_000, int(input_budget * compact_percent / 100))
         if uncompressed_tokens + artifact_tokens < compact_threshold:
             return None
         return await self.compact(conversation_id, profile, force=False)
@@ -71,7 +73,7 @@ class ContextManager:
             summary = await self.provider.complete_chat(
                 profile,
                 [
-                    {"role": "system", "content": COMPACTION_INSTRUCTION},
+                    {"role": "system", "content": read_prompt(self.store, COMPACTION_PROMPT)},
                     {"role": "user", "content": transcript},
                 ],
             )
@@ -113,7 +115,12 @@ class ContextManager:
         raw_messages = self._messages_after_artifact(conversation_id, artifact)
         input_budget = profile["context_window"] - profile["output_token_reserve"]
         selected_messages = self._fit_messages(system, raw_messages, input_budget)
-        model_messages = [{"role": "system", "content": system}, *selected_messages]
+        # A cleared prompt is a choice the settings screen allows, and an empty
+        # system message is not how to carry it out: some endpoints reject one
+        # outright. Nothing is sent instead, which is what "no system prompt"
+        # means to the model anyway.
+        opening = [{"role": "system", "content": system}] if system else []
+        model_messages = [*opening, *selected_messages]
         estimate = sum(estimate_tokens(item["content"]) for item in model_messages)
         remaining = max(profile["context_window"] - profile["output_token_reserve"] - estimate, 0)
         return ContextBundle(
@@ -176,13 +183,13 @@ class ContextManager:
                     anchors.append(line[:220])
         return anchors[:12]
 
-    @staticmethod
     def _assemble_system_instruction(
+        self,
         memories: list[dict[str, Any]],
         artifact: dict[str, Any] | None,
         citations: list[dict[str, Any]],
     ) -> str:
-        sections = [BASE_INSTRUCTION]
+        sections = [read_prompt(self.store, SYSTEM_PROMPT)]
         if memories:
             facts = "\n".join(
                 f"- [{memory['kind']}] {memory['memory_key']}：{memory['content']}"
@@ -197,7 +204,10 @@ class ContextManager:
                 for citation in citations
             )
             sections.append(f"<knowledge>\n{sources}\n</knowledge>")
-        return "\n\n".join(sections)
+        # Blank sections are dropped rather than joined, so a cleared prompt
+        # leaves the memories or the history opening the message instead of a
+        # run of empty lines ahead of them.
+        return "\n\n".join(section for section in sections if section)
 
     @staticmethod
     def _fit_messages(

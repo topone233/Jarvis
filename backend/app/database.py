@@ -5,9 +5,10 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
 
+from app.errors import ValidationError
 from app.utils import segment_for_index, utc_now
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -30,7 +31,18 @@ CREATE TABLE IF NOT EXISTS model_profiles (
     embedding_model TEXT,
     context_window INTEGER NOT NULL,
     output_token_reserve INTEGER NOT NULL,
-    reasoning_levels_json TEXT NOT NULL,
+    -- NULL means "do not send max_tokens at all", which is not the same as
+    -- sending a large number: an endpoint that has its own idea of the limit
+    -- should be left to apply it.
+    max_tokens INTEGER,
+    compact_percent INTEGER NOT NULL DEFAULT 72,
+    -- What this endpoint wants added to a request when the thinking switch is
+    -- on, and when it is off. Two JSON objects rather than a list of levels,
+    -- because "how do I ask this provider not to think" has no single answer:
+    -- reasoning_effort, enable_thinking and thinking.type are all in use, and a
+    -- provider that needs none of them wants an empty object.
+    thinking_on_json TEXT NOT NULL DEFAULT '{}',
+    thinking_off_json TEXT NOT NULL DEFAULT '{}',
     is_default INTEGER NOT NULL DEFAULT 0,
     has_api_key INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -202,8 +214,14 @@ class Database:
         self.objects_directory = data_directory / "objects"
 
     def initialize(self) -> None:
-        self.data_directory.mkdir(parents=True, exist_ok=True)
-        self.objects_directory.mkdir(parents=True, exist_ok=True)
+        if not self.data_directory.is_dir():
+            raise ValidationError(
+                f"数据目录不存在或不可用：{self.data_directory}。"
+                "它可能被移动或删除了，也可能所在的磁盘没有挂上。"
+            )
+        # Inside a directory that has just been checked, and non-recursive on
+        # purpose: this must never become a way to create the data directory.
+        self.objects_directory.mkdir(exist_ok=True)
         with closing(self.connect()) as connection:
             # journal_mode is persisted in the database file, so it only needs to
             # be set once instead of on every connection.
@@ -223,6 +241,53 @@ class Database:
         ).fetchone()[0]
         if current < 2:
             self._rebuild_search_index(connection)
+        # Gated on the column rather than on the recorded version, because the
+        # two paths into this method disagree about what is already there: a
+        # database from before this change has the table without the columns,
+        # while one created just now got them from SCHEMA_SQL and reports
+        # version 0, so a version test would ALTER a column into existence twice.
+        self._add_column_if_missing(
+            connection,
+            "model_profiles",
+            "max_tokens",
+            "ALTER TABLE model_profiles ADD COLUMN max_tokens INTEGER",
+        )
+        self._add_column_if_missing(
+            connection,
+            "model_profiles",
+            "compact_percent",
+            "ALTER TABLE model_profiles ADD COLUMN compact_percent INTEGER NOT NULL DEFAULT 72",
+        )
+        self._add_column_if_missing(
+            connection,
+            "model_profiles",
+            "thinking_on_json",
+            "ALTER TABLE model_profiles ADD COLUMN thinking_on_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        self._add_column_if_missing(
+            connection,
+            "model_profiles",
+            "thinking_off_json",
+            "ALTER TABLE model_profiles ADD COLUMN thinking_off_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        # The levels list this replaces never held anything: no client ever set
+        # it, so nothing is migrated out of it. Dropped rather than left behind,
+        # because a column that still exists is a column someone will fill.
+        self._drop_column_if_present(connection, "model_profiles", "reasoning_levels_json")
+
+    @staticmethod
+    def _add_column_if_missing(
+        connection: sqlite3.Connection, table: str, column: str, statement: str
+    ) -> None:
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            connection.execute(statement)
+
+    @staticmethod
+    def _drop_column_if_present(connection: sqlite3.Connection, table: str, column: str) -> None:
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if column in columns:
+            connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
 
     @staticmethod
     def _rebuild_search_index(connection: sqlite3.Connection) -> None:

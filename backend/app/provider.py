@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.errors import ProviderError
+from app.schemas import ThinkingLevel
 from app.secrets import SecretStore
 
 
@@ -60,7 +61,29 @@ class OpenAICompatibleProvider:
         message = message or f"HTTP {response.status_code}"
         return ProviderError(f"模型服务请求失败：{message}")
 
-    async def test_connection(self, profile: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _thinking_fields(profile: dict[str, Any], level: ThinkingLevel) -> dict[str, Any]:
+        """What this profile adds to a request for one position of the dial.
+
+        "off" is the profile's own business, and the only position that is: what
+        to tell a provider that is not to think has no single spelling, so the
+        "thinking off" fragment goes out as written. The three strengths are one
+        name this server sets itself - `reasoning_effort` - which is why a
+        strength sends that key and nothing else, not even the profile's own
+        fragment. Internal callers (compaction, memory extraction) never ask for
+        a strength and so always land on "off".
+
+        Returned first in the payload so the fields this module sets itself win:
+        a profile describes its provider's dialect, and is not allowed to decide
+        which model answers, what it is asked, or whether the reply is streamed.
+        """
+        if level != "off":
+            return {"reasoning_effort": level}
+        raw = profile.get("thinking_off")
+        return raw if isinstance(raw, dict) else {}
+
+    async def list_models(self, profile: dict[str, Any]) -> list[Any]:
+        """The endpoint's own list of model names, as it reports them."""
         try:
             async with httpx.AsyncClient(transport=self.transport, timeout=20) as client:
                 response = await client.get(
@@ -71,23 +94,32 @@ class OpenAICompatibleProvider:
             raise ProviderError("无法连接模型服务。") from error
         if response.is_error:
             raise self._provider_error(response)
-        payload = response.json()
-        return {"ok": True, "models": payload.get("data", [])}
+        try:
+            return list(response.json().get("data", []))
+        except (ValueError, AttributeError, TypeError) as error:
+            raise ProviderError("模型服务返回了无法识别的模型列表。") from error
+
+    async def test_connection(self, profile: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True, "models": await self.list_models(profile)}
 
     async def complete_chat(
         self,
         profile: dict[str, Any],
         messages: list[dict[str, Any]],
         *,
-        reasoning_level: str | None = None,
+        chat_model: str | None = None,
+        thinking: ThinkingLevel = "off",
     ) -> str:
         payload: dict[str, Any] = {
-            "model": profile["chat_model"],
+            **self._thinking_fields(profile, thinking),
+            "model": chat_model or profile["chat_model"],
             "messages": messages,
             "stream": False,
         }
-        if reasoning_level and reasoning_level in profile.get("reasoning_levels", []):
-            payload["reasoning_effort"] = reasoning_level
+        # Absent unless the user set one: an endpoint that was never told has a
+        # limit of its own, and it knows the model better than this code does.
+        if profile.get("max_tokens"):
+            payload["max_tokens"] = profile["max_tokens"]
         try:
             async with httpx.AsyncClient(transport=self.transport, timeout=120) as client:
                 response = await client.post(
@@ -110,16 +142,19 @@ class OpenAICompatibleProvider:
         profile: dict[str, Any],
         messages: list[dict[str, Any]],
         *,
-        reasoning_level: str | None = None,
+        chat_model: str | None = None,
+        thinking: ThinkingLevel = "off",
     ) -> AsyncIterator[ProviderEvent]:
         payload: dict[str, Any] = {
-            "model": profile["chat_model"],
+            **self._thinking_fields(profile, thinking),
+            "model": chat_model or profile["chat_model"],
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if reasoning_level and reasoning_level in profile.get("reasoning_levels", []):
-            payload["reasoning_effort"] = reasoning_level
+        # Same as complete_chat: no limit unless one was configured.
+        if profile.get("max_tokens"):
+            payload["max_tokens"] = profile["max_tokens"]
         try:
             async with httpx.AsyncClient(transport=self.transport, timeout=120) as client:
                 async with client.stream(

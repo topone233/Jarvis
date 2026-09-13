@@ -6,6 +6,7 @@ from typing import Any, overload
 
 from app.database import Database
 from app.errors import NotFoundError
+from app.settings import COMPACT_PERCENT_DEFAULT
 from app.utils import json_dump, json_load, new_id, segment_for_index, utc_now
 
 # What the user is told when a run was cut off by the service stopping rather
@@ -56,8 +57,15 @@ def _records(
     return [_record(row, json_fields=json_fields, bool_fields=bool_fields) for row in rows]
 
 
+# A profile's JSON-valued fields, named as the API names them. The read sites
+# want the column names and the write sites want both, so both spellings come
+# from here rather than from three separate string literals.
+THINKING_KEYS = ("thinking_on", "thinking_off")
+THINKING_FIELDS = tuple(f"{key}_json" for key in THINKING_KEYS)
+
+
 def _profile_column_value(key: str, value: Any) -> Any:
-    if key == "reasoning_levels":
+    if key in THINKING_KEYS:
         return json_dump(value)
     if key == "is_default":
         return int(value)
@@ -96,6 +104,36 @@ class Store:
         )
 
     # Model profiles
+    def get_setting(self, key: str) -> Any | None:
+        """A stored setting, or None when it has never been changed.
+
+        None is not the same as an empty value: it is what a caller tests to
+        decide whether the value in force is the user's or the code's.
+        """
+        row = self.database.fetchone("SELECT value_json FROM settings WHERE key = ?", (key,))
+        return None if row is None else json_load(row["value_json"], None)
+
+    def list_settings(self) -> dict[str, Any]:
+        rows = self.database.fetchall("SELECT key, value_json FROM settings")
+        return {row["key"]: json_load(row["value_json"], None) for row in rows}
+
+    def set_setting(self, key: str, value: Any) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO settings(key, value_json, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (key, json_dump(value), utc_now()),
+            )
+
+    def delete_setting(self, key: str) -> None:
+        """Puts a setting back to the value the code ships."""
+        with self.database.transaction() as connection:
+            connection.execute("DELETE FROM settings WHERE key = ?", (key,))
+
     def list_model_profiles(self) -> list[dict[str, Any]]:
         rows = self.database.fetchall(
             """
@@ -105,7 +143,7 @@ class Store:
             """
         )
         return _records(
-            rows, json_fields=("reasoning_levels_json",), bool_fields=("is_default", "has_api_key")
+            rows, json_fields=THINKING_FIELDS, bool_fields=("is_default", "has_api_key")
         )
 
     def get_model_profile(self, profile_id: str) -> dict[str, Any]:
@@ -114,7 +152,7 @@ class Store:
         )
         return _record(
             self._require(row, "模型配置"),
-            json_fields=("reasoning_levels_json",),
+            json_fields=THINKING_FIELDS,
             bool_fields=("is_default", "has_api_key"),
         )
 
@@ -129,7 +167,7 @@ class Store:
         )
         return _record(
             self._require(row, "默认模型配置"),
-            json_fields=("reasoning_levels_json",),
+            json_fields=THINKING_FIELDS,
             bool_fields=("is_default", "has_api_key"),
         )
 
@@ -145,9 +183,10 @@ class Store:
                 """
                 INSERT INTO model_profiles(
                     id, name, base_url, protocol, chat_model, embedding_model, context_window,
-                    output_token_reserve, reasoning_levels_json, is_default, has_api_key,
-                    created_at, updated_at, deleted_at
-                ) VALUES (?, ?, ?, 'chat_completions', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    output_token_reserve, max_tokens, compact_percent,
+                    thinking_on_json, thinking_off_json,
+                    is_default, has_api_key, created_at, updated_at, deleted_at
+                ) VALUES (?, ?, ?, 'chat_completions', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     profile_id,
@@ -157,7 +196,10 @@ class Store:
                     data.get("embedding_model"),
                     data["context_window"],
                     data["output_token_reserve"],
-                    json_dump(data.get("reasoning_levels", [])),
+                    data.get("max_tokens"),
+                    data.get("compact_percent", COMPACT_PERCENT_DEFAULT),
+                    json_dump(data.get("thinking_on", {})),
+                    json_dump(data.get("thinking_off", {})),
                     int(data["is_default"]),
                     int(has_api_key),
                     now,
@@ -177,15 +219,20 @@ class Store:
             "embedding_model",
             "context_window",
             "output_token_reserve",
-            "reasoning_levels",
+            "max_tokens",
+            "compact_percent",
+            "thinking_on",
+            "thinking_off",
             "is_default",
         }
         # Unset fields are already absent thanks to exclude_unset, so an explicit
-        # null is a request to clear the field. Only embedding_model is nullable.
+        # null is a request to clear the field. Only the nullable ones can be
+        # cleared; for the rest a null would be a value the column cannot hold.
+        nullable = {"embedding_model", "max_tokens"}
         values = {
             key: value
             for key, value in changes.items()
-            if key in allowed and (value is not None or key == "embedding_model")
+            if key in allowed and (value is not None or key in nullable)
         }
         if not values and has_api_key is None:
             return current
@@ -197,7 +244,7 @@ class Store:
             assignments: list[str] = []
             parameters: list[Any] = []
             for key, value in values.items():
-                column = "reasoning_levels_json" if key == "reasoning_levels" else key
+                column = f"{key}_json" if key in THINKING_KEYS else key
                 assignments.append(f"{column} = ?")
                 parameters.append(_profile_column_value(key, value))
             if has_api_key is not None:
@@ -559,6 +606,28 @@ class Store:
             "SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence ASC", (run_id,)
         )
         return _records(rows, json_fields=("payload_json",))
+
+    def list_conversation_run_events(self, conversation_id: str) -> dict[str, list[dict[str, Any]]]:
+        """Every run's audit trail in one conversation, keyed by run id.
+
+        Opening a conversation means drawing the audit trail of everything in it.
+        Asking per run would be one round trip per answer, which on a long
+        conversation is the client hammering itself for data a single indexed
+        read already has.
+        """
+        rows = self.database.fetchall(
+            """
+            SELECT run_events.* FROM run_events
+            JOIN assistant_runs ON assistant_runs.id = run_events.run_id
+            WHERE assistant_runs.conversation_id = ?
+            ORDER BY run_events.run_id ASC, run_events.sequence ASC
+            """,
+            (conversation_id,),
+        )
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for record in _records(rows, json_fields=("payload_json",)):
+            grouped.setdefault(record["run_id"], []).append(record)
+        return grouped
 
     # Context artifacts
     def get_latest_context_artifact(self, conversation_id: str) -> dict[str, Any] | None:

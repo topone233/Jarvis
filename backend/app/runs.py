@@ -4,10 +4,12 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncGenerator, Iterator
+from dataclasses import dataclass
 from typing import Any
 
 from app.errors import ProviderError, ValidationError
 from app.runtime import CoreServices, RunBroadcast
+from app.schemas import ThinkingLevel
 from app.store import INTERRUPTED_ERROR
 from app.tokens import estimate_tokens
 from app.utils import json_dump
@@ -18,9 +20,34 @@ from app.utils import json_dump
 CHECKPOINT_SECONDS = 0.5
 CHECKPOINT_CHARACTERS = 400
 
+# How long a subscriber may be left with nothing to read. A run can be quiet
+# for a long time - the model is thinking, a tool call is in flight - and a
+# silent connection is indistinguishable from a dead one. A comment line every
+# few seconds is what lets a client tell them apart, and what keeps something
+# in between (a proxy with an idle timeout) from closing the socket.
+HEARTBEAT_SECONDS = 10.0
+
 
 def encode_sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json_dump(payload)}\n\n"
+
+
+@dataclass(frozen=True)
+class RunChoice:
+    """What the composer picked for this one run.
+
+    Deliberately not stored anywhere: the choice rides on the request that
+    carried it, so a reload comes back to what the profile itself says. Nothing
+    downstream may read this as configuration - the profile is the configuration,
+    and this is one caller's answer to "which model, and where the thinking dial
+    is".
+
+    `chat_model` is None when the request named none, which is every internal
+    caller: they want the profile's own model.
+    """
+
+    chat_model: str | None = None
+    thinking: ThinkingLevel = "off"
 
 
 class RunService:
@@ -33,8 +60,8 @@ class RunService:
         *,
         content: str,
         model_profile_id: str | None,
-        reasoning_level: str | None,
-    ) -> tuple[dict[str, Any], dict[str, Any], str]:
+        choice: RunChoice,
+    ) -> tuple[dict[str, Any], dict[str, Any], RunChoice]:
         store = self.services.store
         conversation = store.get_conversation(conversation_id)
         profile_id = model_profile_id or conversation["model_profile_id"]
@@ -53,15 +80,15 @@ class RunService:
                 conversation_id,
                 {"title": self._derive_title(content)},
             )
-        return run, profile, reasoning_level or ""
+        return run, profile, choice
 
     def start_regenerate(
         self,
         message_id: str,
         *,
         model_profile_id: str | None,
-        reasoning_level: str | None,
-    ) -> tuple[dict[str, Any], dict[str, Any], str]:
+        choice: RunChoice,
+    ) -> tuple[dict[str, Any], dict[str, Any], RunChoice]:
         """Re-run an existing assistant reply from its originating user message."""
         store = self.services.store
         assistant = store.get_message(message_id)
@@ -88,14 +115,14 @@ class RunService:
         # on for the same reason `start` sets it: a reload has to be able to find
         # the run behind an answer that has not produced any text yet.
         store.update_message(assistant["id"], "", {"run_id": run["id"]})
-        return run, profile, reasoning_level or ""
+        return run, profile, choice
 
     def launch(
         self,
         run: dict[str, Any],
         *,
         profile: dict[str, Any],
-        reasoning_level: str,
+        choice: RunChoice,
     ) -> None:
         """Begin producing a run in the background, owned by no connection.
 
@@ -112,7 +139,7 @@ class RunService:
                     run["id"],
                     broadcast=broadcast,
                     profile=profile,
-                    reasoning_level=reasoning_level or None,
+                    choice=choice,
                 )
             ),
         )
@@ -123,7 +150,7 @@ class RunService:
         *,
         broadcast: RunBroadcast,
         profile: dict[str, Any],
-        reasoning_level: str | None,
+        choice: RunChoice,
     ) -> None:
         """Drive one run to completion, publishing as it goes."""
         store = self.services.store
@@ -229,7 +256,8 @@ class RunService:
             async for event in self.services.provider.stream_chat(
                 profile,
                 bundle.messages,
-                reasoning_level=reasoning_level,
+                chat_model=choice.chat_model,
+                thinking=choice.thinking,
             ):
                 if registry.is_cancelled(run_id):
                     partial = "".join(response_parts)
@@ -405,7 +433,16 @@ class RunService:
                 reasoning_sent = len(broadcast.reasoning)
             if broadcast.closed:
                 return
-            await broadcast.wait_for_change(version)
+            try:
+                await asyncio.wait_for(broadcast.wait_for_change(version), HEARTBEAT_SECONDS)
+            except TimeoutError:
+                # Nothing happened for a while. An SSE comment is ignored by
+                # every parser, including this app's, so it costs the client
+                # nothing to receive - it is there only to be evidence that the
+                # connection is still alive. The version is left alone because
+                # nothing was published.
+                yield ": keep-alive\n\n"
+                continue
             version = broadcast.version
 
     def _replay(self, run: dict[str, Any]) -> Iterator[str]:
@@ -414,6 +451,14 @@ class RunService:
         Covers the client that reconnects in the moment a run ends, and the one
         that asks about a run from days ago. Both get the same terminal event
         they would have seen live, so the client needs no special case.
+
+        The audit trail is read back from the store rather than the broadcast,
+        which the producer drops the moment it finishes. Without it the steps
+        would appear or vanish depending on a race the user cannot see: attach
+        while the answer is still coming and they are there, attach a moment
+        later - which is what a reload is - and the answer arrives with no sign
+        of what produced it. The records are the same ones the live path sent,
+        so both paths draw the same screen.
         """
         store = self.services.store
         message = store.get_message(run["assistant_message_id"])
@@ -425,6 +470,8 @@ class RunService:
                 "model_profile_id": run["model_profile_id"],
             },
         )
+        for event in store.list_run_events(run["id"]):
+            yield encode_sse("audit", event)
         if run["status"] == "completed":
             yield encode_sse(
                 "message.completed",

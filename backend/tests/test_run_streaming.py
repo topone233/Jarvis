@@ -10,8 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.provider import ProviderEvent
-from app.runs import RunService
+from app.runs import RunChoice, RunService
 from app.runtime import CoreServices
+from app.schemas import ThinkingLevel
 
 
 class PacedProvider:
@@ -35,9 +36,10 @@ class PacedProvider:
         profile: dict[str, Any],
         messages: list[dict[str, Any]],
         *,
-        reasoning_level: str | None = None,
+        chat_model: str | None = None,
+        thinking: ThinkingLevel = "off",
     ) -> AsyncIterator[ProviderEvent]:
-        del profile, messages, reasoning_level
+        del profile, messages, chat_model, thinking
         for text in self.reasoning:
             yield ProviderEvent("reasoning", {"text": text})
         for chunk in self.chunks:
@@ -52,9 +54,10 @@ class PacedProvider:
         profile: dict[str, Any],
         messages: list[dict[str, Any]],
         *,
-        reasoning_level: str | None = None,
+        chat_model: str | None = None,
+        thinking: ThinkingLevel = "off",
     ) -> str:
-        del profile, messages, reasoning_level
+        del profile, messages, chat_model, thinking
         return "[]"
 
     async def embed(self, profile: dict[str, Any], texts: list[str]) -> list[list[float]]:
@@ -97,10 +100,10 @@ def _begin(
 ) -> tuple[RunService, dict[str, Any]]:
     conversation = core.store.create_conversation("新对话", None, profile["id"], False)
     service = RunService(core)
-    run, run_profile, level = service.start(
-        conversation["id"], content=content, model_profile_id=None, reasoning_level=None
+    run, run_profile, choice = service.start(
+        conversation["id"], content=content, model_profile_id=None, choice=RunChoice()
     )
-    service.launch(run, profile=run_profile, reasoning_level=level)
+    service.launch(run, profile=run_profile, choice=choice)
     return service, run
 
 
@@ -197,7 +200,7 @@ async def test_regenerating_points_the_message_at_its_new_run(
     await _settle(core, run["id"])
 
     new_run, _, _ = RunService(core).start_regenerate(
-        run["assistant_message_id"], model_profile_id=None, reasoning_level=None
+        run["assistant_message_id"], model_profile_id=None, choice=RunChoice()
     )
 
     message = core.store.get_message(run["assistant_message_id"])
@@ -368,6 +371,8 @@ def test_reattaching_to_a_finished_run_replays_its_outcome(
     assert replay.status_code == 200
     events = dict(_parse(replay.text))
     # No deltas: there is nothing left to stream, so the whole answer rides in
-    # the terminal event and the client needs no special case for it.
-    assert list(events) == ["run.started", "message.completed"]
+    # the terminal event and the client needs no special case for it. The steps
+    # come too, or a reloaded page would show the answer with no sign of how it
+    # was produced.
+    assert list(events) == ["run.started", "audit", "message.completed"]
     assert events["message.completed"]["content"] == answer["content"]

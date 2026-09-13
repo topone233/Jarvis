@@ -14,6 +14,7 @@ from app.config import BootstrapStore
 from app.main import create_app
 from app.provider import ProviderEvent
 from app.runtime import CoreServices, Runtime
+from app.schemas import ThinkingLevel
 from app.secrets import InMemorySecretStore
 
 
@@ -23,9 +24,10 @@ class FakeProvider:
         profile: dict[str, Any],
         messages: list[dict[str, Any]],
         *,
-        reasoning_level: str | None = None,
+        chat_model: str | None = None,
+        thinking: ThinkingLevel = "off",
     ) -> AsyncIterator[ProviderEvent]:
-        del profile, messages, reasoning_level
+        del profile, messages, chat_model, thinking
         yield ProviderEvent("delta", {"text": "这是"})
         yield ProviderEvent("delta", {"text": "测试回复。"})
         yield ProviderEvent("usage", {"usage": {"prompt_tokens": 12, "completion_tokens": 6}})
@@ -36,9 +38,10 @@ class FakeProvider:
         profile: dict[str, Any],
         messages: list[dict[str, Any]],
         *,
-        reasoning_level: str | None = None,
+        chat_model: str | None = None,
+        thinking: ThinkingLevel = "off",
     ) -> str:
-        del profile, reasoning_level
+        del profile, chat_model, thinking
         system = messages[0]["content"]
         if "跨会话保存" in system:
             return (
@@ -53,14 +56,21 @@ class FakeProvider:
         del profile
         return [[float(len(text)), 1.0] for text in texts]
 
-    async def test_connection(self, profile: dict[str, Any]) -> dict[str, Any]:
+    async def list_models(self, profile: dict[str, Any]) -> list[Any]:
         del profile
-        return {"ok": True, "models": []}
+        return [{"id": "mock-chat"}, {"id": "mock-chat-mini"}]
+
+    async def test_connection(self, profile: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True, "models": await self.list_models(profile)}
 
 
 @pytest.fixture
 def core(tmp_path: Path) -> CoreServices:
-    services = CoreServices.create(tmp_path / "data", InMemorySecretStore())
+    # Made here rather than left to the app, which no longer creates the
+    # directory it was pointed at: choosing one is what makes it exist.
+    data = tmp_path / "data"
+    data.mkdir()
+    services = CoreServices.create(data, InMemorySecretStore())
     fake = FakeProvider()
     services.provider = fake  # type: ignore[assignment]
     services.knowledge.provider = fake  # type: ignore[assignment]
@@ -79,7 +89,6 @@ def profile(core: CoreServices) -> dict[str, Any]:
             "embedding_model": "mock-embedding",
             "context_window": 4096,
             "output_token_reserve": 512,
-            "reasoning_levels": ["low", "high"],
             "is_default": True,
         },
         has_api_key=False,

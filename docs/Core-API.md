@@ -11,9 +11,28 @@ local machine and is designed for one personal user.
 - GET and POST /api/model-profiles, plus PATCH and DELETE
   /api/model-profiles/{id}, manage OpenAI Chat Completions compatible profiles.
 - POST /api/model-profiles/{id}/test verifies GET /models.
+- GET /api/model-profiles/{id}/models returns that endpoint's own model list,
+  read live: `{"models": [...]}`. It is what the composer's dropdown offers.
 
 Secrets are write-only: a profile response exposes has_api_key, never an API
 key.
+
+Each profile carries two request fragments, thinking_on and thinking_off, both
+JSON objects and both empty by default. **Only thinking_off still reaches the
+wire.** It is merged into the provider request body *before* the fields this
+service sets itself, so a fragment can describe a provider's dialect -
+`{"enable_thinking": false}`, `{"reasoning_effort": "low"}`,
+`{"thinking": {"type": "disabled"}}` - but can never redirect the app: model,
+messages, stream and max_tokens always win. An empty fragment adds nothing,
+which is not the same as telling the endpoint "no". Internal calls (compaction,
+memory extraction) ask for no thinking and so carry the thinking_off fragment;
+that is what "off by default" means concretely.
+
+thinking_on is read by nobody, and sent to nobody, since `thinking` became a
+dial (see Streaming chat, below). It is still stored and still returned, and an
+update that carries it back unchanged rewrites it with itself, so a profile
+written while thinking was a switch loses nothing - but nothing new should start
+reading it without first deciding that the strengths are configurable again.
 
 ## Projects and conversations
 
@@ -30,7 +49,8 @@ latest reply as always present.
 
 POST /api/messages/{id}/regenerate re-runs the answer to the user message the
 target replied to, and returns text/event-stream exactly like a new run. It
-accepts optional model_profile_id and reasoning_level. Only the newest message
+accepts optional model_profile_id, chat_model, and thinking - the same three a
+new run takes. Only the newest message
 in a conversation can be regenerated, since replacing an earlier answer would
 orphan everything after it. The previous answer is cleared in place and the
 assistant message keeps its ID, so the frontend can reuse the element it
@@ -40,8 +60,8 @@ for auditing.
 ## Streaming chat
 
 POST /api/conversations/{id}/runs accepts content, optional model_profile_id,
-and optional reasoning_level. It returns text/event-stream. Events use a JSON
-data payload:
+optional chat_model, and optional thinking, the composer's dial position (off by
+default). It returns text/event-stream. Events use a JSON data payload:
 
 | Event | Meaning |
 | --- | --- |
@@ -52,6 +72,19 @@ data payload:
 | reasoning.delta | Optional compatible-provider reasoning text, same rule. |
 | message.completed | Persisted final message and metadata. |
 | run.cancelled / run.failed | Terminal status. |
+
+The two choices ride on the request and are deliberately not stored anywhere.
+chat_model names the model this one run should use; absent means the profile's
+own, which is what every internal caller wants. thinking is where the dial
+stands - one of "off", "low", "high", "max", defaulting to "off". "off" merges
+the profile's thinking_off fragment. The three strengths send `reasoning_effort`
+with that word and nothing else: not the profile's fragment, because the field
+name and its values are this service's own, which is also why they need no
+configuration. A client from before the dial sent `true`; the field deliberately
+kept its name, so that value is now a 422 that names it rather than a key the
+parser drops in silence. A run record therefore remembers the profile it used
+and not the model name it was handed - the composer's choice is the composer's,
+and a reload comes back to what the profile itself says.
 
 Use POST /api/runs/{run_id}/cancel for the stop button. Use
 POST /api/conversations/{id}/compact for an explicit compact action.

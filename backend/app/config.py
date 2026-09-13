@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.errors import ValidationError
+
 
 def default_bootstrap_dir() -> Path:
     configured = os.environ.get("JARVIS_BOOTSTRAP_DIR")
@@ -36,8 +38,19 @@ class BootstrapStore:
         return Path(value).expanduser().resolve() if value else None
 
     def select_data_directory(self, directory: str) -> Path:
+        """Records where the app should keep everything. The directory must exist.
+
+        Creating it was the app answering a question that belongs to the person
+        asking. A typo used to produce a new directory with nothing in it, and a
+        correctly spelled path to a drive that was not mounted produced the same
+        thing - both indistinguishable from a working setup whose data was gone.
+        """
         target = Path(directory).expanduser().resolve()
-        target.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            raise ValidationError(f"目录不存在：{target}。请先创建它，或者换一个已有的目录。")
+        if not target.is_dir():
+            raise ValidationError(f"{target} 是一个文件，不是目录。")
+        # This one is the app's own bookkeeping, not a directory anyone chose.
         self.root.mkdir(parents=True, exist_ok=True)
         temporary_path = self.selection_path.with_suffix(".tmp")
         temporary_path.write_text(

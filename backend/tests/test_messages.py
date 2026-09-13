@@ -53,7 +53,11 @@ def test_regenerate_accepts_an_explicit_model_selection(
 
     response = client.post(
         f"/api/messages/{reply['id']}/regenerate",
-        json={"model_profile_id": profile["id"], "reasoning_level": "high"},
+        json={
+            "model_profile_id": profile["id"],
+            "chat_model": "mock-chat-mini",
+            "thinking": "high",
+        },
     )
 
     assert response.status_code == 200

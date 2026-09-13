@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,7 @@ from typing import Any
 from app.config import BootstrapStore
 from app.context import ContextManager
 from app.database import Database
-from app.errors import SetupRequiredError
+from app.errors import JarvisError, SetupRequiredError
 from app.knowledge import KnowledgeService
 from app.memory import MemoryService
 from app.provider import OpenAICompatibleProvider
@@ -150,17 +151,47 @@ class Runtime:
     def __init__(self, bootstrap: BootstrapStore | None = None) -> None:
         self.bootstrap = bootstrap or BootstrapStore.create_default()
         self._services: CoreServices | None = None
+        self._startup_error: str | None = None
         existing = self.bootstrap.get_data_directory()
         if existing:
-            self._services = CoreServices.create(existing)
+            try:
+                self._services = CoreServices.create(existing)
+            except (JarvisError, OSError, sqlite3.Error) as error:
+                # Running with no services is the honest outcome: the app cannot
+                # read or write anything, and carrying on regardless would show an
+                # empty conversation list as though that were the truth. The
+                # reason is kept so `/api/health` can name the broken directory
+                # instead of presenting itself as a first run.
+                self._startup_error = str(error)
 
     @property
     def configured(self) -> bool:
         return self._services is not None
 
+    @property
+    def startup_error(self) -> str | None:
+        """Why the chosen directory could not be opened, when it could not."""
+        return self._startup_error if self._services is None else None
+
+    @property
+    def data_directory(self) -> Path | None:
+        """Where everything lives, or None before one has been chosen.
+
+        Read off the live services rather than kept as a second copy, so there is
+        no way for the path the app reports to drift from the path it is using.
+        When those services could not be built at all there is no such path to
+        report, and the bootstrap file is then the only record of what was asked
+        for - which is what lets the settings screen show which directory is the
+        broken one instead of an empty box.
+        """
+        if self._services is None:
+            return self.bootstrap.get_data_directory()
+        return self._services.database.data_directory
+
     def setup(self, data_directory: str) -> CoreServices:
         selected = self.bootstrap.select_data_directory(data_directory)
         self._services = CoreServices.create(selected)
+        self._startup_error = None
         return self._services
 
     def services(self) -> CoreServices:

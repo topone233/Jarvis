@@ -5,14 +5,16 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import settings
 from app.errors import NotFoundError, ProviderError, SetupRequiredError, ValidationError
 from app.knowledge import ImportItem
-from app.runs import RunService
+from app.runs import RunChoice, RunService
 from app.runtime import CoreServices, Runtime
 from app.schemas import (
     CompactRequest,
@@ -26,6 +28,7 @@ from app.schemas import (
     ProjectUpdate,
     RegenerateRequest,
     RunRequest,
+    SettingsUpdate,
     SetupRequest,
 )
 
@@ -34,14 +37,14 @@ def _start_run(
     run_service: RunService,
     run: dict[str, Any],
     profile: dict[str, Any],
-    reasoning_level: str,
+    choice: RunChoice,
 ) -> StreamingResponse:
     """Kick the run off detached, then attach this client to it.
 
     The run is not owned by this response, so closing the connection - a reload,
     a navigation, a crash of the browser - leaves the answer generating.
     """
-    run_service.launch(run, profile=profile, reasoning_level=reasoning_level)
+    run_service.launch(run, profile=profile, choice=choice)
     return _stream_run(run_service, run["id"])
 
 
@@ -94,9 +97,14 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_handler(_: Request, error: RequestValidationError) -> JSONResponse:
+        # `errors()` echoes the offending input, and when a body was sent without
+        # `Content-Type: application/json` FastAPI never parses it - so the input
+        # is the raw `bytes` and `json.dumps` raises, turning a 422 that would
+        # have explained the problem into a 500 that explains nothing.
+        parsed = jsonable_encoder(error.errors())
         return JSONResponse(
             status_code=422,
-            content={"detail": error.errors(), "code": "request_validation"},
+            content={"detail": parsed, "code": "request_validation"},
         )
 
     def services() -> CoreServices:
@@ -105,9 +113,17 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
         runtime_instance: Runtime = app.state.runtime
+        directory = runtime_instance.data_directory
         return {
             "status": "ok",
             "configured": runtime_instance.configured,
+            # The setup screen shows this so it is clear that changing it swaps
+            # the whole data set, not just a label.
+            "data_directory": str(directory) if directory is not None else None,
+            # Set when a directory was chosen but could not be opened. Without it
+            # a missing directory and a first run look identical on screen, and
+            # the screen would ask for a directory that was already given.
+            "data_directory_error": runtime_instance.startup_error,
             "service": "jarvis-core",
         }
 
@@ -118,6 +134,25 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             "configured": True,
             "data_directory": str(configured.database.data_directory),
         }
+
+    @app.get("/api/settings")
+    async def read_settings(core: CoreServices = Depends(services)) -> dict[str, Any]:
+        return settings.overview(core.store)
+
+    @app.put("/api/settings")
+    async def update_settings(
+        payload: SettingsUpdate,
+        core: CoreServices = Depends(services),
+    ) -> dict[str, Any]:
+        # The field names are the settings keys, so one loop covers all three
+        # and a fourth prompt would need no change here. A key left out of the
+        # request is untouched; a key sent as null goes back to the default.
+        for key, text in payload.model_dump(exclude_unset=True).items():
+            if text is None:
+                core.store.delete_setting(key)
+            else:
+                core.store.set_setting(key, text)
+        return settings.overview(core.store)
 
     @app.get("/api/model-profiles")
     async def list_model_profiles(core: CoreServices = Depends(services)) -> list[dict[str, Any]]:
@@ -169,6 +204,19 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         core: CoreServices = Depends(services),
     ) -> dict[str, Any]:
         return await core.provider.test_connection(core.store.get_model_profile(profile_id))
+
+    @app.get("/api/model-profiles/{profile_id}/models")
+    async def list_profile_models(
+        profile_id: str,
+        core: CoreServices = Depends(services),
+    ) -> dict[str, Any]:
+        """The model names this endpoint offers, for the composer's dropdown.
+
+        Read live from the provider rather than stored: the list belongs to the
+        service, and a copy of it here would go stale without anyone noticing.
+        """
+        profile = core.store.get_model_profile(profile_id)
+        return {"models": await core.provider.list_models(profile)}
 
     @app.get("/api/projects")
     async def list_projects(core: CoreServices = Depends(services)) -> list[dict[str, Any]]:
@@ -239,6 +287,18 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     ) -> list[dict[str, Any]]:
         return core.store.list_messages(conversation_id)
 
+    @app.get("/api/conversations/{conversation_id}/run-events")
+    async def list_conversation_run_events(
+        conversation_id: str, core: CoreServices = Depends(services)
+    ) -> dict[str, list[dict[str, Any]]]:
+        """The audit trail of every run in a conversation, keyed by run id.
+
+        What each stage of an answer actually took is in the timestamps of these
+        records, so a reloaded page can redraw the execution steps it missed -
+        including the ones belonging to answers older than the newest.
+        """
+        return core.store.list_conversation_run_events(conversation_id)
+
     @app.post("/api/messages/{message_id}/regenerate")
     async def regenerate_message(
         message_id: str,
@@ -246,12 +306,15 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         core: CoreServices = Depends(services),
     ) -> StreamingResponse:
         run_service = RunService(core)
-        run, profile, reasoning_level = run_service.start_regenerate(
+        run, profile, choice = run_service.start_regenerate(
             message_id,
             model_profile_id=payload.model_profile_id if payload else None,
-            reasoning_level=payload.reasoning_level if payload else None,
+            choice=RunChoice(
+                chat_model=payload.chat_model if payload else None,
+                thinking=payload.thinking if payload else "off",
+            ),
         )
-        return _start_run(run_service, run, profile, reasoning_level)
+        return _start_run(run_service, run, profile, choice)
 
     @app.post("/api/conversations/{conversation_id}/runs")
     async def create_run(
@@ -260,13 +323,13 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         core: CoreServices = Depends(services),
     ) -> StreamingResponse:
         run_service = RunService(core)
-        run, profile, reasoning_level = run_service.start(
+        run, profile, choice = run_service.start(
             conversation_id,
             content=payload.content,
             model_profile_id=payload.model_profile_id,
-            reasoning_level=payload.reasoning_level,
+            choice=RunChoice(chat_model=payload.chat_model, thinking=payload.thinking),
         )
-        return _start_run(run_service, run, profile, reasoning_level)
+        return _start_run(run_service, run, profile, choice)
 
     @app.get("/api/runs/{run_id}")
     async def get_run(run_id: str, core: CoreServices = Depends(services)) -> dict[str, Any]:
