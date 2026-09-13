@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import type { RunEventRecord } from '../api/types'
+import type { Citation, RunEventRecord } from '../api/types'
+import { stageMillis } from './duration'
 import type { RunEvent } from './events'
 import { createTurn, reduce, type TurnAction, type TurnState } from './reducer'
 
 const MESSAGE_ID = 'msg_1'
+const RAN_AT = '2026-09-13T06:57:14.000Z'
+const DONE_AT = '2026-09-13T06:57:17.140Z'
 
 function run(events: RunEvent[], start?: TurnState, messageId = MESSAGE_ID): TurnState {
   const initial = start ?? createTurn('local')
@@ -22,7 +25,7 @@ function delta(text: string, messageId = MESSAGE_ID): RunEvent {
   return { type: 'message.delta', messageId, delta: text }
 }
 
-function audit(stage: string, state: string, sequence: number): RunEvent {
+function audit(stage: string, state: string, sequence: number, createdAt = RAN_AT): RunEvent {
   return {
     type: 'audit',
     record: {
@@ -32,7 +35,7 @@ function audit(stage: string, state: string, sequence: number): RunEvent {
       stage,
       state,
       payload: {},
-      created_at: '',
+      created_at: createdAt,
     },
   }
 }
@@ -94,8 +97,42 @@ describe('reduce', () => {
       audit('memory_write', 'completed', 6),
     ])
     expect(state.audits).toEqual([
-      { stage: 'memory_write', state: 'completed', sequence: 6, payload: {} },
+      {
+        stage: 'memory_write',
+        state: 'completed',
+        sequence: 6,
+        payload: {},
+        startedAt: RAN_AT,
+        endedAt: RAN_AT,
+      },
     ])
+  })
+
+  it('carries a stage’s start across to the record that ends it', () => {
+    // The two records collapse into one row, and a duration is the distance
+    // between them - so the start has to survive being overwritten, or the
+    // seconds on screen would be the width of the last record alone.
+    const state = run([
+      audit('model_stream', 'running', 1, RAN_AT),
+      audit('model_stream', 'completed', 2, DONE_AT),
+    ])
+    expect(state.audits).toEqual([
+      {
+        stage: 'model_stream',
+        state: 'completed',
+        sequence: 2,
+        payload: {},
+        startedAt: RAN_AT,
+        endedAt: DONE_AT,
+      },
+    ])
+    expect(stageMillis(state.audits[0], 0)).toBe(3140)
+  })
+
+  it('times a stage that is still running against the clock', () => {
+    const state = run([audit('model_stream', 'running', 1, RAN_AT)])
+    expect(state.audits[0].endedAt).toBeNull()
+    expect(stageMillis(state.audits[0], Date.parse(RAN_AT) + 2500)).toBe(2500)
   })
 
   it('collapses a stage that reports running then completed', () => {
@@ -165,9 +202,17 @@ describe('reduce', () => {
     expect(after).toBe(before)
   })
 
-  it('records progress from context.ready', () => {
-    const state = run([{ type: 'context.ready', citations: [], remainingTokens: 4096 }])
-    expect(state.remainingTokens).toBe(4096)
+  it('keeps the citations from context.ready', () => {
+    const citation: Citation = {
+      chunk_id: 'k1',
+      document_id: 'd1',
+      title: '笔记',
+      content: '一段摘录',
+      score: 0.82,
+      source: 'notes.md',
+    }
+    const state = run([{ type: 'context.ready', citations: [citation], remainingTokens: 4096 }])
+    expect(state.citations).toEqual([citation])
   })
 
   it('backfills audits fetched separately from the stream', () => {

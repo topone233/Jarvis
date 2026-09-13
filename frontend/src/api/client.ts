@@ -38,11 +38,26 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T
 }
 
-export function withJsonBody(init: RequestInit): RequestInit {
-  if (init.body === undefined) {
-    return init
+/**
+ * The headers a call goes out with, built in exactly one place.
+ *
+ * This used to be built twice - once here and once in `streamRun` - and the
+ * second copy dropped the content type. A body sent without
+ * `Content-Type: application/json` is not parsed as JSON at all: FastAPI hands
+ * the raw bytes to its validator, so the error that comes back describes a
+ * shape the caller never sent. Building the object once is the whole fix.
+ */
+export function withJsonBody(init: RequestInit, accept?: string): RequestInit {
+  const headers: Record<string, string> = {
+    ...(init.headers as Record<string, string> | undefined),
   }
-  return { ...init, headers: { 'Content-Type': 'application/json', ...init.headers } }
+  if (init.body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+  }
+  if (accept !== undefined) {
+    headers.Accept = accept
+  }
+  return { ...init, headers }
 }
 
 export async function toApiError(response: Response): Promise<ApiError> {
@@ -67,19 +82,29 @@ export async function toApiError(response: Response): Promise<ApiError> {
   return new ApiError(detail, response.status, code)
 }
 
+export interface Health {
+  configured: boolean
+  status: string
+  data_directory: string | null
+  /**
+   * Why a directory that *was* chosen could not be opened - it was deleted, or
+   * its drive is not mounted. Kept apart from `data_directory`, because the path
+   * is still worth showing: it is the one the user chose, and it is the one that
+   * is missing.
+   */
+  data_directory_error: string | null
+}
+
 /**
- * Tells the app whether it has been set up yet.
+ * Tells the app whether it has been set up yet, and where the data lives.
  *
  * `GET /api/health` is the only route that never raises `setup_required`, which
  * makes it the one thing safe to ask before anything is configured.
  */
-export async function checkHealth(): Promise<{
-  configured: boolean
-  status: string
-}> {
+export async function checkHealth(): Promise<Health> {
   const response = await fetch('/api/health')
   if (!response.ok) {
     throw new ApiError('无法连接 Jarvis 服务。', response.status, 'unreachable')
   }
-  return (await response.json()) as { configured: boolean; status: string }
+  return (await response.json()) as Health
 }

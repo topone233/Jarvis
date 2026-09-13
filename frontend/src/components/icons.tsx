@@ -129,6 +129,14 @@ export function ChevronRightIcon(props: IconProps) {
   )
 }
 
+export function ChevronDownIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M6 9.5 12 15.5l6-6" />
+    </Icon>
+  )
+}
+
 export function MessageIcon(props: IconProps) {
   return (
     <Icon {...props}>
@@ -150,6 +158,35 @@ export function SparkIcon(props: IconProps) {
     <Icon {...props}>
       <path d="M12 4.5 13.7 9.6 18.8 11.3 13.7 13 12 18.1 10.3 13 5.2 11.3 10.3 9.6Z" />
       <path d="M18.5 4.5v3M20 6h-3" />
+    </Icon>
+  )
+}
+
+export function EyeIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </Icon>
+  )
+}
+
+/** The same eye, closed: what the button offers rather than what is on screen. */
+export function EyeOffIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M10.6 6.1A8.6 8.6 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-2.7 3.4" />
+      <path d="M6.4 7.7A17 17 0 0 0 2.5 12S6 18 12 18a8.9 8.9 0 0 0 3.9-.9" />
+      <path d="M4 4l16 16" />
+    </Icon>
+  )
+}
+
+/** Closes a box that looks like a window. Withdrawing, never confirming. */
+export function CloseIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M6 6l12 12M18 6L6 18" />
     </Icon>
   )
 }

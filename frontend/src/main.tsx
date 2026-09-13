@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router'
 
 import { App } from './App'
+import { ToastProvider } from './components/Toast'
 import './styles/tokens.css'
 import './styles/app.css'
 import './styles/chat.css'
@@ -15,7 +16,12 @@ if (container === null) {
 createRoot(container).render(
   <StrictMode>
     <BrowserRouter>
-      <App />
+      {/* Above `App` rather than inside it, so that every screen `App` can
+          return has toasts - including the first-run wizard, which is not
+          inside the shell. */}
+      <ToastProvider>
+        <App />
+      </ToastProvider>
     </BrowserRouter>
   </StrictMode>,
 )

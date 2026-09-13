@@ -15,14 +15,31 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
-import { getRun, listMessages, listModelProfiles, sendFeedback } from '../api/endpoints'
-import type { Message, ModelProfile } from '../api/types'
+import { getRun, listConversationRunEvents, listMessages, sendFeedback } from '../api/endpoints'
+import type { ThinkingLevel } from '../api/thinking'
+import type { Message, RunEventRecord } from '../api/types'
 import { Composer } from '../components/Composer'
 import { MessageList, type LastRun } from '../components/MessageList'
+import { ModelControls } from '../components/ModelControls'
 import type { FeedbackKind } from '../components/AssistantTurn'
 import type { ConversationsController } from '../hooks/useConversations'
+import { useModelChoice } from '../hooks/useModelChoice'
 import { useStickToBottom } from '../hooks/useStickToBottom'
 import { useRun } from '../runs/useRun'
+
+/**
+ * What the new-chat screen hands over: the first message, and the model and
+ * thinking dial that was on screen when it was sent.
+ *
+ * The choice has to travel with the message, because the conversation it is
+ * about is created on the way: a message sent with qwen selected would
+ * otherwise be answered by whatever the default profile names.
+ */
+interface SeededTurn {
+  firstMessage?: string
+  chatModel?: string
+  level?: ThinkingLevel
+}
 
 export function ChatPage({
   conversationId,
@@ -33,11 +50,13 @@ export function ChatPage({
 }) {
   const location = useLocation()
   const navigate = useNavigate()
+  const seeded = location.state as SeededTurn | null
 
   const [messages, setMessages] = useState<Message[]>([])
-  const [profiles, setProfiles] = useState<ModelProfile[]>([])
+  const [trail, setTrail] = useState<Record<string, RunEventRecord[]>>({})
   const [pendingUser, setPendingUser] = useState<string | null>(null)
   const [lastRun, setLastRun] = useState<LastRun | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   const reload = conversations.reload
@@ -54,33 +73,98 @@ export function ChatPage({
     }
   }, [conversationId, reload])
 
+  // The steps behind every answer in this conversation, keyed by run id. The
+  // stream is no help here: it only ever speaks for the run it is attached to,
+  // so every older answer would have to go without.
+  const readTrail = useCallback(
+    () =>
+      listConversationRunEvents(conversationId).catch(
+        () => ({}) as Record<string, RunEventRecord[]>,
+      ),
+    [conversationId],
+  )
+
   const run = useRun(conversationId, () => void refresh())
   const { attach, cancel, regenerate, reconnect, send, turn, gaveUp } = run
+
+  const conversation = conversations.conversations.find((item) => item.id === conversationId)
+  // What the composer is showing, and what the next turn will carry. The seed is
+  // only read on the first render, before the effect below clears the history
+  // entry it came in on.
+  const choice = useModelChoice(conversation?.model_profile_id ?? null, seeded ?? undefined)
+  const { model, level } = choice
+
+  // Whether this page is already watching a turn, read by the load below without
+  // making it re-run on every token. Kept in an effect rather than assigned
+  // during render, and declared before that load so it is up to date by the time
+  // the load runs.
+  const watchingRef = useRef(false)
+  useEffect(() => {
+    watchingRef.current = turn !== null
+  }, [turn])
 
   // Load the conversation, and reattach to it if it is still being written.
   useEffect(() => {
     let dropped = false
     void (async () => {
-      const [loaded, profileList] = await Promise.all([
-        listMessages(conversationId),
-        listModelProfiles().catch(() => [] as ModelProfile[]),
-      ])
+      // Its failure gets its own handler because it is the one that means "there
+      // is no such conversation here". Letting it reject the way it used to is
+      // what turned a missing conversation into a page that rendered nothing and
+      // said nothing - indistinguishable from an empty conversation.
+      let loaded: Message[]
+      try {
+        loaded = await listMessages(conversationId)
+      } catch (cause) {
+        if (!dropped) {
+          setLoadError(describeLoadFailure(cause))
+        }
+        return
+      }
       if (dropped) {
         return
       }
+      setLoadError(null)
       setMessages(loaded)
-      setProfiles(profileList)
+      // Development runs this load twice, and the second pass can land after the
+      // send was stored - in which case the history it just read already holds
+      // the message the optimistic bubble stands for, and the same words are on
+      // screen twice until the run ends. Matching the text is safe *here* because
+      // this effect runs at mount and when the conversation changes, never while
+      // a conversation is in use: a message that matches the one just sent can
+      // only be that one.
+      setPendingUser((pending) => (alreadyStored(loaded, pending) ? null : pending))
+
+      // Not worth failing the load over: a missing trail costs the steps drawn
+      // under answers that are already on screen anyway. The profile list is the
+      // composer's own business, fetched by the hook that needs it.
+      const runEvents = await readTrail()
+      if (dropped) {
+        return
+      }
+      setTrail(runEvents)
 
       const open = newestRun(loaded)
       if (open === null) {
         return
       }
-      const record = await getRun(open.runId)
-      if (dropped) {
+      // A missing run record costs nothing worth failing the load over: the
+      // answer is on screen either way, and all that is lost is the label saying
+      // how its run ended plus the chance to reattach to a live one.
+      const record = await getRun(open.runId).catch(() => null)
+      if (dropped || record === null) {
         return
       }
       setLastRun({ runId: open.runId, status: record.status })
       if (record.status === 'running' || record.status === 'cancelling') {
+        // A run found on disk is only ours to watch if nobody here is already
+        // watching one. Otherwise a send and a re-read of the history can both
+        // answer for the same run: the second takes over the connection, which
+        // drops the POST stream that was already delivering the answer and puts
+        // the user's own message back on screen next to the optimistic bubble
+        // still showing it.
+        if (watchingRef.current) {
+          return
+        }
         attach(open.runId, {
           assistantMessageId: open.messageId,
           content: open.content,
@@ -91,7 +175,7 @@ export function ChatPage({
     return () => {
       dropped = true
     }
-  }, [conversationId, attach])
+  }, [conversationId, attach, readTrail])
 
   // A run that has just ended is only reflected in the list once it is re-read.
   const phase = turn?.phase ?? null
@@ -106,34 +190,47 @@ export function ChatPage({
   const send_ = useCallback(
     (text: string) => {
       setPendingUser(text)
-      send(text)
+      send(text, { chatModel: model, level })
+      // The answer this one replaces has just finished, which is the moment its
+      // trail on disk becomes complete - the memory write is reported after the
+      // answer is already on screen, so a read taken while it was running came
+      // back short. Without this the previous answer would lose its last step
+      // the instant it stopped being the live one.
+      void readTrail().then(setTrail)
     },
-    [send],
+    [readTrail, send, model, level],
+  )
+
+  const onRegenerate = useCallback(
+    (messageId: string) => {
+      // Same reason as a send: the answer being replaced is over.
+      void readTrail().then(setTrail)
+      regenerate(messageId, { chatModel: model, level })
+    },
+    [readTrail, regenerate, model, level],
   )
 
   // A message handed over by the new-chat screen. Consumed once, and the history
   // entry is cleared so a reload cannot send it a second time.
-  const seeded = useRef(false)
+  const consumed = useRef(false)
   useEffect(() => {
-    if (seeded.current) {
+    if (consumed.current) {
       return
     }
-    seeded.current = true
-    const text = (location.state as { firstMessage?: string } | null)?.firstMessage
+    consumed.current = true
+    const text = seeded?.firstMessage
     if (typeof text !== 'string' || text === '') {
       return
     }
     navigate(location.pathname, { replace: true, state: null })
     send_(text)
-  }, [location.state, location.pathname, navigate, send_])
+  }, [seeded, location.pathname, navigate, send_])
 
   const onFeedback = useCallback((messageId: string, kind: FeedbackKind) => {
     void sendFeedback(messageId, kind).catch(() => undefined)
   }, [])
 
   const busy = phase === 'connecting' || phase === 'streaming'
-  const conversation = conversations.conversations.find((item) => item.id === conversationId)
-  const total = contextBudget(profiles, conversation?.model_profile_id ?? null)
 
   useStickToBottom(scrollRef, `${turn?.content.length ?? 0}:${messages.length}`, conversationId)
 
@@ -145,14 +242,23 @@ export function ChatPage({
 
       <div className="messages" ref={scrollRef}>
         <div className="messages-inner">
+          {loadError !== null && (
+            <div className="load-error" role="alert">
+              <p className="load-error-title">{loadError}</p>
+              <p className="load-error-hint">
+                左侧列出的是当前数据目录里的对话。这个对话可能在另一个数据目录里，也可能已经被删掉了。
+              </p>
+            </div>
+          )}
           <MessageList
             messages={messages}
             turn={turn}
             lastRun={lastRun}
+            trail={trail}
             gaveUp={gaveUp}
             pendingUser={pendingUser}
             onReconnect={reconnect}
-            onRegenerate={regenerate}
+            onRegenerate={onRegenerate}
             onFeedback={onFeedback}
           />
         </div>
@@ -160,12 +266,27 @@ export function ChatPage({
 
       <Composer
         busy={busy}
-        remaining={turn?.remainingTokens ?? null}
-        total={total}
+        controls={<ModelControls choice={choice} />}
         onSend={send_}
         onStop={cancel}
       />
     </div>
+  )
+}
+
+/** Why a conversation could not be opened, in words that say what to do next. */
+function describeLoadFailure(cause: unknown): string {
+  if (cause instanceof Error && cause.message !== '') {
+    return cause.message
+  }
+  return '打不开这个对话。'
+}
+
+/** Whether a message on its way to the server is already in the history. */
+function alreadyStored(messages: Message[], pending: string | null): boolean {
+  return (
+    pending !== null &&
+    messages.some((message) => message.role === 'user' && message.content === pending)
   )
 }
 
@@ -197,14 +318,4 @@ function newestRun(messages: Message[]): OpenRun | null {
     content: last.content,
     reasoning: last.metadata?.reasoning ?? '',
   }
-}
-
-/** How many tokens the conversation may spend on input before compaction. */
-function contextBudget(profiles: ModelProfile[], profileId: string | null): number | null {
-  const profile =
-    profiles.find((item) => item.id === profileId) ?? profiles.find((item) => item.is_default === 1)
-  if (profile === undefined) {
-    return null
-  }
-  return Math.max(profile.context_window - profile.output_token_reserve, 0)
 }

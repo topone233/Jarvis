@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { cancelRun, getRun, listRunEvents } from '../api/endpoints'
+import type { ThinkingLevel } from '../api/thinking'
 import { isTerminalEvent, streamRun } from '../sse/runStream'
 import { createTurn, reduce, type TurnAction, type TurnSeed, type TurnState } from './reducer'
 
@@ -24,10 +25,36 @@ const RETRY_DELAYS = [500, 1000, 2000, 4000, 8000, 15000]
 
 let localCounter = 0
 
+/**
+ * What the composer picked for this one run.
+ *
+ * Named after the backend's `RunChoice`, which means the same thing: the
+ * profile is the configuration, and this is one caller's answer to "which
+ * model, and where the thinking dial is". An empty `chatModel` says nothing at
+ * all, which is what every caller other than the composer wants - but there is
+ * no such thing as saying nothing about the dial, because 关 is itself an
+ * instruction: "whatever this profile calls thinking off".
+ */
+export interface RunChoice {
+  chatModel: string
+  level: ThinkingLevel
+}
+
+/** The body of a request that starts a run: the choice plus whatever else. */
+function choiceBody(choice: RunChoice, rest: Record<string, unknown>): string {
+  return JSON.stringify({
+    ...rest,
+    thinking: choice.level,
+    // Left out rather than sent empty: the schema refuses a blank model name,
+    // and naming no model is how "the profile's own" is said.
+    ...(choice.chatModel === '' ? {} : { chat_model: choice.chatModel }),
+  })
+}
+
 export interface RunController {
   turn: TurnState | null
-  send(content: string): void
-  regenerate(messageId: string): void
+  send(content: string, choice: RunChoice): void
+  regenerate(messageId: string, choice: RunChoice): void
   attach(runId: string, seed?: TurnSeed): void
   cancel(): void
   reconnect(): void
@@ -149,13 +176,13 @@ export function useRun(conversationId: string | null, onChanged: () => void): Ru
   )
 
   const send = useCallback(
-    (content: string) => {
+    (content: string, choice: RunChoice) => {
       if (conversationId === null) return
       localCounter += 1
       replaceTurn(createTurn(`local-${localCounter}`))
       void drive(
         `/api/conversations/${conversationId}/runs`,
-        { method: 'POST', body: JSON.stringify({ content }) },
+        { method: 'POST', body: choiceBody(choice, { content }) },
         null,
       )
     },
@@ -163,12 +190,16 @@ export function useRun(conversationId: string | null, onChanged: () => void): Ru
   )
 
   const regenerate = useCallback(
-    (messageId: string) => {
+    (messageId: string, choice: RunChoice) => {
       localCounter += 1
       // Regenerating reuses the same assistant message on the server, so the
       // existing bubble is what streams the new answer.
       replaceTurn(createTurn(`local-${localCounter}`, { assistantMessageId: messageId }))
-      void drive(`/api/messages/${messageId}/regenerate`, { method: 'POST', body: '{}' }, null)
+      void drive(
+        `/api/messages/${messageId}/regenerate`,
+        { method: 'POST', body: choiceBody(choice, {}) },
+        null,
+      )
     },
     [drive, replaceTurn],
   )
@@ -202,9 +233,25 @@ export function useRun(conversationId: string | null, onChanged: () => void): Ru
 
   useEffect(() => {
     return () => {
-      abortRef.current?.abort()
+      // Only let go of a stream we are actually watching. Aborting is for
+      // closing a connection whose run id we know, so that coming back
+      // re-attaches to the same run - it is not a way to recall a send the
+      // server has not acknowledged. React runs this cleanup once immediately
+      // after mounting (StrictMode's remount), and at that instant the POST of a
+      // brand-new conversation has been issued but `run.started` has not come
+      // back: aborting there would kill the first message of every new chat
+      // before it left the machine, and the latch that stops it being sent twice
+      // would stop it being sent at all.
+      if (turnRef.current?.runId) {
+        abortRef.current?.abort()
+      }
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current)
+        // Clearing it matters as much as cancelling: `commit` reads a non-null
+        // value as "a flush is already queued" and skips scheduling another, so
+        // leaving a dead id here would silence every later update and the answer
+        // would never appear.
+        frameRef.current = null
       }
     }
   }, [])

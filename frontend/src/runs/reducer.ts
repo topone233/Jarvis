@@ -26,6 +26,10 @@ export interface AuditRow {
   state: string
   sequence: number
   payload: Record<string, unknown>
+  /** When the stage began, from its `running` record. Null if it never ran. */
+  startedAt: string | null
+  /** When the stage reported the state it is in now. Null while it is running. */
+  endedAt: string | null
 }
 
 export interface TurnState {
@@ -39,7 +43,6 @@ export interface TurnState {
   reasoning: string
   citations: Citation[]
   audits: AuditRow[]
-  remainingTokens: number | null
   phase: TurnPhase
   error: string | null
   /** True while the stream is down and a retry is pending. Orthogonal to phase. */
@@ -67,7 +70,6 @@ export function createTurn(localId: string, seed?: TurnSeed): TurnState {
     reasoning: seed?.reasoning ?? '',
     citations: [],
     audits: [],
-    remainingTokens: null,
     phase: 'connecting',
     error: null,
     detached: false,
@@ -160,7 +162,9 @@ function applyEvent(state: TurnState, event: RunEvent): TurnState {
       return { ...state, phase: 'failed', error: event.error }
 
     case 'context.ready':
-      return { ...state, citations: event.citations, remainingTokens: event.remainingTokens }
+      // Only the citations are kept. The event also estimates the tokens left in
+      // the window, but nothing on screen asks for that any more.
+      return { ...state, citations: event.citations }
 
     case 'audit':
       return upsertAudit(state, event.record)
@@ -176,14 +180,22 @@ function applyEvent(state: TurnState, event: RunEvent): TurnState {
  * phase. Only text stops at a terminal event.
  */
 function upsertAudit(state: TurnState, record: RunEventRecord): TurnState {
+  const index = state.audits.findIndex((existing) => existing.stage === record.stage)
+  const previous = index === -1 ? null : state.audits[index]
+  const running = record.state === 'running'
   const row: AuditRow = {
     stage: record.stage,
     state: record.state,
     sequence: record.sequence,
     payload: record.payload ?? {},
+    // A stage arrives as two records - it began, then it ended - and the second
+    // replaces the first. The start is carried across, because the distance
+    // between the two is the duration and the later record alone only knows
+    // when the stage stopped.
+    startedAt: running ? record.created_at : (previous?.startedAt ?? null),
+    endedAt: running ? null : record.created_at,
   }
-  const index = state.audits.findIndex((existing) => existing.stage === row.stage)
-  if (index === -1) {
+  if (previous === null) {
     return { ...state, audits: [...state.audits, row] }
   }
   const audits = state.audits.slice()

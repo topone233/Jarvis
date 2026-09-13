@@ -8,11 +8,13 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { Navigate, Route, Routes, useLocation, useParams } from 'react-router'
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router'
 
 import { checkHealth, onSetupRequired } from './api/client'
 import { Sidebar } from './components/Sidebar'
+import { useConfirm } from './hooks/useConfirm'
 import { useConversations } from './hooks/useConversations'
+import { useToast } from './hooks/useToast'
 import { ChatPage } from './pages/ChatPage'
 import { NewChatPage } from './pages/NewChatPage'
 import { SetupPage } from './pages/SetupPage'
@@ -62,17 +64,35 @@ export function App() {
     )
   }
   if (!gate.configured) {
-    return <SetupPage onConfigured={() => setGate({ state: 'ok', configured: true })} />
+    return (
+      <SetupPage
+        configured={false}
+        onConfigured={() => setGate({ state: 'ok', configured: true })}
+      />
+    )
   }
   return <Shell onConfigured={() => setGate({ state: 'ok', configured: true })} />
 }
 
 function Shell({ onConfigured }: { onConfigured(): void }) {
   const conversations = useConversations()
+  const confirm = useConfirm()
+  const toast = useToast()
   // Subscribes the shell to navigation, so the highlighted row follows the URL.
   const location = useLocation()
+  const navigate = useNavigate()
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === '1')
   const matched = /^\/c\/([^/]+)/.exec(location.pathname)
+  // Where the settings screen's close button returns to. Remembered here rather
+  // than taken from browser history: opening the app straight onto /setup leaves
+  // no earlier page *inside* the app, and going back would leave it entirely.
+  const [backTo, setBackTo] = useState('/')
+
+  useEffect(() => {
+    if (location.pathname !== '/setup') {
+      setBackTo(location.pathname)
+    }
+  }, [location.pathname])
 
   function toggleSidebar() {
     setCollapsed((current) => {
@@ -82,11 +102,25 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
     })
   }
 
-  function remove(conversation: { id: string; title: string }) {
-    if (!window.confirm(`把「${conversation.title}」移到回收站？`)) {
+  async function remove(conversation: { id: string; title: string }) {
+    const confirmed = await confirm.ask({
+      title: '把这段对话移到回收站？',
+      body: `「${conversation.title}」会被移到回收站，之后可以恢复。`,
+      confirmLabel: '移到回收站',
+      danger: true,
+    })
+    if (!confirmed) {
       return
     }
-    void conversations.remove(conversation.id)
+    try {
+      await conversations.remove(conversation.id)
+      // The row disappearing is the result; where it went is not on screen.
+      toast.show('已移到回收站')
+    } catch {
+      // This used to be an unhandled rejection: the row stayed where it was and
+      // nothing on screen said why.
+      toast.show('没能删掉这个对话，看看后端是不是在运行。', 'bad')
+    }
   }
 
   return (
@@ -100,7 +134,14 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
       />
       <main className="main">
         <Routes>
-          <Route path="/setup" element={<SetupPage onConfigured={onConfigured} />} />
+          {/* The shell only exists once the app is configured, which is what
+              tells the settings screen that there is no first step left to do. */}
+          <Route
+            path="/setup"
+            element={
+              <SetupPage configured onClose={() => navigate(backTo)} onConfigured={onConfigured} />
+            }
+          />
           <Route path="/" element={<NewChatPage conversations={conversations} />} />
           <Route
             path="/c/:conversationId"
@@ -109,6 +150,7 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+      {confirm.dialog}
     </div>
   )
 }

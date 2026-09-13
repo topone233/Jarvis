@@ -38,6 +38,41 @@ input {
   background: var(--accent-soft);
 }
 
+/* Thin rounded scrollbars, in place of the platform's own - a full-height bar
+   with arrow buttons is the loudest "old admin tool" signal on the screen.
+
+   Written with the WebKit pseudo-elements rather than the standard
+   `scrollbar-width` / `scrollbar-color`, and deliberately not both: a browser
+   that understands the standard properties stops honouring these, and the
+   standard properties cannot ask for a rounded pill in a 10px gutter. Chrome is
+   what this is looked at in, so the one that gives exact control wins. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* The transparent border plus `content-box` is what leaves a 4px pill sitting
+   centred in the gutter, with no track drawn around it. */
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background-color: var(--scroll-thumb);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scroll-thumb-hover);
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -79,7 +114,6 @@ input {
   display: flex;
   flex-direction: column;
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
   transition: width 0.16s ease;
 }
 
@@ -180,8 +214,9 @@ input {
 }
 
 .sidebar-bottom {
-  padding: 10px;
-  border-top: 1px solid var(--border);
+  /* No rule above it. The gap above the list and the fill behind both are
+     enough to say where the settings link starts. */
+  padding: 14px 10px;
 }
 
 .main {
@@ -189,6 +224,70 @@ input {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* ---------- toasts ---------- */
+
+/* Top right, because the bottom middle of the screen belongs to the composer.
+   The stack is as wide as its widest toast and ignores the pointer, so only the
+   toasts themselves are clickable and the page underneath is not covered by an
+   invisible panel. */
+.toast-stack {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 320px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  pointer-events: auto;
+  animation: toast-in 0.16s ease-out;
+}
+
+.toast:hover {
+  color: var(--text);
+}
+
+/* Which kind of note this is, before the words are read. */
+.toast-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.toast.is-bad .toast-dot {
+  background: var(--bad);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
 }
 
 .empty-state {

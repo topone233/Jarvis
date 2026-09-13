@@ -66,12 +66,20 @@ export interface Conversation {
   project_id: string | null
   title: string
   model_profile_id: string | null
-  is_pinned: number
+  is_pinned: boolean
   created_at: string
   updated_at: string
   deleted_at: string | null
 }
 
+/**
+ * One configured model, as `GET /api/model-profiles` returns it.
+ *
+ * `is_default` and `has_api_key` are booleans, not the 0/1 the columns hold:
+ * `store.py` passes them through `_record(..., bool_fields=...)`. The API key
+ * itself is never in here - it lives in the OS credential manager, and
+ * `has_api_key` is all the server will say about it.
+ */
 export interface ModelProfile {
   id: string
   name: string
@@ -81,13 +89,81 @@ export interface ModelProfile {
   embedding_model: string | null
   context_window: number
   output_token_reserve: number
-  reasoning_levels: string[]
-  is_default: number
-  has_api_key: number
+  /**
+   * The generation limit. Null is not "a very large number": it means the field
+   * is left out of the request entirely, so the endpoint applies its own.
+   */
+  max_tokens: number | null
+  /** A percentage of the input budget: how full it may get before compaction. */
+  compact_percent: number
+  /**
+   * What the endpoint is told when the thinking dial is at 关, and what it used
+   * to be told when the dial was a switch. The keys are the endpoint's own
+   * dialect and nothing here reads them: `{"enable_thinking": false}`,
+   * `{"reasoning_effort": "low"}` and `{"thinking": {"type": "disabled"}}` are
+   * three spellings of the same wish, and a fourth exists somewhere.
+   *
+   * `thinking_on` is read by nobody and sent to nobody since the dial arrived:
+   * the three strengths send `reasoning_effort`, this app's own field name, not
+   * a fragment. It is still stored and still round-trips, so editing a profile
+   * does not throw away what was typed into it while the switch existed.
+   *
+   * An empty `thinking_off` means this endpoint is never told anything, which is
+   * not the same as telling it "no".
+   */
+  thinking_on: Record<string, unknown>
+  thinking_off: Record<string, unknown>
+  is_default: boolean
+  has_api_key: boolean
   created_at: string
   updated_at: string
   deleted_at: string | null
 }
+
+/**
+ * The body of a profile create or update (`schemas.py`'s `ModelProfileCreate`).
+ *
+ * `api_key` is write-only: leaving it out of an update keeps the stored one,
+ * while sending an empty string deletes it. `api/profiles.ts` is where that is
+ * turned into a request.
+ */
+export interface ModelProfileInput {
+  name: string
+  base_url: string
+  chat_model: string
+  embedding_model?: string | null
+  api_key?: string | null
+  context_window?: number
+  output_token_reserve?: number
+  max_tokens?: number | null
+  compact_percent?: number
+  thinking_on?: Record<string, unknown>
+  thinking_off?: Record<string, unknown>
+  is_default?: boolean
+}
+
+/** One prompt on the settings screen (`backend/app/settings.py`). */
+export interface PromptSetting {
+  /** The text in force: stored one if there is one, the built-in one if not. */
+  text: string
+  /** What the code ships, and what "restore" puts back. */
+  default_text: string
+  /** False once the user has saved text of their own. */
+  is_default: boolean
+}
+
+export interface AppSettings {
+  prompts: {
+    system_prompt: PromptSetting
+    compaction_prompt: PromptSetting
+    memory_prompt: PromptSetting
+  }
+}
+
+export type PromptKey = keyof AppSettings['prompts']
+
+/** A save: the text to store, or null to go back to the built-in one. */
+export type PromptPatch = Partial<Record<PromptKey, string | null>>
 
 /** One row of the audit trail (`run_events`). Also what `audit` SSE events carry. */
 export interface RunEventRecord {

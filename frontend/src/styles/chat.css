@@ -13,8 +13,13 @@
   gap: 10px;
   height: 52px;
   padding: 0 18px;
-  border-bottom: 1px solid var(--border);
+  /* `relative` so the shadow lands on top of the scrolling conversation rather
+     than under it: the message list is a later sibling and would otherwise paint
+     over the header's own box. */
+  position: relative;
+  z-index: 1;
   background: var(--bg);
+  box-shadow: var(--shadow-header);
 }
 
 .chat-title {
@@ -68,6 +73,27 @@
   font-size: 14px;
 }
 
+/* Stands in for a conversation that could not be opened. Rendering nothing at
+   all looked exactly like a conversation with nothing in it, which is how a
+   missing chat read as an empty one. */
+.load-error {
+  padding: 12px 15px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg));
+}
+
+.load-error-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.load-error-hint {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .turn-notice {
   display: flex;
   align-items: center;
@@ -111,14 +137,15 @@
 
 /* ---------- progress strip ---------- */
 
+/* No box either. These rows are steps in a list, and the dot at the head of
+   each one is already the list's left edge - a grey rectangle around four lines
+   of small text made the execution louder than the answer it explains. Dropping
+   the fill also drops the padding that went with it, which puts the dots on the
+   same left edge as the answer and the reasoning header. */
 .progress-strip {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-subtle);
   font-size: 13px;
   color: var(--text-secondary);
 }
@@ -128,6 +155,38 @@
   align-items: center;
   gap: 8px;
   min-height: 20px;
+}
+
+/* The stage that is running right now wears a band of light that drifts across
+   it. It is the only thing on the row that moves, so it reads as "this one",
+   not as "the whole strip is busy".
+
+   Drawn as a very wide background image slid sideways rather than as an
+   absolutely positioned overlay, because the overlay would have to be clipped
+   by the row - which would also cut the left half off the running dot's halo. */
+.progress-row.is-running {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 35%,
+    var(--bg) 50%,
+    transparent 65%,
+    transparent 100%
+  );
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* Backwards on purpose: 100% parks the band past the left edge and 0% past the
+   right, so counting down walks it across the row from left to right. */
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
 }
 
 .progress-dot {
@@ -141,7 +200,9 @@
 
 .progress-row.is-running .progress-dot {
   background: var(--warn);
-  animation: pulse 1.4s ease-in-out infinite;
+  animation:
+    pulse 1.4s ease-in-out infinite,
+    halo 1.4s ease-out infinite;
 }
 
 .progress-row.is-completed .progress-dot {
@@ -164,26 +225,71 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* A fixed column, right-aligned and tabular: the seconds are redrawn twenty
+   times a second while a stage runs, and proportional digits would make the
+   whole row twitch. */
+.progress-time {
+  flex: 0 0 auto;
+  min-width: 62px;
+  color: var(--text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-total {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 @keyframes pulse {
   50% {
-    opacity: 0.35;
+    opacity: 0.5;
+  }
+}
+
+/* A ring that grows out of the dot and fades as it goes, which is closer to a
+   breath than the opacity flicker above it is. */
+@keyframes halo {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 50%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+/* Motion is decoration here; nothing above stops being readable without it. */
+@media (prefers-reduced-motion: reduce) {
+  .progress-row.is-running {
+    animation: none;
+    background-image: none;
+  }
+
+  .progress-row.is-running .progress-dot {
+    animation: none;
+    opacity: 1;
   }
 }
 
 /* ---------- reasoning ---------- */
 
-.reasoning {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
+/* Deliberately no box. Three quieter signals do the same job: the header row,
+   the dotted rule down the left of the text, and ink lighter than the answer's.
+   A grey rectangle around it made the thinking the loudest thing on screen.
+   The row is flush left so it lines up with the answer above and below it; the
+   hover wash spans the full column, which is what makes it read as a row rather
+   than as a stray highlight. */
 .reasoning-head {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 8px 12px;
+  padding: 8px 0;
+  border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-size: 13px;
 }
@@ -201,9 +307,16 @@
 }
 
 .reasoning-body {
-  padding: 2px 12px 12px;
-  border-top: 1px solid var(--border);
-  color: var(--text-secondary);
+  padding: 4px 12px 12px 18px;
+  /* Where the thinking starts and stops, as a dotted rule down its left: two
+     pixels of colour every seven. A radial gradient rather than
+     `repeating-linear-gradient` so the dots come out round, and one tile per
+     seven pixels so the spacing cannot drift with the block's height. */
+  background-image: radial-gradient(circle, var(--border-strong) 1px, transparent 1.4px);
+  background-size: 4px 7px;
+  background-repeat: repeat-y;
+  background-position: left 2px top 0;
+  color: var(--text-muted);
   font-size: 13px;
   line-height: 1.7;
   white-space: pre-wrap;
@@ -285,7 +398,6 @@
 
 .markdown pre {
   padding: 13px 15px;
-  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--bg-subtle);
   overflow-x: auto;
@@ -305,10 +417,13 @@
   font-size: 14px;
 }
 
+/* The one place a rule is kept inside markdown: a table with no separators
+   between its rows is a wall of words. Horizontal only, and faint enough to
+   read as a guide rather than a grid. */
 .markdown th,
 .markdown td {
   padding: 6px 12px;
-  border: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, var(--bg));
   text-align: left;
 }
 
@@ -401,19 +516,26 @@
   align-items: flex-end;
   gap: 8px;
   padding: 10px 10px 10px 16px;
-  border: 1px solid var(--border-strong);
   border-radius: 22px;
   background: var(--bg);
   box-shadow: var(--shadow-input);
-  transition: border-color 0.12s ease;
+  transition: box-shadow 0.12s ease;
 }
 
+/* Focus shows as light gathering around the box rather than as a line drawn on
+   it: the silhouette never changes, so nothing on screen moves when the caret
+   arrives. */
 .composer-box:focus-within {
-  border-color: var(--accent);
+  box-shadow: var(--ring-accent), var(--shadow-input);
 }
 
 .composer-box textarea {
   flex: 1;
+  /* The controls beside it are fixed width - a model name and a slider - so the
+     only thing left to give when the window narrows is this. Without a floor of
+     its own a textarea will not shrink past the width it was born with, and the
+     row would push the send button off the edge instead. */
+  min-width: 0;
   min-height: 26px;
   max-height: 220px;
   padding: 3px 0;
@@ -434,6 +556,10 @@
   font-size: 12px;
 }
 
+/* Pale while the box is empty and fully saturated the moment there is anything
+   to send. The button is never disabled - a click that does nothing is worse
+   than a button that looks like it will do nothing - so the colour is the only
+   thing that has to carry "not yet". */
 .send-button {
   flex: 0 0 auto;
   display: inline-flex;
@@ -442,14 +568,19 @@
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--accent-strong);
+  background: var(--send-idle);
   color: #fff;
-  transition: opacity 0.12s ease;
+  transition:
+    background 0.12s ease,
+    opacity 0.12s ease;
 }
 
-.send-button:disabled {
-  background: var(--border-strong);
-  cursor: default;
+.send-button:hover {
+  opacity: 0.9;
+}
+
+.send-button.is-filled {
+  background: var(--send-active);
 }
 
 .stop-button {
@@ -460,47 +591,253 @@
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  border: 1px solid var(--border-strong);
+  background: var(--bg-hover);
   color: var(--text-secondary);
+  transition: background 0.12s ease;
 }
 
 .stop-button:hover {
+  background: var(--bg-active);
+}
+
+/* ---------- the model and thinking controls ---------- */
+
+/* A quiet pill rather than a control with an outline of its own: the composer
+   around it is already a distinct surface, and a second box inside would read
+   as a second field. */
+.menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.menu-trigger:hover,
+.menu-trigger[aria-expanded='true'] {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* A model name is an identifier, not a sentence: cut it off rather than let it
+   wrap and grow the row. */
+.menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Above the button, because every composer in this app sits at the bottom of
+   its window. */
+.menu-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  min-width: 200px;
+  max-width: 320px;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
+}
+
+/* The list scrolls, not the panel: the thinking row below it is a control, and
+   a long list of models would otherwise carry it off the top of the panel just
+   as someone reached for it. */
+.menu-list {
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A hairline, and one of the few left in the app: it is a separator rather than
+   the outline of a box, and without it the dial reads as one more row of the
+   list - something to pick, instead of something to set. */
+.menu-foot {
+  margin-top: 4px;
+  padding: 8px 6px 4px;
+  border-top: 1px solid var(--border);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+}
+
+.menu-item:hover {
   background: var(--bg-hover);
 }
 
-/* ---------- token ring ---------- */
+.menu-item.is-selected {
+  color: var(--text);
+}
 
-.token-ring {
-  position: relative;
-  flex: 0 0 auto;
-  display: inline-flex;
+.menu-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- the thinking dial ---------- */
+
+/* Four stops in a row - 关 and then the three strengths - so the setting is
+   where the thumb is, and nothing has to light up to say which one it is. It
+   was a switch while there were two answers to give; four is a position.
+
+   It sits at the foot of the model panel, under a hairline: the names above it
+   are things to pick, this is a thing to set. The word that names it stays,
+   because a lone slider does not say what it sets. */
+.think-dial {
+  --thumb: 13px;
+  /* Set inline by the component, 0 at 关 and 1 at max. The filled part of a
+     range input's track is a pseudo-element, so this is the one thing about the
+     current stop that cannot be worked out here. */
+  --thumb-color: var(--text-muted);
+
+  display: flex;
   align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
+  gap: 8px;
+  width: 100%;
 }
 
-.token-ring svg {
-  position: absolute;
-  inset: 0;
-  transform: rotate(-90deg);
+.think-dial.is-on {
+  --thumb-color: var(--accent-strong);
 }
 
-.token-ring .track {
-  stroke: var(--border-strong);
-  fill: none;
+/* Reaching for the thumb is what darkens it - the dial has no box of its own to
+   light up. Off the leftmost stop it stays blue while hovered: there it is not
+   just a thumb any more, it is the app setting something. */
+.think-dial:hover {
+  --thumb-color: var(--text-secondary);
 }
 
-.token-ring .value {
-  stroke: var(--accent-strong);
-  fill: none;
-  transition: stroke-dashoffset 0.3s ease;
+.think-dial.is-on:hover {
+  --thumb-color: var(--accent-strong);
 }
 
-.token-ring .percent {
-  font-size: 10px;
+.think-dial-label,
+.think-dial-value {
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.think-dial-label {
   color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+}
+
+/* As wide as `high` and never narrower, so the model name beside it does not
+   shift left and right as the thumb moves. Muted at 关 and accented off it, for
+   the same reason the thumb is: blue is this app setting a field, grey is the
+   profile answering for itself. */
+.think-dial-value {
+  min-width: 28px;
+  color: var(--text-muted);
+  transition: color 0.12s ease;
+}
+
+.think-dial.is-on .think-dial-value {
+  color: var(--accent-strong);
+}
+
+/* Takes whatever the panel leaves it, so all four stops are far enough apart to
+   land on; `min-width: 0` is what lets a flex item shrink rather than push the
+   word on its right out of the panel. */
+.think-slider {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 30px;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  background: none;
+  cursor: pointer;
+}
+
+/* The thumb carries the focus halo, not the box: the composer around it is
+   already glowing, and a ring on the slider too would be two answers to the
+   same question. */
+.think-slider:focus-visible {
+  outline: none;
+}
+
+.think-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: var(--ring-accent);
+}
+
+.think-slider:focus-visible::-moz-range-thumb {
+  box-shadow: var(--ring-accent);
+}
+
+/* The fill stops at the centre of the thumb rather than at `--filled` of the
+   width, because an end stop does not put the thumb at an end of the track: it
+   travels from half a thumb in to half a thumb short. */
+.think-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    to right,
+    var(--accent-strong) 0 calc(var(--filled) * (100% - var(--thumb)) + var(--thumb) / 2),
+    var(--border-strong) calc(var(--filled) * (100% - var(--thumb)) + var(--thumb) / 2) 100%
+  );
+}
+
+.think-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--thumb);
+  height: var(--thumb);
+  /* WebKit lines the thumb's top up with the track's, so the 3px track is made
+     into the thumb's centre by hand. */
+  margin-top: calc((3px - var(--thumb)) / 2);
+  border: none;
+  border-radius: 50%;
+  background: var(--thumb-color);
+}
+
+/* Firefox draws the filled part itself, which is the same picture with none of
+   the arithmetic above. */
+.think-slider::-moz-range-track {
+  height: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+
+.think-slider::-moz-range-progress {
+  height: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-strong);
+}
+
+.think-slider::-moz-range-thumb {
+  width: var(--thumb);
+  height: var(--thumb);
+  border: none;
+  border-radius: 50%;
+  background: var(--thumb-color);
 }
 
 /* ---------- actions ---------- */
@@ -543,7 +880,6 @@
   gap: 6px;
   max-width: 260px;
   padding: 3px 10px;
-  border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--bg-subtle);
   color: var(--text-secondary);
@@ -599,21 +935,39 @@
 /* ---------- setup ---------- */
 
 .setup {
-  min-height: 100%;
+  /* `height` rather than `min-height`, and a scroll of its own. Once the model
+     form grew its call parameters the card could be taller than a short window,
+     and anything past the bottom of the shell is clipped by `.app`'s
+     `overflow: hidden` - which made the top of the card unreachable too. */
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 40px 20px;
 }
 
 .setup-card {
+  position: relative;
+  /* Auto margins rather than centring the container: they absorb the slack when
+     there is any and collapse to nothing when there is not, so a card that does
+     not fit starts at the top where it can be scrolled to. */
+  margin: auto;
   width: 100%;
   max-width: 520px;
   padding: 30px 32px 26px;
-  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg);
-  box-shadow: var(--shadow-sm);
+  /* The card is white on a white page, so the shadow is not decoration - it is
+     the only thing drawing its edge now that the outline is gone. */
+  box-shadow: var(--shadow-input);
+}
+
+/* The card is padded enough that pulling the button 12px in from the corner
+   lands it clear of the title without reserving space in the text flow. */
+.setup-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
 }
 
 .setup-title {
@@ -626,6 +980,137 @@
   margin: 0 0 22px;
   color: var(--text-muted);
   font-size: 14px;
+}
+
+/* Once configured, the same card holds a list on the left and one panel on the
+   right. Wider, because the panel would otherwise be narrower than the wizard's
+   single column next to a list that no longer has anything to sit beside. */
+.setup-card.is-manager {
+  max-width: 900px;
+}
+
+.setup-layout {
+  display: grid;
+  /* `minmax(0, 1fr)` rather than `1fr`: without it a long unbroken line in a
+     prompt box would widen the column instead of wrapping inside it. */
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+
+.setup-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setup-tab {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 14px;
+  text-decoration: none;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.setup-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.setup-tab.is-active {
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.setup-panel {
+  /* The panel is the page's content here; a hairline on the left would be
+     decoration pretending to be a boundary, and the gap already says it. */
+  min-height: 220px;
+}
+
+.setup-empty {
+  margin: 0 0 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.setup-hint {
+  margin: 12px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.profile-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.profile-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 13px;
+  border-radius: var(--radius-md);
+  /* A fill rather than a line, so the row still separates from the white card
+     it sits on without drawing a box around every entry in the list. */
+  background: var(--bg-subtle);
+}
+
+/* Being edited is said with colour, not with a coloured border: the row tinted
+   towards the accent stands out among the grey ones at a glance. */
+.profile-row.is-editing {
+  background: var(--accent-soft);
+}
+
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.badge {
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+
+/* The same shape, saying nothing happened: "this is still the default" is not an
+   achievement and should not be coloured like one. */
+.badge-quiet {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}
+
+.profile-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.profile-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.setup-card.is-manager .setup-actions {
+  margin-top: 16px;
 }
 
 .setup-steps {
@@ -679,22 +1164,121 @@
   color: var(--text-secondary);
 }
 
+/* Two short fields on one row. Four call parameters stacked a row each made the
+   form taller than the list of profiles it belongs to. */
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 14px;
+}
+
+/* A label with something to its right: whether a prompt is still the built-in
+   one, and the button that puts it back. */
+.field-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-head > label {
+  /* Same as a plain label. `auto` rather than a spacer element keeps whatever
+     follows at the far end of the row. */
+  margin-right: auto;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* The line between the boxes that describe the model and the ones that describe
+   how it is called. */
+.form-group-title {
+  margin: 24px 0 12px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .field .hint {
   color: var(--text-muted);
   font-size: 12px;
 }
 
-.field input {
-  width: 100%;
-  padding: 9px 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  outline: none;
-  transition: border-color 0.12s ease;
+/* The directory in use, spelled out. Shown rather than implied, because editing
+   this field changes which data set the whole app is looking at. */
+.field .current-dir {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
-.field input:focus {
-  border-color: var(--accent);
+.field .current-dir code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.field input,
+.field textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  outline: none;
+  /* A fill instead of an outline. The field is still visibly a field, and the
+     settings page stops looking like a stack of boxes. */
+  background: var(--bg-subtle);
+  transition: box-shadow 0.12s ease;
+}
+
+.field textarea {
+  /* A prompt is a paragraph, not a value: room to read it, and taller only when
+     the user says so. */
+  min-height: 120px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.field input:focus,
+.field textarea:focus {
+  box-shadow: var(--ring-accent-tight);
+}
+
+/* A field with something you can do to it: the input keeps its shape and the
+   button sits inside its right edge, rather than beside it, so the row still
+   reads as one control. */
+.field-control {
+  position: relative;
+  display: flex;
+}
+
+.field-control input {
+  flex: 1;
+  min-width: 0;
+  /* Room for the button, so a long value never runs underneath it. */
+  padding-right: 42px;
+}
+
+.field .field-action {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+}
+
+/* Said under the box it is about, at the size of the hint it replaces. */
+.field .field-error {
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bad) 12%, var(--bg));
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 
 .setup-actions {
@@ -709,9 +1293,11 @@
 }
 
 .button {
-  padding: 8px 18px;
+  /* One pixel more than before on each side: the buttons used to carry a
+     transparent border, and with every one of them filled now there is nothing
+     left for it to do. */
+  padding: 9px 19px;
   border-radius: var(--radius-sm);
-  border: 1px solid transparent;
   font-size: 14px;
   transition:
     background 0.12s ease,
@@ -732,13 +1318,20 @@
   cursor: default;
 }
 
+/* Filled as well. With nothing outlined any more, the two buttons in a dialog
+   are told apart by colour: grey is "go back", the accent is "go ahead". */
 .button-ghost {
-  border-color: var(--border-strong);
+  background: var(--bg-subtle);
   color: var(--text-secondary);
 }
 
 .button-ghost:hover {
   background: var(--bg-hover);
+}
+
+.button-small {
+  padding: 4px 11px;
+  font-size: 12.5px;
 }
 
 .form-error {
@@ -754,4 +1347,79 @@
   margin-top: 14px;
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+/* ---------- confirm dialog ---------- */
+
+/* `<dialog>` positioned by showModal(): the UA centres it with `margin: auto`
+   and insets, and this only takes away the parts of its default look that are
+   not wanted here - the frame, the padding, the system colours. No box of its
+   own, so that a click landing on the element itself is a click on the backdrop
+   and nothing else. */
+.confirm-dialog {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  max-width: none;
+  max-height: none;
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(16, 24, 40, 0.26);
+}
+
+.confirm-box {
+  position: relative;
+  width: min(400px, calc(100vw - 40px));
+  padding: 22px 24px 18px;
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
+}
+
+/* Tighter to the corner than the card's, because the box is smaller and its
+   padding is shallower. */
+.confirm-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+}
+
+.confirm-title {
+  margin: 0;
+  /* Room for the close button, so a long question does not run underneath it. */
+  padding-right: 26px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.confirm-body {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+/* Filled, with the red in the words rather than in a line around them: `--bad`
+   is a wash meant to sit behind things, and `--bad-strong` is the same red dark
+   enough to be read as text. */
+.button-danger {
+  background: color-mix(in srgb, var(--bad) 16%, var(--bg));
+  color: var(--bad-strong);
+}
+
+.button-danger:hover {
+  background: color-mix(in srgb, var(--bad) 28%, var(--bg));
 }

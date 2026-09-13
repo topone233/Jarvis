@@ -16,24 +16,46 @@
   --text-secondary: #565869;
   --text-muted: #8e8ea0;
 
-  --accent: #7cb7e8;
+  /* Two steps, no base: everything that used to reach for `--accent` was
+     drawing a 1px line with it, and there are no lines left to draw. */
   --accent-strong: #4f9ed8;
   --accent-soft: #eef6fd;
 
-  --user-bubble: #e8f1fb;
+  --user-bubble: #e8f3fe;
+
+  /* The send button. Pale while there is nothing to send, and the one
+     saturated colour in the app once there is. */
+  --send-idle: #b0c1ff;
+  --send-active: #3964fe;
 
   --ok: #6fb587;
   --warn: #d9a25f;
   --bad: #c98a8a;
+  /* The same red, dark enough to be read as text on white. `--bad` is a wash,
+     used behind things; this one is for the words that say what will happen. */
+  --bad-strong: #b07070;
+
+  /* Scrollbars, since the platform's own are not used. */
+  --scroll-thumb: #d6d8db;
+  --scroll-thumb-hover: #c1c4ca;
 
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 18px;
   --radius-pill: 999px;
 
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
-  --shadow-input: 0 2px 10px rgba(16, 24, 40, 0.06);
+  /* Two layers: the near one gives the thing an edge, the far one lifts it off
+     the page. This is what replaces a 1px outline on anything whose fill is the
+     same white as what is behind it - the composer, the setup card. */
+  --shadow-input: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 20px rgba(16, 24, 40, 0.06);
   --shadow-pop: 0 6px 20px rgba(16, 24, 40, 0.1);
+  /* What the chat header wears instead of a rule under it. Cast downward only,
+     and spent by the time it reaches the first line of the conversation. */
+  --shadow-header: 0 4px 12px -6px rgba(16, 24, 40, 0.16);
+
+  /* The halo a focused field or the focused composer wears. Never a line. */
+  --ring-accent: 0 0 0 4px var(--accent-soft);
+  --ring-accent-tight: 0 0 0 3px var(--accent-soft);
 
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC',

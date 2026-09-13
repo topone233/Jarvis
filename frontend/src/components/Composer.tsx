@@ -7,25 +7,30 @@
  * half-finished word.
  */
 
-import { useLayoutEffect, useRef, type KeyboardEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 
-import { TokenRing } from './TokenRing'
 import { SendIcon, StopIcon } from './icons'
 
 export interface ComposerProps {
   /** True while an answer is being produced, which turns the send button into a
    *  stop button. Left false where there is nothing to stop. */
   busy?: boolean
-  remaining: number | null
-  total: number | null
+  /** The controls the page wants beside the send button - the model, the
+   *  thinking dial. The composer decides where they go, not what they are. */
+  controls?: ReactNode
   onSend(text: string): void
   onStop?: () => void
 }
 
 const MAX_HEIGHT = 220
 
-export function Composer({ busy = false, remaining, total, onSend, onStop }: ComposerProps) {
+export function Composer({ busy = false, controls, onSend, onStop }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement | null>(null)
+  // Whether there is anything worth sending. The textarea is uncontrolled - the
+  // height is set from its own scrollHeight and never from React state - so this
+  // is the one thing about its contents the render needs to see. Whitespace
+  // does not count, which is the same rule `submit` refuses on.
+  const [filled, setFilled] = useState(false)
 
   // Grow with the text up to a ceiling, then scroll inside the box.
   const fit = () => {
@@ -39,6 +44,12 @@ export function Composer({ busy = false, remaining, total, onSend, onStop }: Com
 
   useLayoutEffect(fit)
 
+  function changed() {
+    fit()
+    const element = ref.current
+    setFilled(element !== null && element.value.trim() !== '')
+  }
+
   function submit() {
     const element = ref.current
     if (element === null || busy) {
@@ -50,6 +61,7 @@ export function Composer({ busy = false, remaining, total, onSend, onStop }: Com
     }
     element.value = ''
     fit()
+    setFilled(false)
     onSend(text)
   }
 
@@ -72,16 +84,21 @@ export function Composer({ busy = false, remaining, total, onSend, onStop }: Com
             ref={ref}
             rows={1}
             placeholder="给 Jarvis 发消息"
-            onChange={fit}
+            onChange={changed}
             onKeyDown={onKeyDown}
           />
-          <TokenRing remaining={remaining} total={total} />
+          {controls}
           {busy && onStop ? (
             <button type="button" className="stop-button" title="停止生成" onClick={onStop}>
               <StopIcon size={16} />
             </button>
           ) : (
-            <button type="button" className="send-button" title="发送" onClick={submit}>
+            <button
+              type="button"
+              className={filled ? 'send-button is-filled' : 'send-button'}
+              title="发送"
+              onClick={submit}
+            >
               <SendIcon size={17} />
             </button>
           )}
