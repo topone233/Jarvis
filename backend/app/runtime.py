@@ -135,7 +135,7 @@ class CoreServices:
         provider = OpenAICompatibleProvider(secrets or KeyringSecretStore())
         knowledge = KnowledgeService(store, provider)
         context = ContextManager(store, provider, knowledge)
-        memory = MemoryService(store, provider)
+        memory = MemoryService(store)
         return cls(
             database=database,
             store=store,

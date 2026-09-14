@@ -25,7 +25,13 @@ function delta(text: string, messageId = MESSAGE_ID): RunEvent {
   return { type: 'message.delta', messageId, delta: text }
 }
 
-function audit(stage: string, state: string, sequence: number, createdAt = RAN_AT): RunEvent {
+function audit(
+  stage: string,
+  state: string,
+  sequence: number,
+  createdAt = RAN_AT,
+  payload: Record<string, unknown> = {},
+): RunEvent {
   return {
     type: 'audit',
     record: {
@@ -34,7 +40,7 @@ function audit(stage: string, state: string, sequence: number, createdAt = RAN_A
       sequence,
       stage,
       state,
-      payload: {},
+      payload,
       created_at: createdAt,
     },
   }
@@ -127,6 +133,23 @@ describe('reduce', () => {
       },
     ])
     expect(stageMillis(state.audits[0], 0)).toBe(3140)
+  })
+
+  it('merges the payloads of the records that make up a stage', () => {
+    // The model's name is announced when the stage starts, its token usage
+    // when it ends. Replacing instead of merging would lose the name the
+    // moment the answer finished - the row would say how many tokens it cost
+    // but not with what model.
+    const state = run([
+      audit('model_stream', 'running', 1, RAN_AT, { model: 'deepseek-chat' }),
+      audit('model_stream', 'completed', 2, DONE_AT, {
+        usage: { prompt_tokens: 120, completion_tokens: 45 },
+      }),
+    ])
+    expect(state.audits[0].payload).toEqual({
+      model: 'deepseek-chat',
+      usage: { prompt_tokens: 120, completion_tokens: 45 },
+    })
   })
 
   it('times a stage that is still running against the clock', () => {

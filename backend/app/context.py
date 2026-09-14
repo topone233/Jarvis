@@ -8,7 +8,13 @@ from app.errors import ProviderError
 from app.knowledge import KnowledgeService
 from app.prompts import PROMPT_VERSION
 from app.provider import OpenAICompatibleProvider
-from app.settings import COMPACT_PERCENT_DEFAULT, COMPACTION_PROMPT, SYSTEM_PROMPT, read_prompt
+from app.settings import (
+    COMPACT_PERCENT_DEFAULT,
+    COMPACTION_PROMPT,
+    MEMORY_PROMPT,
+    SYSTEM_PROMPT,
+    read_prompt,
+)
 from app.store import Store
 from app.tokens import estimate_tokens
 
@@ -17,6 +23,11 @@ from app.tokens import estimate_tokens
 class ContextBundle:
     messages: list[dict[str, str]]
     citations: list[dict[str, Any]]
+    # The memories injected into the system instruction, kept for the audit
+    # trail: the model can only speak about memories it was shown, so the
+    # retrieval step reports this list and the screen can say what the memory
+    # step had to work with.
+    memories: list[dict[str, Any]]
     input_token_estimate: int
     remaining_token_estimate: int
 
@@ -53,7 +64,14 @@ class ContextManager:
         compact_threshold = max(2_000, int(input_budget * compact_percent / 100))
         if uncompressed_tokens + artifact_tokens < compact_threshold:
             return None
-        return await self.compact(conversation_id, profile, force=False)
+        folded = await self.compact(conversation_id, profile, force=False)
+        # `compact` hands back the previous artifact untouched when there was
+        # nothing left to fold into it. That is "nothing happened" for this
+        # caller: the audit step must not report a compaction that did not
+        # occur, and the id is the only honest way to tell the two apart.
+        if folded is None or (artifact is not None and folded["id"] == artifact["id"]):
+            return None
+        return folded
 
     async def compact(
         self,
@@ -126,6 +144,7 @@ class ContextManager:
         return ContextBundle(
             messages=model_messages,
             citations=citations,
+            memories=memories,
             input_token_estimate=estimate,
             remaining_token_estimate=remaining,
         )
@@ -204,6 +223,13 @@ class ContextManager:
                 for citation in citations
             )
             sections.append(f"<knowledge>\n{sources}\n</knowledge>")
+        # Memory management rides on the main call: the directive tells the
+        # model how to append its ```memory block, and it can name memories
+        # only because the <memory> section above listed them. Cleared like
+        # any other prompt - a cleared memory prompt is a choice too.
+        directive = read_prompt(self.store, MEMORY_PROMPT)
+        if directive:
+            sections.append(directive)
         # Blank sections are dropped rather than joined, so a cleared prompt
         # leaves the memories or the history opening the message instead of a
         # run of empty lines ahead of them.

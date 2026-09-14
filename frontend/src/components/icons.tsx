@@ -145,6 +145,15 @@ export function MessageIcon(props: IconProps) {
   )
 }
 
+/** A bookmark: the things Jarvis keeps. */
+export function BookmarkIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M6.5 5.5A1.5 1.5 0 0 1 8 4h8a1.5 1.5 0 0 1 1.5 1.5V20l-5.5-4-5.5 4Z" />
+    </Icon>
+  )
+}
+
 export function FolderIcon(props: IconProps) {
   return (
     <Icon {...props}>

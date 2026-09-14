@@ -10,7 +10,7 @@
 import { NavLink } from 'react-router'
 
 import type { Conversation } from '../api/types'
-import { MessageIcon, PanelIcon, PlusIcon, TrashIcon } from './icons'
+import { BookmarkIcon, MessageIcon, PanelIcon, PlusIcon, TrashIcon } from './icons'
 
 export interface SidebarProps {
   conversations: Conversation[]
@@ -73,6 +73,10 @@ export function Sidebar({ conversations, activeId, collapsed, onToggle, onDelete
       </div>
 
       <div className="sidebar-bottom">
+        <NavLink to="/memories" className="sidebar-item" title="记忆">
+          <BookmarkIcon size={17} />
+          {!collapsed && <span className="label">记忆</span>}
+        </NavLink>
         <NavLink to="/setup" className="sidebar-item" title="设置">
           <PanelIcon size={17} />
           {!collapsed && <span className="label">设置</span>}

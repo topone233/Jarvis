@@ -16,6 +16,7 @@ import { useConfirm } from './hooks/useConfirm'
 import { useConversations } from './hooks/useConversations'
 import { useToast } from './hooks/useToast'
 import { ChatPage } from './pages/ChatPage'
+import { MemoryPage } from './pages/MemoryPage'
 import { NewChatPage } from './pages/NewChatPage'
 import { SetupPage } from './pages/SetupPage'
 
@@ -89,7 +90,9 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
   const [backTo, setBackTo] = useState('/')
 
   useEffect(() => {
-    if (location.pathname !== '/setup') {
+    // Both full-screen pages are excluded: what came before either one is what
+    // its close button goes back to.
+    if (location.pathname !== '/setup' && location.pathname !== '/memories') {
       setBackTo(location.pathname)
     }
   }, [location.pathname])
@@ -147,6 +150,7 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
             path="/c/:conversationId"
             element={<ConversationRoute conversations={conversations} />}
           />
+          <Route path="/memories" element={<MemoryPage onClose={() => navigate(backTo)} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

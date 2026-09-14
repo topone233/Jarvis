@@ -176,6 +176,49 @@ export interface RunEventRecord {
   created_at: string
 }
 
+/**
+ * One remembered fact, as `GET /api/memories` returns it (`memories` table).
+ * Only active rows come back - superseded and deleted ones are the backend's
+ * history, not the page's.
+ */
+export interface Memory {
+  id: string
+  /** `global`, or `project` when it belongs to one project. */
+  scope: string
+  project_id: string | null
+  kind: string
+  memory_key: string
+  content: string
+  confidence: number
+  confirmation_count: number
+  /** The message the fact was said in. Null once that message was deleted. */
+  source_message_id: string | null
+  source_excerpt: string
+  created_at: string
+  updated_at: string
+}
+
+/** The body of PATCH /api/memories/{id}: keys left out keep their value. */
+export interface MemoryUpdate {
+  memory_key?: string
+  content?: string
+  confidence?: number
+}
+
+/**
+ * One entry of the recycle bin (`GET /api/trash`). `snapshot` is the row as it
+ * was when it was deleted, so a deleted memory can be shown without a way to
+ * read soft-deleted rows back.
+ */
+export interface TrashItem {
+  id: string
+  entity_type: string
+  entity_id: string
+  snapshot: Record<string, unknown>
+  deleted_at: string
+  restored_at: string | null
+}
+
 export interface Health {
   status: string
   configured: boolean

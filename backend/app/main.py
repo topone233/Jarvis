@@ -279,7 +279,14 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     async def delete_conversation(
         conversation_id: str, core: CoreServices = Depends(services)
     ) -> None:
-        core.store.delete_conversation(conversation_id)
+        # Permanent, by the user's decision: no recycle bin page exists to send
+        # it to, and keeping soft-deleted rows behind an unreachable API was
+        # the garbage the user asked not to leave behind. A run still writing
+        # into this conversation is flagged cancelled first so its producer
+        # stops instead of failing against rows that no longer exist.
+        for run_id in core.store.list_active_run_ids(conversation_id):
+            core.run_registry.cancel(run_id)
+        core.store.delete_conversation_permanently(conversation_id)
 
     @app.get("/api/conversations/{conversation_id}/messages")
     async def list_messages(

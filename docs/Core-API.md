@@ -129,6 +129,16 @@ audit trail is the durable record; the broadcast above is only for the live run.
 
 ## Memory and knowledge
 
+Memory is decided by the main model inside the reply itself. The assembled
+system instruction ends with a directive (the user-editable `memory_prompt`)
+telling the model to append a fenced ```memory JSON block to the reply when the
+turn genuinely contains something to remember or something the user asked to
+forget, and never otherwise. The producer holds that tail back from the stream,
+strips it from the stored message once its actions are carried out, and audits
+them as a `memory_write` stage - which exists **only when there were actions**.
+A plain answer has no memory step at all, and no extra model call. A tail that
+fails to produce actions is treated as ordinary reply text and shown in full.
+
 - GET /api/memories?project_id={id}, PATCH and DELETE /api/memories/{id}
 - POST /api/messages/{id}/feedback with kind equal to up or down
 - POST /api/knowledge/import is multipart with files, optional project_id,
@@ -137,23 +147,33 @@ audit trail is the durable record; the broadcast above is only for the live run.
 - GET /api/knowledge/search?query=...&project_id=...
 - DELETE /api/knowledge/documents/{id}
 
+DELETE /api/memories/{id} soft-deletes: the row goes to the recycle bin and can
+be restored there (POST /api/trash/{trash_id}/restore). The frontend's memory
+page has a deleted section for exactly that, plus a permanent delete, which is
+DELETE /api/trash/{trash_id} on the bin entry.
+
 Only text, Markdown, and common source-code formats are accepted in this
 release. Imports are copied into the user-selected Jarvis data directory; the
 service never alters the original source file or folder.
 
 ## Trash
 
-Deleting a project, conversation, memory, model profile, or knowledge document
-moves it to the trash instead of erasing it.
+Deleting a memory, model profile, or knowledge document moves it to the trash
+instead of erasing it. **Deleting a conversation erases it**, permanently and
+physically: messages, the run log, audit events, compaction records, feedback,
+and any bin entries that pointed into it are deleted for real - a decision the
+user made on 2026-09-14, replacing the earlier recycle-bin semantics for
+conversations. Memories referenced by those messages lose their
+source-message pointer, nothing else.
 
 - GET /api/trash lists the trashed items newest first.
 - POST /api/trash/{trash_id}/restore puts the item back and returns it.
 - DELETE /api/trash/{trash_id} removes the entry from the trash, after which it
   can no longer be restored.
 
-DELETE /api/trash/{trash_id} is not a physical erase. The soft-deleted row stays
-in its table and its content remains in the database file, because
-assistant_runs references messages by foreign key and the run log is the audit
-trail. The item simply stops being reachable through the API. If you need data
-actually gone from disk, that is a separate feature and does not exist yet.
+DELETE /api/trash/{trash_id} is not a physical erase of the row it names - the
+soft-deleted row stays in its table so a restore is possible, and for messages
+because assistant_runs references them by foreign key. If you need data
+actually gone from disk, delete the conversation it belongs to, or discard the
+bin entry and drop the database file.
 

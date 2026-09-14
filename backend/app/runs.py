@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.errors import ProviderError, ValidationError
+from app.memory import split_memory_block
 from app.runtime import CoreServices, RunBroadcast
 from app.schemas import ThinkingLevel
 from app.store import INTERRUPTED_ERROR
@@ -214,11 +215,18 @@ class RunService:
 
             audit("context_compaction", "running", {"trigger": "threshold_check"})
             artifact = await self.services.context.maybe_compact(conversation["id"], profile)
-            audit(
-                "context_compaction",
-                "completed",
-                {"artifact_id": artifact["id"] if artifact else None},
-            )
+            if artifact is None:
+                audit("context_compaction", "completed", {"compacted": False})
+            else:
+                audit(
+                    "context_compaction",
+                    "completed",
+                    {
+                        "compacted": True,
+                        "artifact_id": artifact["id"],
+                        "range": [artifact["start_ordinal"], artifact["end_ordinal"]],
+                    },
+                )
             audit("context_retrieval", "running", {})
             bundle = await self.services.context.build(
                 conversation["id"],
@@ -237,6 +245,8 @@ class RunService:
                     "input_token_estimate": bundle.input_token_estimate,
                     "remaining_token_estimate": bundle.remaining_token_estimate,
                     "citation_count": len(bundle.citations),
+                    "memory_count": len(bundle.memories),
+                    "memory_keys": [memory["memory_key"] for memory in bundle.memories],
                 },
             )
             broadcast.emit(
@@ -247,7 +257,18 @@ class RunService:
                     "remaining_token_estimate": bundle.remaining_token_estimate,
                 },
             )
-            audit("model_stream", "running", {"model": profile["chat_model"]})
+            # The name that goes on the wire is the one worth auditing - the
+            # composer may have named another model for this one run, and the
+            # profile's own name would be wrong here.
+            audit(
+                "model_stream",
+                "running",
+                {"model": choice.chat_model or profile["chat_model"]},
+            )
+            # Accumulated raw, tail block included; everything shown or stored
+            # below is the visible prefix of it. While the model is writing a
+            # ```memory block the prefix simply stops growing, so no half-open
+            # JSON ever reaches the screen or a checkpoint.
             response_parts: list[str] = []
             reasoning_parts: list[str] = []
             usage: dict[str, Any] | None = None
@@ -260,7 +281,7 @@ class RunService:
                 thinking=choice.thinking,
             ):
                 if registry.is_cancelled(run_id):
-                    partial = "".join(response_parts)
+                    partial, _ = split_memory_block("".join(response_parts))
                     metadata = {
                         "run_id": run_id,
                         "citations": bundle.citations,
@@ -292,7 +313,7 @@ class RunService:
                 else:
                     continue
 
-                content = "".join(response_parts)
+                content, _ = split_memory_block("".join(response_parts))
                 reasoning = "".join(reasoning_parts)
                 broadcast.show_text(content=content, reasoning=reasoning)
                 now = time.monotonic()
@@ -311,7 +332,25 @@ class RunService:
                     flushed = len(content) + len(reasoning)
                     flushed_at = now
 
-            response = "".join(response_parts).strip()
+            raw = "".join(response_parts).strip()
+            # What looked like a memory tail while streaming gets its verdict
+            # here. A block that produces real actions is stripped and carried
+            # out; anything else - an answer that just happens to end in such
+            # a fence, or JSON where nothing survived validation - is content
+            # like any other and is shown in full.
+            response, block = split_memory_block(raw)
+            actions: list[dict[str, Any]] = []
+            if block is not None:
+                actions = self.services.memory.apply_reply(
+                    reply=raw,
+                    user_content=user_message["content"],
+                    user_message_id=user_message["id"],
+                    project_id=conversation["project_id"],
+                )
+                if not actions:
+                    response = raw
+                    block = None
+            response = response.strip()
             if not response:
                 response = "模型未返回可显示的文本。"
             metadata = {
@@ -330,49 +369,56 @@ class RunService:
             )
             audit("model_stream", "completed", {"usage": usage or {}})
             broadcast.show_text(content=response, reasoning="".join(reasoning_parts))
-            # Sent before the memory write so the answer appears at once; the
-            # stream stays open until the write reports back.
+            # The answer is on its way before the memory step reports, so the
+            # stream stays open only for the moment the actions take.
             broadcast.emit(
                 "message.completed",
                 {"message_id": assistant_id, "content": response, "metadata": metadata},
             )
-            audit("memory_write", "running", {})
-            try:
-                memories = await self.services.memory.extract_and_store(
-                    profile=profile,
-                    user_content=user_message["content"],
-                    user_message_id=user_message["id"],
-                    project_id=conversation["project_id"],
+            if actions:
+                # The step exists only when it did something - a block that
+                # parsed to no valid actions leaves no trace at all, which is
+                # what keeps a plain answer free of a "写入记忆" row. The work
+                # is local and takes milliseconds, so both records carry
+                # effectively the same moment.
+                audit("memory_write", "running", {})
+                audit(
+                    "memory_write",
+                    "completed",
+                    {"count": len(actions), "items": actions},
                 )
-            except ProviderError as error:
-                audit("memory_write", "skipped", {"reason": str(error)})
-            else:
-                audit("memory_write", "completed", {"count": len(memories), "items": memories})
             broadcast.close()
         except ProviderError as error:
-            partial = store.get_message(broadcast.assistant_message_id)["content"]
-            if not partial:
-                partial = "模型服务暂时无法完成本次回复。"
-            store.update_message(
-                broadcast.assistant_message_id,
-                partial,
-                {"run_id": run_id, "error": str(error)},
-            )
-            store.update_run(
-                run_id,
-                status="failed",
-                error_message=str(error),
-                output_token_estimate=estimate_tokens(partial),
-                completed=True,
-            )
-            audit("model_stream", "failed", {"error": str(error)})
+            # Best-effort bookkeeping: the conversation may already have been
+            # deleted - deleting one cancels its runs and erases their rows -
+            # and a write failing here must not mask the terminal event, which
+            # the finish below (and the finally after it) guarantees.
+            with contextlib.suppress(Exception):
+                partial = store.get_message(broadcast.assistant_message_id)["content"]
+                if not partial:
+                    partial = "模型服务暂时无法完成本次回复。"
+                store.update_message(
+                    broadcast.assistant_message_id,
+                    partial,
+                    {"run_id": run_id, "error": str(error)},
+                )
+                store.update_run(
+                    run_id,
+                    status="failed",
+                    error_message=str(error),
+                    output_token_estimate=estimate_tokens(partial),
+                    completed=True,
+                )
+                audit("model_stream", "failed", {"error": str(error)})
             broadcast.finish("run.failed", {"run_id": run_id, "error": str(error)})
         except Exception as error:
             # Anything unexpected still has to close the run: a subscriber left
-            # waiting on an open broadcast would hang forever.
+            # waiting on an open broadcast would hang forever. The audit is
+            # best-effort for the same reason as above.
             with contextlib.suppress(Exception):
                 store.update_run(run_id, status="failed", error_message=str(error), completed=True)
-            audit("model_stream", "failed", {"error": str(error)})
+            with contextlib.suppress(Exception):
+                audit("model_stream", "failed", {"error": str(error)})
             broadcast.finish("run.failed", {"run_id": run_id, "error": str(error)})
         finally:
             if not broadcast.closed:

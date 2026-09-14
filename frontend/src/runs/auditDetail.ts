@@ -1,0 +1,175 @@
+/**
+ * What each stage's audit payload is worth saying out loud.
+ *
+ * The payload arrives as a bag of fields the backend happened to record. This
+ * module is the one place that decides which of them are content - the lines
+ * shown when a row is expanded - and which belong on the row's summary line.
+ * Both are pure functions of the record, so a reloaded page draws the same
+ * words the live one did, from the same two sources: the live event and the
+ * trail read back from disk.
+ */
+
+import type { AuditRow } from './reducer'
+
+const STATE_LABELS: Record<string, string> = {
+  running: '',
+  completed: '',
+  cancelled: '已停止',
+  failed: '失败',
+  skipped: '已跳过',
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  created: '新增',
+  confirmed: '确认',
+  superseded: '更新',
+  forgotten: '忘记',
+}
+
+const KIND_LABELS: Record<string, string> = {
+  profile: '个人信息',
+  preference: '偏好',
+  fact: '事实',
+  decision: '决定',
+}
+
+/** The lines shown when the row is expanded; empty means there is nothing to expand. */
+export function detailLines(row: AuditRow): string[] {
+  const payload = row.payload ?? {}
+  switch (row.stage) {
+    case 'context_compaction':
+      return compactedLine(payload)
+    case 'context_retrieval':
+      return retrievalLines(payload)
+    case 'model_stream':
+      return modelLines(payload)
+    case 'memory_write':
+      return memoryLines(payload)
+    default:
+      return []
+  }
+}
+
+/** The short verdict on the row itself, beside the label. */
+export function summaryOf(row: AuditRow): string {
+  const parts: string[] = []
+  const stateNote = STATE_LABELS[row.state]
+  if (stateNote) {
+    parts.push(stateNote)
+  }
+
+  const payload = row.payload ?? {}
+  if (row.stage === 'memory_write' && typeof payload.count === 'number' && payload.count > 0) {
+    parts.push(`${payload.count} 条`)
+  }
+  if (row.stage === 'context_compaction' && payload.compacted === false) {
+    parts.push('未触发')
+  }
+  if (
+    row.stage === 'context_retrieval' &&
+    typeof payload.citation_count === 'number' &&
+    payload.citation_count > 0
+  ) {
+    parts.push(`引用 ${payload.citation_count} 条`)
+  }
+  if (typeof payload.reason === 'string' && payload.reason !== '') {
+    parts.push(payload.reason)
+  }
+
+  return parts.join(' · ')
+}
+
+function compactedLine(payload: Record<string, unknown>): string[] {
+  if (payload.compacted !== true || !Array.isArray(payload.range)) {
+    return []
+  }
+  const [from, to] = payload.range
+  if (typeof from !== 'number' || typeof to !== 'number') {
+    return []
+  }
+  return [`把第 ${from} 到 ${to} 条消息折叠成了一份摘要。`]
+}
+
+function retrievalLines(payload: Record<string, unknown>): string[] {
+  // Retrieval is the step that always runs, so its report is unconditional:
+  // "nothing matched" is content too, and the only alternative is a row that
+  // expands into silence - the complaint this whole module exists to answer.
+  const lines: string[] = []
+  if (typeof payload.input_token_estimate === 'number') {
+    const remaining =
+      typeof payload.remaining_token_estimate === 'number'
+        ? `，窗口剩 ${payload.remaining_token_estimate}`
+        : ''
+    lines.push(`上下文约 ${payload.input_token_estimate} tokens${remaining}`)
+  }
+  if (typeof payload.memory_count === 'number') {
+    const keys = Array.isArray(payload.memory_keys) ? payload.memory_keys.filter(isString) : []
+    lines.push(
+      keys.length > 0
+        ? `注入记忆 ${payload.memory_count} 条：${keys.join('、')}`
+        : `注入记忆 ${payload.memory_count} 条`,
+    )
+  }
+  if (typeof payload.citation_count === 'number') {
+    lines.push(
+      payload.citation_count > 0
+        ? `召回知识 ${payload.citation_count} 条，见回答下方的引用。`
+        : '召回知识 0 条',
+    )
+  }
+  return lines
+}
+
+function modelLines(payload: Record<string, unknown>): string[] {
+  const lines: string[] = []
+  if (typeof payload.model === 'string' && payload.model !== '') {
+    lines.push(`这一轮用的模型：${payload.model}`)
+  }
+  const usage = payload.usage
+  if (isRecord(usage)) {
+    const parts: string[] = []
+    if (typeof usage.prompt_tokens === 'number') {
+      parts.push(`输入 ${usage.prompt_tokens}`)
+    }
+    if (typeof usage.completion_tokens === 'number') {
+      parts.push(`输出 ${usage.completion_tokens}`)
+    }
+    if (parts.length > 0) {
+      lines.push(`token：${parts.join('，')}`)
+    }
+  }
+  return lines
+}
+
+function memoryLines(payload: Record<string, unknown>): string[] {
+  if (!Array.isArray(payload.items)) {
+    return []
+  }
+  return payload.items.map(actionLine).filter(isString)
+}
+
+function actionLine(item: unknown): string | null {
+  if (!isRecord(item)) {
+    return null
+  }
+  const action = ACTION_LABELS[String(item.action ?? '')]
+  if (action === undefined || !isRecord(item.memory)) {
+    return null
+  }
+  const memory = item.memory
+  const kind = KIND_LABELS[String(memory.kind ?? '')]
+  const kindPart = kind === undefined ? '' : `[${kind}] `
+  let line = `${action} · ${kindPart}${String(memory.memory_key ?? '')}：${String(memory.content ?? '')}`
+  if (item.action === 'forgotten' && typeof item.count === 'number' && item.count > 1) {
+    line += `（连同同键的共 ${item.count} 条）`
+  }
+  return line
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === 'string'
+}

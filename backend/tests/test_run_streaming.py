@@ -89,7 +89,6 @@ def paced(core: CoreServices) -> Any:
     ) -> PacedProvider:
         provider = PacedProvider(chunks, reasoning, tail)
         core.provider = provider  # type: ignore[assignment]
-        core.memory.provider = provider  # type: ignore[assignment]
         return provider
 
     return make
@@ -183,6 +182,64 @@ async def test_the_run_is_findable_before_a_single_token_arrives(
 
     provider.release.set()
     await _settle(core, run["id"])
+
+
+async def test_a_memory_tail_is_held_back_and_never_shown(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """The block the model appends for memory belongs to the app, not the user.
+
+    While it streams, the visible answer simply stops growing; once it parses,
+    the actions inside it are carried out and the answer on disk is the text
+    alone. The step it produces is the only sign any of it happened.
+    """
+    provider = paced(
+        ["回" * 500],
+        tail=[
+            "\n```memory\n"
+            '{"write": [{"kind": "preference", "key": "回复风格",'
+            ' "content": "喜欢简洁回答"}]}\n```\n'
+        ],
+    )
+    _, run = _begin(core, profile)
+    await provider.gated.wait()
+
+    # Checkpointed mid-stream: the visible prefix, never the tail behind it.
+    assert core.store.get_message(run["assistant_message_id"])["content"] == "回" * 500
+
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+    assert core.store.get_message(run["assistant_message_id"])["content"] == "回" * 500
+    assert [m["content"] for m in core.store.list_memories()] == ["喜欢简洁回答"]
+    stages = [
+        (event["stage"], event["state"])
+        for event in core.store.list_run_events(run["id"])
+        if event["stage"] == "memory_write"
+    ]
+    assert stages == [("memory_write", "running"), ("memory_write", "completed")]
+
+
+async def test_a_tail_that_never_parses_is_shown_after_all(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """A fence that turns out to be the answer's own content comes back.
+
+    The held-back text was withheld under the assumption it was a memory
+    block; the assumption failed, so the answer is shown in full and no
+    memory step exists.
+    """
+    provider = paced(["看到这段。"], tail=["\n```memory\n这不是 JSON\n```\n"])
+    _, run = _begin(core, profile)
+
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    assert (
+        core.store.get_message(run["assistant_message_id"])["content"]
+        == "看到这段。\n```memory\n这不是 JSON\n```"
+    )
+    assert core.store.list_memories() == []
+    assert all(event["stage"] != "memory_write" for event in core.store.list_run_events(run["id"]))
 
 
 async def test_regenerating_points_the_message_at_its_new_run(

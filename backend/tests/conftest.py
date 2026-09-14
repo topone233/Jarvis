@@ -41,13 +41,7 @@ class FakeProvider:
         chat_model: str | None = None,
         thinking: ThinkingLevel = "off",
     ) -> str:
-        del profile, chat_model, thinking
-        system = messages[0]["content"]
-        if "跨会话保存" in system:
-            return (
-                '[{"kind":"preference","key":"回复风格","content":"喜欢简洁回答",'
-                '"confidence":0.95}]'
-            )
+        del profile, messages, chat_model, thinking
         return (
             "## 背景\n已压缩的历史。\n\n## 决定与约束\n保留用户偏好。\n\n## 未完成事项\n继续实现。"
         )
@@ -75,7 +69,6 @@ def core(tmp_path: Path) -> CoreServices:
     services.provider = fake  # type: ignore[assignment]
     services.knowledge.provider = fake  # type: ignore[assignment]
     services.context.provider = fake  # type: ignore[assignment]
-    services.memory.provider = fake  # type: ignore[assignment]
     return services
 
 

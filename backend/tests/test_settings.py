@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.database import Database
-from app.prompts import BASE_INSTRUCTION
+from app.prompts import BASE_INSTRUCTION, MEMORY_MANAGEMENT_INSTRUCTION
 from app.provider import OpenAICompatibleProvider
 from app.runtime import CoreServices
 from app.schemas import ThinkingLevel
@@ -93,16 +93,39 @@ async def test_the_saved_system_prompt_is_the_one_the_model_is_given(
 
     bundle = await core.context.build(conversation["id"], profile, "你好")
 
-    assert bundle.messages[0] == {"role": "system", "content": "你是测试助手。"}
+    assert bundle.messages[0]["role"] == "system"
+    # The saved text opens the instruction; the memory directive may close it,
+    # which the next test pins exactly.
+    assert bundle.messages[0]["content"].startswith("你是测试助手。")
 
 
 @pytest.mark.asyncio
-async def test_a_cleared_system_prompt_sends_no_system_message(
+async def test_a_cleared_system_prompt_sends_only_the_memory_directive(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
-    # Empty is a choice the screen allows, and an empty system message is not
-    # how to carry it out - an endpoint may reject one outright.
+    """A cleared persona removes what the user wrote, not how the app remembers.
+
+    An empty system message is not how to carry a cleared prompt out - an
+    endpoint may reject one outright - but the memory directive is
+    infrastructure, and it rides in the system message on its own.
+    """
     core.store.set_setting("system_prompt", "")
+    conversation = core.store.create_conversation("新对话", None, profile["id"], False)
+
+    bundle = await core.context.build(conversation["id"], profile, "你好")
+
+    system = [message for message in bundle.messages if message["role"] == "system"]
+    assert len(system) == 1
+    assert system[0]["content"] == MEMORY_MANAGEMENT_INSTRUCTION
+
+
+@pytest.mark.asyncio
+async def test_a_cleared_memory_prompt_sends_no_system_message(
+    core: CoreServices, profile: dict[str, Any]
+) -> None:
+    """With nothing to say at all, nothing is sent - that is the choice honored."""
+    core.store.set_setting("system_prompt", "")
+    core.store.set_setting("memory_prompt", "")
     conversation = core.store.create_conversation("新对话", None, profile["id"], False)
 
     bundle = await core.context.build(conversation["id"], profile, "你好")
@@ -111,21 +134,18 @@ async def test_a_cleared_system_prompt_sends_no_system_message(
 
 
 @pytest.mark.asyncio
-async def test_the_saved_memory_prompt_is_the_one_extraction_uses(
+async def test_the_saved_memory_prompt_is_the_directive_the_context_uses(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
-    recorder = RecordingProvider()
-    core.memory.provider = recorder  # type: ignore[assignment]
-    core.store.set_setting("memory_prompt", "只提取姓名。")
+    core.store.set_setting("memory_prompt", "自定义记忆指令。")
+    conversation = core.store.create_conversation("新对话", None, profile["id"], False)
 
-    await core.memory.extract_and_store(
-        profile=profile,
-        user_content="我叫张三。",
-        user_message_id="msg_1",
-        project_id=None,
-    )
+    bundle = await core.context.build(conversation["id"], profile, "你好")
 
-    assert recorder.systems == ["只提取姓名。"]
+    system = next(message for message in bundle.messages if message["role"] == "system")
+    # The directive closes the assembled instruction: the model reads the
+    # <memory> list and then, right before the conversation, how to act on it.
+    assert system["content"].endswith("自定义记忆指令。")
 
 
 @pytest.mark.asyncio

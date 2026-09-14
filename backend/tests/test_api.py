@@ -19,7 +19,56 @@ from app.runtime import CoreServices, Runtime
 from app.schemas import ThinkingLevel
 
 
-def test_project_conversation_and_streaming_run(client: TestClient) -> None:
+class MemoryReplyProvider:
+    """A model whose answer ends with a memory block.
+
+    The block is how a run remembers now: the main model appends it, the run
+    strips it from what it shows, and the actions inside it are carried out
+    once the answer is complete.
+    """
+
+    async def stream_chat(
+        self,
+        profile: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        chat_model: str | None = None,
+        thinking: ThinkingLevel = "off",
+    ) -> AsyncIterator[ProviderEvent]:
+        del profile, messages, chat_model, thinking
+        yield ProviderEvent("delta", {"text": "好的，记住了。"})
+        yield ProviderEvent(
+            "delta",
+            {
+                "text": "\n```memory\n"
+                '{"write": [{"kind": "preference", "key": "回复风格",'
+                ' "content": "喜欢简洁回答", "confidence": 0.9}]}\n```\n'
+            },
+        )
+        yield ProviderEvent("usage", {"usage": {"prompt_tokens": 12, "completion_tokens": 6}})
+        yield ProviderEvent("done", {})
+
+    async def complete_chat(
+        self,
+        profile: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        chat_model: str | None = None,
+        thinking: ThinkingLevel = "off",
+    ) -> str:
+        del profile, messages, chat_model, thinking
+        return "## 背景\n已压缩的历史。"
+
+    async def embed(self, profile: dict[str, Any], texts: list[str]) -> list[list[float]]:
+        del profile
+        return [[float(len(text)), 1.0] for text in texts]
+
+    async def list_models(self, profile: dict[str, Any]) -> list[Any]:
+        del profile
+        return [{"id": "mock-chat"}]
+
+
+def test_project_conversation_and_streaming_run(client: TestClient, core: CoreServices) -> None:
     profile = client.post(
         "/api/model-profiles",
         json={
@@ -38,6 +87,7 @@ def test_project_conversation_and_streaming_run(client: TestClient) -> None:
         json={"project_id": project["id"], "model_profile_id": profile["id"]},
     ).json()
 
+    core.provider = MemoryReplyProvider()  # type: ignore[assignment]
     response = client.post(
         f"/api/conversations/{conversation['id']}/runs",
         json={"content": "我喜欢简洁回答。", "thinking": "high"},
@@ -49,11 +99,91 @@ def test_project_conversation_and_streaming_run(client: TestClient) -> None:
     # terminal event instead of as deltas; the client renders the same answer
     # either way, which is what makes reconnecting safe.
     assert "event: message.completed" in response.text
-    assert "这是测试回复。" in response.text
+    # The memory block is the model's business, never the user's: neither the
+    # deltas nor the finished answer carry it.
+    assert "```memory" not in response.text
     messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
-    assert messages[-1]["content"] == "这是测试回复。"
+    assert messages[-1]["content"] == "好的，记住了。"
     memories = client.get("/api/memories").json()
     assert memories[0]["content"] == "喜欢简洁回答"
+    assert memories[0]["source_excerpt"] == "我喜欢简洁回答。"
+
+
+def test_a_run_without_memory_actions_has_no_memory_step(
+    client: TestClient, core: CoreServices, profile: dict[str, Any]
+) -> None:
+    """The ordinary answer runs no memory step at all.
+
+    This is the whole point of the redesign: the step used to appear on every
+    run, measuring an extraction call that usually returned an empty list.
+    """
+    conversation = client.post("/api/conversations", json={"title": "普通"}).json()
+    response = client.post(f"/api/conversations/{conversation['id']}/runs", json={"content": "hi"})
+
+    assert response.status_code == 200
+    events = client.get(f"/api/runs/{_run_id(response.text)}/events").json()
+    assert [event["stage"] for event in events if event["stage"] == "memory_write"] == []
+
+
+def test_the_memory_step_reports_what_it_did(
+    client: TestClient, core: CoreServices, profile: dict[str, Any]
+) -> None:
+    conversation = client.post("/api/conversations", json={"title": "明细"}).json()
+    core.provider = MemoryReplyProvider()  # type: ignore[assignment]
+    response = client.post(f"/api/conversations/{conversation['id']}/runs", json={"content": "记"})
+    events = client.get(f"/api/runs/{_run_id(response.text)}/events").json()
+
+    records = [event for event in events if event["stage"] == "memory_write"]
+    assert [(event["state"]) for event in records] == ["running", "completed"]
+    completed = records[-1]
+    assert completed["payload"]["count"] == 1
+    assert completed["payload"]["items"][0]["action"] == "created"
+
+
+def _run_id(sse: str) -> str:
+    return json.loads(_frames(sse, "run.started")[0])["run_id"]
+
+
+def test_deleting_a_conversation_erases_it_with_its_trail(
+    client: TestClient, core: CoreServices, profile: dict[str, Any]
+) -> None:
+    """Deletion is permanent: the conversation takes its history with it.
+
+    Messages, the run log, the audit events, feedback - all gone, by the
+    user's decision that a removed conversation leaves nothing behind. The
+    memory it produced stays, but loses the pointer to the message that
+    sourced it, because that message no longer exists.
+    """
+    conversation = client.post(
+        "/api/conversations", json={"model_profile_id": profile["id"]}
+    ).json()
+    core.provider = MemoryReplyProvider()  # type: ignore[assignment]
+    client.post(f"/api/conversations/{conversation['id']}/runs", json={"content": "记"})
+    reply = client.get(f"/api/conversations/{conversation['id']}/messages").json()[-1]
+    feedback = client.post(f"/api/messages/{reply['id']}/feedback", json={"kind": "up"})
+    assert feedback.status_code == 201
+
+    memory = core.store.list_memories()[0]
+    assert memory["source_message_id"] == reply["parent_id"]
+
+    deleted = client.delete(f"/api/conversations/{conversation['id']}")
+    assert deleted.status_code == 204
+
+    assert client.get(f"/api/conversations/{conversation['id']}").status_code == 404
+    assert client.get(f"/api/conversations/{conversation['id']}/messages").status_code == 404
+    assert core.database.fetchall("SELECT * FROM assistant_runs") == []
+    assert core.database.fetchall("SELECT * FROM run_events") == []
+    assert core.database.fetchall("SELECT * FROM messages") == []
+    assert core.database.fetchall("SELECT * FROM feedback") == []
+    assert (
+        core.database.fetchall(
+            "SELECT * FROM trash_items WHERE entity_type IN ('conversation', 'message')"
+        )
+        == []
+    )
+    kept = core.store.list_memories()[0]
+    assert kept["content"] == "喜欢简洁回答"
+    assert kept["source_message_id"] is None
 
 
 class QuietProvider:

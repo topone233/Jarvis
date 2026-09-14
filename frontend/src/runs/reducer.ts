@@ -187,7 +187,11 @@ function upsertAudit(state: TurnState, record: RunEventRecord): TurnState {
     stage: record.stage,
     state: record.state,
     sequence: record.sequence,
-    payload: record.payload ?? {},
+    // Merged rather than replaced: the model's name is announced in the
+    // `running` record and its token usage in the `completed` one, and only
+    // the union of the two is the whole truth about the stage. The newer
+    // record wins on a clash.
+    payload: { ...(previous?.payload ?? {}), ...(record.payload ?? {}) },
     // A stage arrives as two records - it began, then it ended - and the second
     // replaces the first. The start is carried across, because the distance
     // between the two is the duration and the later record alone only knows

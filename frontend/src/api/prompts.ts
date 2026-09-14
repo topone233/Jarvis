@@ -34,8 +34,8 @@ export const PROMPT_FIELDS: PromptField[] = [
   },
   {
     key: 'memory_prompt',
-    title: '记忆提取提示词',
-    hint: '用来从你的话里挑出值得跨会话记住的信息，要求模型返回 JSON。改动它要留意格式。',
+    title: '记忆管理提示词',
+    hint: '告诉模型何时在回答末尾附一段 memory JSON 来记住或忘记信息。改动它要留意格式。',
   },
 ]
 

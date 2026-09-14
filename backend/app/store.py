@@ -417,8 +417,76 @@ class Store:
             )
         return self.get_conversation(conversation_id)
 
-    def delete_conversation(self, conversation_id: str) -> None:
-        self._soft_delete("conversations", "conversation", conversation_id)
+    def list_active_run_ids(self, conversation_id: str) -> list[str]:
+        """Runs of this conversation that a producer may still be writing to."""
+        rows = self.database.fetchall(
+            """
+            SELECT id FROM assistant_runs
+            WHERE conversation_id = ? AND status IN ('running', 'cancelling')
+                AND completed_at IS NULL
+            """,
+            (conversation_id,),
+        )
+        return [row["id"] for row in rows]
+
+    def delete_conversation_permanently(self, conversation_id: str) -> None:
+        """Erase a conversation and everything that belongs to it.
+
+        The user chose permanent deletion over the recycle bin: removing a
+        conversation from the list means it is gone - messages, the run log,
+        the audit trail, compaction records, feedback, all physical deletes.
+        Soft deletion was the audit trail's protection, and keeping the trail
+        while the conversation it describes disappears would have been the
+        worst of both, so the trail goes with the conversation.
+
+        Memories keep their facts but lose the pointer to the message they
+        came from - the message no longer exists, so the reference cannot
+        stay. What the memory says is unchanged.
+        """
+        self.get_conversation(conversation_id)
+        with self.database.transaction() as connection:
+            message_ids = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM messages WHERE conversation_id = ?", (conversation_id,)
+                ).fetchall()
+            ]
+            run_ids = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM assistant_runs WHERE conversation_id = ?", (conversation_id,)
+                ).fetchall()
+            ]
+            for run_id in run_ids:
+                connection.execute("DELETE FROM run_events WHERE run_id = ?", (run_id,))
+            connection.execute(
+                "DELETE FROM assistant_runs WHERE conversation_id = ?", (conversation_id,)
+            )
+            if message_ids:
+                placeholders = ", ".join("?" for _ in message_ids)
+                connection.execute(
+                    f"DELETE FROM feedback WHERE message_id IN ({placeholders})",
+                    tuple(message_ids),
+                )
+                connection.execute(
+                    f"UPDATE memories SET source_message_id = NULL, updated_at = ?"
+                    f" WHERE source_message_id IN ({placeholders})",
+                    (utc_now(), *message_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM trash_items WHERE entity_type = 'message'"
+                    f" AND entity_id IN ({placeholders})",
+                    tuple(message_ids),
+                )
+            connection.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+            connection.execute(
+                "DELETE FROM context_artifacts WHERE conversation_id = ?", (conversation_id,)
+            )
+            connection.execute(
+                "DELETE FROM trash_items WHERE entity_type = 'conversation' AND entity_id = ?",
+                (conversation_id,),
+            )
+            connection.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
 
     def list_messages(
         self, conversation_id: str, include_deleted: bool = False
@@ -713,6 +781,31 @@ class Store:
             "SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL", (memory_id,)
         )
         return _record(self._require(row, "记忆"))
+
+    def find_active_memories_by_key(
+        self, normalized_key: str, project_id: str | None
+    ) -> list[dict[str, Any]]:
+        """Every active memory with this key that a conversation here can see.
+
+        "Can see" is the same visibility the context assembly injects with: a
+        global memory anywhere, a project memory only inside its project. This
+        is what a forget action matches against.
+        """
+        clauses = ["normalized_key = ?", "status = 'active'", "deleted_at IS NULL"]
+        parameters: list[Any] = [normalized_key]
+        if project_id is None:
+            clauses.append("project_id IS NULL")
+        else:
+            clauses.append("(project_id IS NULL OR project_id = ?)")
+            parameters.append(project_id)
+        rows = self.database.fetchall(
+            f"""
+            SELECT * FROM memories WHERE {" AND ".join(clauses)}
+            ORDER BY updated_at DESC
+            """,
+            tuple(parameters),
+        )
+        return _records(rows)
 
     def find_active_memory(
         self, scope: str, project_id: str | None, normalized_key: str

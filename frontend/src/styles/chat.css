@@ -155,6 +155,44 @@
   align-items: center;
   gap: 8px;
   min-height: 20px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+/* The whole row is a button when it has something to expand into; the look
+   does not change, only the pointer and the expanded block below it. */
+.progress-row.is-expandable {
+  cursor: pointer;
+}
+
+/* One stage: its row and, when open, the block of details under it. */
+.progress-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 16px puts the detail text on the same left edge as the stage label: the dot
+   (6px + 2px margin) plus the row gap is exactly that far in. */
+.progress-detail-body {
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.progress-detail-line {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 /* The stage that is running right now wears a band of light that drifts across
@@ -1107,6 +1145,33 @@
   display: flex;
   gap: 6px;
   margin-top: 2px;
+}
+
+/* Pushes a row's actions to the far end, the way .field-head's margin-right:
+   auto does for its label. */
+.profile-head .spacer {
+  flex: 1;
+}
+
+/* The deleted section sits below the list, folded: it is where things go when
+   they leave, not a second list to scan on every visit. */
+.memory-deleted {
+  margin-top: 22px;
+}
+
+.memory-deleted > summary {
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.memory-deleted > summary:hover {
+  color: var(--text-secondary);
+}
+
+.memory-deleted .profile-list {
+  margin-top: 12px;
 }
 
 .setup-card.is-manager .setup-actions {
