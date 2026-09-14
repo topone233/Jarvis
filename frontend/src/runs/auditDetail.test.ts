@@ -100,8 +100,10 @@ describe('summaryOf', () => {
     expect(summaryOf(row('memory_write', 'completed', { count: 2 }))).toBe('2 条')
   })
 
-  it('says a compaction below threshold did not happen', () => {
-    expect(summaryOf(row('context_compaction', 'completed', { compacted: false }))).toBe('未触发')
+  it('leaves an untriggered compaction wordless', () => {
+    // Whether a stage has anything to say is the arrow's job; the summary
+    // line only ever carries a count.
+    expect(summaryOf(row('context_compaction', 'completed', { compacted: false }))).toBe('')
   })
 
   it('keeps the failure note first', () => {

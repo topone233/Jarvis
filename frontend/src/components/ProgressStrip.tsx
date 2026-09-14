@@ -18,6 +18,7 @@
 import { useState } from 'react'
 
 import { useNow } from '../hooks/useNow'
+import { ChevronRightIcon } from './icons'
 import { detailLines, summaryOf } from '../runs/auditDetail'
 import { stageMillis, toSeconds, totalMillis } from '../runs/duration'
 import type { AuditRow } from '../runs/reducer'
@@ -62,7 +63,17 @@ export function ProgressStrip({ audits }: { audits: AuditRow[] }) {
               }
             >
               <span className="progress-dot" />
-              <span className="progress-label">{STAGE_LABELS[row.stage] ?? row.stage}</span>
+              {/* The arrow belongs to the name, not to the numbers: it reads
+                  as "this title opens", the way a tree node does. */}
+              <span className="progress-head">
+                <span className="progress-label">{STAGE_LABELS[row.stage] ?? row.stage}</span>
+                {expandable && (
+                  <ChevronRightIcon
+                    size={13}
+                    className={`progress-caret${open ? ' is-open' : ''}`}
+                  />
+                )}
+              </span>
               <span className="progress-detail">{summaryOf(row)}</span>
               <span className="progress-time">{timeOf(row, now)}</span>
             </button>

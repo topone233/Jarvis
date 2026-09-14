@@ -62,9 +62,6 @@ export function summaryOf(row: AuditRow): string {
   if (row.stage === 'memory_write' && typeof payload.count === 'number' && payload.count > 0) {
     parts.push(`${payload.count} 条`)
   }
-  if (row.stage === 'context_compaction' && payload.compacted === false) {
-    parts.push('未触发')
-  }
   if (
     row.stage === 'context_retrieval' &&
     typeof payload.citation_count === 'number' &&
