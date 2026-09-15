@@ -7,9 +7,9 @@ import type {
   Message,
   ModelProfile,
   ModelProfileInput,
-  PromptPatch,
   Run,
   RunEventRecord,
+  SettingsPatch,
 } from './types'
 
 export function listConversations(projectId?: string): Promise<Conversation[]> {
@@ -37,6 +37,11 @@ export function renameConversation(conversationId: string, title: string): Promi
 
 export function listMessages(conversationId: string): Promise<Message[]> {
   return api<Message[]>(`/api/conversations/${conversationId}/messages`)
+}
+
+/** A stored pasted image, by its position in the message. */
+export function messageImageUrl(conversationId: string, messageId: string, index: number): string {
+  return `/api/conversations/${conversationId}/messages/${messageId}/images/${index}`
 }
 
 export function getRun(runId: string): Promise<Run> {
@@ -122,13 +127,14 @@ export function getSettings(): Promise<AppSettings> {
 }
 
 /**
- * Saves prompts, and returns the whole screen's state afterwards.
+ * Saves prompts (and the quick-prompt list), and returns the whole screen's
+ * state afterwards.
  *
  * A key left out is untouched; a key sent as null goes back to the text the
  * code ships. The response is the same shape as the read, so the screen can
  * redraw from it without a second request.
  */
-export function saveSettings(patch: PromptPatch): Promise<AppSettings> {
+export function saveSettings(patch: SettingsPatch): Promise<AppSettings> {
   return api<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) })
 }
 

@@ -6,6 +6,7 @@ from typing import Any, overload
 
 from app.database import Database
 from app.errors import NotFoundError
+from app.images import message_images
 from app.settings import COMPACT_PERCENT_DEFAULT
 from app.utils import json_dump, json_load, new_id, segment_for_index, utc_now
 
@@ -445,12 +446,11 @@ class Store:
         """
         self.get_conversation(conversation_id)
         with self.database.transaction() as connection:
-            message_ids = [
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM messages WHERE conversation_id = ?", (conversation_id,)
-                ).fetchall()
-            ]
+            rows = connection.execute(
+                "SELECT id, metadata_json FROM messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchall()
+            message_ids = [row["id"] for row in rows]
             run_ids = [
                 row["id"]
                 for row in connection.execute(
@@ -487,6 +487,12 @@ class Store:
                 (conversation_id,),
             )
             connection.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        # After the commit, not inside it: a rollback would restore the rows
+        # while the files were already gone, and a row that names a missing
+        # file is worse than a file no row points at.
+        for row in rows:
+            for filename in message_images({"metadata": json_load(row["metadata_json"], None)}):
+                self.database.objects_directory.joinpath(filename).unlink(missing_ok=True)
 
     def list_messages(
         self, conversation_id: str, include_deleted: bool = False
@@ -516,9 +522,16 @@ class Store:
         content: str,
         metadata: dict[str, Any] | None = None,
         parent_id: str | None = None,
+        message_id: str | None = None,
     ) -> dict[str, Any]:
+        """A new message in the conversation's ordinal order.
+
+        `message_id` is chosen by the caller only when something outside this
+        table has to be named after it first - stored image files do. Absent,
+        an id is minted here as always.
+        """
         self.get_conversation(conversation_id)
-        message_id = new_id()
+        message_id = message_id if message_id is not None else new_id()
         now = utc_now()
         with self.database.transaction() as connection:
             ordinal = connection.execute(

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.errors import ProviderError
+from app.images import image_data_url, message_images
 from app.knowledge import KnowledgeService
 from app.prompts import PROMPT_VERSION
 from app.provider import OpenAICompatibleProvider
@@ -16,12 +17,12 @@ from app.settings import (
     read_prompt,
 )
 from app.store import Store
-from app.tokens import estimate_tokens
+from app.tokens import IMAGE_TOKEN_ESTIMATE, estimate_tokens
 
 
 @dataclass(frozen=True)
 class ContextBundle:
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     citations: list[dict[str, Any]]
     # The memories injected into the system instruction, kept for the audit
     # trail: the model can only speak about memories it was shown, so the
@@ -57,7 +58,7 @@ class ContextManager:
     ) -> dict[str, Any] | None:
         artifact = self.store.get_latest_context_artifact(conversation_id)
         raw_messages = self._messages_after_artifact(conversation_id, artifact)
-        uncompressed_tokens = sum(estimate_tokens(message["content"]) for message in raw_messages)
+        uncompressed_tokens = sum(self._cost(message) for message in raw_messages)
         artifact_tokens = artifact["token_estimate"] if artifact else 0
         input_budget = profile["context_window"] - profile["output_token_reserve"]
         compact_percent = profile.get("compact_percent", COMPACT_PERCENT_DEFAULT)
@@ -124,23 +125,28 @@ class ContextManager:
             project_id=conversation["project_id"],
             include_global=True,
         )[:16]
-        citations = await self.knowledge.search(
-            user_query,
-            project_id=conversation["project_id"],
-            profile=profile,
+        # An image-only message has no words to search with; an empty query is
+        # not an answer to any question, so nothing is looked up at all.
+        citations = (
+            await self.knowledge.search(
+                user_query,
+                project_id=conversation["project_id"],
+                profile=profile,
+            )
+            if user_query.strip()
+            else []
         )
         system = self._assemble_system_instruction(memories, artifact, citations)
         raw_messages = self._messages_after_artifact(conversation_id, artifact)
         input_budget = profile["context_window"] - profile["output_token_reserve"]
-        selected_messages = self._fit_messages(system, raw_messages, input_budget)
+        selected_messages, estimate = self._fit_messages(system, raw_messages, input_budget)
         # A cleared prompt is a choice the settings screen allows, and an empty
         # system message is not how to carry it out: some endpoints reject one
         # outright. Nothing is sent instead, which is what "no system prompt"
         # means to the model anyway.
         opening = [{"role": "system", "content": system}] if system else []
         model_messages = [*opening, *selected_messages]
-        estimate = sum(estimate_tokens(item["content"]) for item in model_messages)
-        remaining = max(profile["context_window"] - profile["output_token_reserve"] - estimate, 0)
+        remaining = max(input_budget - estimate, 0)
         return ContextBundle(
             messages=model_messages,
             citations=citations,
@@ -235,16 +241,49 @@ class ContextManager:
         # run of empty lines ahead of them.
         return "\n\n".join(section for section in sections if section)
 
-    @staticmethod
+    def _cost(self, message: dict[str, Any]) -> int:
+        """What a stored message counts against the budget: its text and, at
+        the shared constant, every image it carries."""
+        return estimate_tokens(message["content"]) + len(message_images(message)) * (
+            IMAGE_TOKEN_ESTIMATE
+        )
+
     def _fit_messages(
-        system: str, messages: list[dict[str, Any]], input_budget: int
-    ) -> list[dict[str, str]]:
-        selected: list[dict[str, str]] = []
+        self, system: str, messages: list[dict[str, Any]], input_budget: int
+    ) -> tuple[list[dict[str, Any]], int]:
+        """The newest messages that fit, as provider-shaped payloads, with the
+        cost that was measured - build()'s estimate and the fitting have to be
+        the same number, so the fitting is where it comes from."""
+        selected: list[dict[str, Any]] = []
         used = estimate_tokens(system)
         for message in reversed(messages):
-            cost = estimate_tokens(message["content"])
+            cost = self._cost(message)
             if selected and used + cost > input_budget:
                 break
-            selected.append({"role": message["role"], "content": message["content"]})
+            selected.append(
+                self._provider_message(message["role"], message["content"], message_images(message))
+            )
             used += cost
-        return list(reversed(selected))
+        return list(reversed(selected)), used
+
+    def _provider_message(self, role: str, content: str, images: list[str]) -> dict[str, Any]:
+        """One message as the wire wants it: a string, or the multimodal shape
+        with a part per pasted image.
+
+        The files are read and re-encoded here, at call time, so a conversation
+        that has been open for days sends today's bytes. An image whose file has
+        disappeared is simply left out - the model answers from what it gets,
+        which is what it would do with a broken reference anyway.
+        """
+        if not images:
+            return {"role": role, "content": content}
+        parts: list[dict[str, Any]] = []
+        if content.strip():
+            parts.append({"type": "text", "text": content})
+        for filename in images:
+            url = image_data_url(self.store.database, filename)
+            if url is not None:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+        if not parts:
+            return {"role": role, "content": content}
+        return {"role": role, "content": parts}

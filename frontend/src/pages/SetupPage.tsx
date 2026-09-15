@@ -7,14 +7,15 @@
  * rather than a convention: model profiles are rows inside the data directory's
  * database, so until a directory has been chosen there is nowhere to put one and
  * every other route answers 409. That is what makes the first run go 1 then 2 -
- * and it is also why the tabs are not offered there: two of the three would open
- * onto an error.
+ * and it is also why the tabs are not offered there: three of the four would
+ * open onto an error.
  *
  * Afterwards the same screen is a list on the left and one panel on the right.
- * The three have nothing to do with each other - a directory, a set of profiles,
- * three prompts - and stacking them made a page that grew a screenful longer
- * every time a setting was added. The tab is in the URL, so a refresh comes back
- * to the same one and the address can be linked to.
+ * The four have nothing to do with each other - a directory, a set of profiles,
+ * three prompts, and the composer's quick prompts - and stacking them made a
+ * page that grew a screenful longer every time a setting was added. The tab is
+ * in the URL, so a refresh comes back to the same one and the address can be
+ * linked to.
  *
  * The directory panel is written here rather than in `settings/`, because the
  * directory is the shell's own state: it is what decides whether the app has
@@ -32,8 +33,9 @@ import { CloseIcon } from '../components/icons'
 import { useConfirm } from '../hooks/useConfirm'
 import { ModelProfilesPanel } from './settings/ModelProfilesPanel'
 import { PromptsPanel } from './settings/PromptsPanel'
+import { QuickPromptsPanel } from './settings/QuickPromptsPanel'
 
-const TABS = ['directory', 'model', 'prompts'] as const
+const TABS = ['directory', 'model', 'prompts', 'quick'] as const
 
 type Tab = (typeof TABS)[number]
 
@@ -41,6 +43,7 @@ const TAB_LABELS: Record<Tab, string> = {
   directory: '数据目录',
   model: '模型',
   prompts: '提示词',
+  quick: '快捷指令',
 }
 
 /** Anything unrecognised means the first tab, so an edited URL still lands somewhere. */
@@ -263,6 +266,7 @@ export function SetupPage({
               {tab === 'directory' && directorySection}
               {tab === 'model' && <ModelProfilesPanel configured />}
               {tab === 'prompts' && <PromptsPanel />}
+              {tab === 'quick' && <QuickPromptsPanel />}
             </div>
           </div>
         )}

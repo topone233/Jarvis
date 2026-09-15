@@ -24,7 +24,9 @@ import { ModelControls } from '../components/ModelControls'
 import type { FeedbackKind } from '../components/AssistantTurn'
 import type { ConversationsController } from '../hooks/useConversations'
 import { useModelChoice } from '../hooks/useModelChoice'
+import { useQuickPrompts } from '../hooks/useQuickPrompts'
 import { useStickToBottom } from '../hooks/useStickToBottom'
+import { takePendingImages } from '../pendingImages'
 import { useRun } from '../runs/useRun'
 
 /**
@@ -51,10 +53,11 @@ export function ChatPage({
   const location = useLocation()
   const navigate = useNavigate()
   const seeded = location.state as SeededTurn | null
+  const quickPrompts = useQuickPrompts()
 
   const [messages, setMessages] = useState<Message[]>([])
   const [trail, setTrail] = useState<Record<string, RunEventRecord[]>>({})
-  const [pendingUser, setPendingUser] = useState<string | null>(null)
+  const [pendingUser, setPendingUser] = useState<{ text: string; images: string[] } | null>(null)
   const [lastRun, setLastRun] = useState<LastRun | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -188,9 +191,9 @@ export function ChatPage({
   }, [phase, localId, refresh])
 
   const send_ = useCallback(
-    (text: string) => {
-      setPendingUser(text)
-      send(text, { chatModel: model, level })
+    (text: string, images: string[] = []) => {
+      setPendingUser({ text, images })
+      send(text, { chatModel: model, level }, images)
       // The answer this one replaces has just finished, which is the moment its
       // trail on disk becomes complete - the memory write is reported after the
       // answer is already on screen, so a read taken while it was running came
@@ -211,19 +214,24 @@ export function ChatPage({
   )
 
   // A message handed over by the new-chat screen. Consumed once, and the history
-  // entry is cleared so a reload cannot send it a second time.
+  // entry is cleared so a reload cannot send it a second time. The images ride
+  // the in-memory handoff rather than the history entry - too big for it - and
+  // are taken even when the text turns out to be absent, because an
+  // image-only first message is a real send.
   const consumed = useRef(false)
   useEffect(() => {
     if (consumed.current) {
       return
     }
     consumed.current = true
-    const text = seeded?.firstMessage
-    if (typeof text !== 'string' || text === '') {
+    const seededText = seeded?.firstMessage
+    const text = typeof seededText === 'string' ? seededText : ''
+    const images = takePendingImages()
+    if (text === '' && images.length === 0) {
       return
     }
     navigate(location.pathname, { replace: true, state: null })
-    send_(text)
+    send_(text, images)
   }, [seeded, location.pathname, navigate, send_])
 
   const onFeedback = useCallback((messageId: string, kind: FeedbackKind) => {
@@ -267,6 +275,12 @@ export function ChatPage({
       <Composer
         busy={busy}
         controls={<ModelControls choice={choice} />}
+        quickPrompts={quickPrompts}
+        inputBudget={
+          choice.profile === null
+            ? null
+            : choice.profile.context_window - choice.profile.output_token_reserve
+        }
         onSend={send_}
         onStop={cancel}
       />
@@ -283,10 +297,11 @@ function describeLoadFailure(cause: unknown): string {
 }
 
 /** Whether a message on its way to the server is already in the history. */
-function alreadyStored(messages: Message[], pending: string | null): boolean {
+function alreadyStored(messages: Message[], pending: { text: string } | null): boolean {
   return (
     pending !== null &&
-    messages.some((message) => message.role === 'user' && message.content === pending)
+    pending.text !== '' &&
+    messages.some((message) => message.role === 'user' && message.content === pending.text)
   )
 }
 

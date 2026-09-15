@@ -8,12 +8,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.errors import ProviderError, ValidationError
+from app.images import parse_images, write_images
 from app.memory import split_memory_block
 from app.runtime import CoreServices, RunBroadcast
 from app.schemas import ThinkingLevel
 from app.store import INTERRUPTED_ERROR
 from app.tokens import estimate_tokens
-from app.utils import json_dump
+from app.utils import json_dump, new_id
 
 # How far a streaming run may fall behind the database. This window is what a
 # crash or a power cut can cost, so it trades durability against writing on
@@ -60,6 +61,7 @@ class RunService:
         conversation_id: str,
         *,
         content: str,
+        images: list[str] | None = None,
         model_profile_id: str | None,
         choice: RunChoice,
     ) -> tuple[dict[str, Any], dict[str, Any], RunChoice]:
@@ -69,7 +71,18 @@ class RunService:
         profile = (
             store.get_model_profile(profile_id) if profile_id else store.get_default_model_profile()
         )
-        user = store.append_message(conversation_id, "user", content)
+        # Decoded and written before any message exists: a bad image fails the
+        # request without leaving a row behind, and the files land under an id
+        # the message is about to take. A write that fails after this point
+        # strands files with no row, which is invisible; a message with no
+        # images would be visible, so the invisible failure is the one to pick.
+        payloads = parse_images(images or [])
+        user_id = new_id()
+        filenames = write_images(store.database, user_id, payloads)
+        metadata = {"images": filenames} if filenames else None
+        user = store.append_message(
+            conversation_id, "user", content, message_id=user_id, metadata=metadata
+        )
         assistant = store.append_message(conversation_id, "assistant", "", parent_id=user["id"])
         run = store.create_run(conversation_id, user["id"], assistant["id"], profile["id"])
         # Point the message at its run straight away. Leaving this to the first
@@ -77,9 +90,11 @@ class RunService:
         # empty bubble for a run that is very much alive and unfindable.
         store.update_message(assistant["id"], "", {"run_id": run["id"]})
         if conversation["title"] == "新对话":
+            # An image-only first message still deserves a name; the composer's
+            # text may be empty, but something was sent.
             store.update_conversation(
                 conversation_id,
-                {"title": self._derive_title(content)},
+                {"title": self._derive_title(content.strip() or "发了一张图片")},
             )
         return run, profile, choice
 

@@ -41,6 +41,22 @@ PROMPT_DEFAULTS: dict[str, str] = {
 #: is derived from the context window, and a fixed count would silently stop
 #: making sense the moment that window is changed. Shared with the API's
 #: validation so the form cannot offer a value the store rejects.
+#: The composer's quick prompts: named buttons above an empty input box, one
+#: click filling the prompt in for the user to finish. The list's order is the
+#: order the buttons draw in - "order" is a position here, not a field of its
+#: own. No row means these two; a stored empty list is a real choice (no
+#: buttons at all) and must survive the round-trip, so only null, which is
+#: what 恢复默认 sends, puts this pair back.
+QUICK_PROMPTS_DEFAULT: list[dict[str, str]] = [
+    {"name": "记一下", "prompt": "记一下："},
+    {"name": "记待办", "prompt": "记个待办："},
+]
+
+#: The settings row the quick-prompt list lives under. A single JSON array
+#: rather than a row per button: the list is edited and sent as a whole, and
+#: its order is the only ordering there is.
+QUICK_PROMPTS = "quick_prompts"
+
 COMPACT_PERCENT_DEFAULT = 72
 
 
@@ -51,7 +67,7 @@ def read_prompt(store: Store, key: str) -> str:
 
 
 def overview(store: Store) -> dict[str, Any]:
-    """Everything the prompts tab needs, in one read.
+    """Everything the settings screen reads, in one call.
 
     The built-in text travels with the text in force, so "restore the default"
     can show what it is about to restore instead of just claiming to know.
@@ -65,5 +81,9 @@ def overview(store: Store) -> dict[str, Any]:
                 "is_default": key not in stored,
             }
             for key in PROMPTS
-        }
+        },
+        "quick_prompts": {
+            "items": stored.get(QUICK_PROMPTS, QUICK_PROMPTS_DEFAULT),
+            "is_default": QUICK_PROMPTS not in stored,
+        },
     }

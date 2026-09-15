@@ -22,7 +22,7 @@ from app.provider import OpenAICompatibleProvider
 from app.runtime import CoreServices
 from app.schemas import ThinkingLevel
 from app.secrets import InMemorySecretStore
-from app.settings import COMPACT_PERCENT_DEFAULT
+from app.settings import COMPACT_PERCENT_DEFAULT, QUICK_PROMPTS_DEFAULT
 from app.store import Store
 
 
@@ -82,6 +82,60 @@ def test_null_puts_a_prompt_back_to_the_built_in_text(client: TestClient) -> Non
 
     assert entry["is_default"] is True
     assert entry["text"] == entry["default_text"]
+
+
+def test_quick_prompts_start_as_the_built_in_pair(client: TestClient) -> None:
+    entry = client.get("/api/settings").json()["quick_prompts"]
+
+    assert entry["items"] == QUICK_PROMPTS_DEFAULT
+    assert entry["is_default"] is True
+
+
+def test_a_saved_list_replaces_the_buttons_wholesale(client: TestClient) -> None:
+    items = [{"name": "翻译", "prompt": "帮我把下面的话翻译成英文："}]
+    client.put("/api/settings", json={"quick_prompts": items})
+
+    overview = client.get("/api/settings").json()
+
+    assert overview["quick_prompts"]["items"] == items
+    assert overview["quick_prompts"]["is_default"] is False
+    # Saving the list leaves the three prompts alone.
+    assert overview["prompts"]["system_prompt"]["is_default"] is True
+
+
+def test_an_empty_list_is_stored_as_empty_rather_than_reverting(client: TestClient) -> None:
+    # No buttons is a real choice, and it has to survive a reload; the built-in
+    # pair comes back only through null, which is what 恢复默认 sends.
+    client.put("/api/settings", json={"quick_prompts": []})
+
+    entry = client.get("/api/settings").json()["quick_prompts"]
+
+    assert entry["items"] == []
+    assert entry["is_default"] is False
+
+
+def test_null_puts_the_built_in_pair_back(client: TestClient) -> None:
+    client.put("/api/settings", json={"quick_prompts": [{"name": "翻译", "prompt": "翻译："}]})
+    client.put("/api/settings", json={"quick_prompts": None})
+
+    entry = client.get("/api/settings").json()["quick_prompts"]
+
+    assert entry["items"] == QUICK_PROMPTS_DEFAULT
+    assert entry["is_default"] is True
+
+
+def test_a_quick_prompt_outside_its_shape_is_refused(client: TestClient) -> None:
+    for bad in (
+        [{"name": "", "prompt": "有内容"}],
+        [{"name": "有名称", "prompt": ""}],
+        [{"name": "太长" * 26, "prompt": "有内容"}],
+        [{"name": "太长", "prompt": "x" * 2_001}],
+    ):
+        response = client.put("/api/settings", json={"quick_prompts": bad})
+        assert response.status_code == 422
+
+    thirteen = [{"name": f"第{index}条", "prompt": "内容"} for index in range(13)]
+    assert client.put("/api/settings", json={"quick_prompts": thirteen}).status_code == 422
 
 
 @pytest.mark.asyncio

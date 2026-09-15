@@ -53,7 +53,9 @@ function choiceBody(choice: RunChoice, rest: Record<string, unknown>): string {
 
 export interface RunController {
   turn: TurnState | null
-  send(content: string, choice: RunChoice): void
+  /** The pasted images ride along as data URLs, compressed before they ever
+   *  get here; absent means a text-only turn. */
+  send(content: string, choice: RunChoice, images?: string[]): void
   regenerate(messageId: string, choice: RunChoice): void
   attach(runId: string, seed?: TurnSeed): void
   cancel(): void
@@ -176,13 +178,18 @@ export function useRun(conversationId: string | null, onChanged: () => void): Ru
   )
 
   const send = useCallback(
-    (content: string, choice: RunChoice) => {
+    (content: string, choice: RunChoice, images: string[] = []) => {
       if (conversationId === null) return
       localCounter += 1
       replaceTurn(createTurn(`local-${localCounter}`))
       void drive(
         `/api/conversations/${conversationId}/runs`,
-        { method: 'POST', body: choiceBody(choice, { content }) },
+        {
+          method: 'POST',
+          // Images ride along only when they exist: omitting the field is how
+          // "no pictures" is said to a schema that defaults it to none.
+          body: choiceBody(choice, { content, ...(images.length > 0 ? { images } : {}) }),
+        },
         null,
       )
     },

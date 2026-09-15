@@ -59,6 +59,32 @@
   overflow-wrap: anywhere;
 }
 
+/* Pasted images inside the bubble, above the text if there is any. The link
+   opens the full picture in a new tab - a lightbox is more surface than a
+   chat shell wants to own. */
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.msg-images:only-child {
+  margin-bottom: 0;
+}
+
+.msg-images img {
+  display: block;
+  height: 120px;
+  width: auto;
+  border-radius: var(--radius-sm);
+}
+
+.msg-images a {
+  display: block;
+  border-radius: var(--radius-sm);
+}
+
 .turn {
   display: flex;
   flex-direction: column;
@@ -571,6 +597,101 @@
 .composer-inner {
   max-width: var(--content-width);
   margin: 0 auto;
+}
+
+/* The pasted images, waiting above the box. They take the quick prompts'
+   slot - one row above the composer, never two - and each thumb carries its
+   own small ✕ so removal stays where the eye already is. */
+.composer-images {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 8px;
+}
+
+.composer-image {
+  position: relative;
+}
+
+.composer-image img {
+  display: block;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.composer-image-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.composer-image:hover .composer-image-remove,
+.composer-image-remove:focus-visible {
+  opacity: 1;
+}
+
+.composer-image-note {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* The ring beside the send button: the draft's share of the input budget.
+   Nearly empty is its normal state and its quietest one - the colour only
+   starts speaking when the draft begins to crowd the window. */
+.token-ring {
+  flex: 0 0 auto;
+}
+
+.token-ring-track {
+  fill: none;
+  stroke: var(--bg-hover);
+  stroke-width: 2;
+}
+
+.token-ring-fill {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.2s ease;
+}
+
+/* The quick prompts: named pills above an empty box. One click fills the text
+   in; typing anything takes the row away again. They are furniture, not
+   actions of record, so they wear the quietest fill in the palette and only
+   darken one step on hover - no border, no shadow. */
+.composer-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 6px 8px;
+}
+
+.quick-prompt {
+  padding: 5px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 13px;
+  transition: background 0.12s ease;
+}
+
+.quick-prompt:hover {
+  background: var(--bg-hover);
 }
 
 .composer-box {
@@ -1349,6 +1470,42 @@
   min-width: 0;
   /* Room for the button, so a long value never runs underneath it. */
   padding-right: 42px;
+}
+
+/* The quick-prompts list: one row per button, name then prompt then the three
+   row actions. Grid rather than flex so the prompt column takes the slack -
+   the name is the short one, and a long prompt should never squeeze it. */
+.quick-intro {
+  margin: 0 0 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.quick-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.quick-row input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: var(--bg-subtle);
+  transition: box-shadow 0.12s ease;
+}
+
+.quick-row input:focus {
+  box-shadow: var(--ring-accent-tight);
+}
+
+.quick-row-actions {
+  display: flex;
+  gap: 2px;
 }
 
 .field .field-action {

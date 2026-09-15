@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import settings
 from app.errors import NotFoundError, ProviderError, SetupRequiredError, ValidationError
+from app.images import image_path, media_type_for, message_images
 from app.knowledge import ImportItem
 from app.runs import RunChoice, RunService
 from app.runtime import CoreServices, Runtime
@@ -144,14 +145,14 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         payload: SettingsUpdate,
         core: CoreServices = Depends(services),
     ) -> dict[str, Any]:
-        # The field names are the settings keys, so one loop covers all three
-        # and a fourth prompt would need no change here. A key left out of the
+        # The field names are the settings keys, so one loop covers the three
+        # prompts and the quick-prompt list alike. A key left out of the
         # request is untouched; a key sent as null goes back to the default.
-        for key, text in payload.model_dump(exclude_unset=True).items():
-            if text is None:
+        for key, value in payload.model_dump(exclude_unset=True).items():
+            if value is None:
                 core.store.delete_setting(key)
             else:
-                core.store.set_setting(key, text)
+                core.store.set_setting(key, value)
         return settings.overview(core.store)
 
     @app.get("/api/model-profiles")
@@ -294,6 +295,30 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     ) -> list[dict[str, Any]]:
         return core.store.list_messages(conversation_id)
 
+    @app.get("/api/conversations/{conversation_id}/messages/{message_id}/images/{index}")
+    async def read_message_image(
+        conversation_id: str,
+        message_id: str,
+        index: int,
+        core: CoreServices = Depends(services),
+    ) -> FileResponse:
+        """One pasted image, by its position in the message.
+
+        The index, not a filename, is what the client names: the path is
+        resolved from the message's own metadata, so nothing the request says
+        can reach outside the objects directory.
+        """
+        message = core.store.get_message(message_id)
+        if message["conversation_id"] != conversation_id:
+            raise NotFoundError("未找到这张图片。")
+        filenames = message_images(message)
+        if not 0 <= index < len(filenames):
+            raise NotFoundError("未找到这张图片。")
+        path = image_path(core.store.database, filenames[index])
+        if not path.is_file():
+            raise NotFoundError("未找到这张图片。")
+        return FileResponse(path, media_type=media_type_for(filenames[index]))
+
     @app.get("/api/conversations/{conversation_id}/run-events")
     async def list_conversation_run_events(
         conversation_id: str, core: CoreServices = Depends(services)
@@ -333,6 +358,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         run, profile, choice = run_service.start(
             conversation_id,
             content=payload.content,
+            images=payload.images,
             model_profile_id=payload.model_profile_id,
             choice=RunChoice(chat_model=payload.chat_model, thinking=payload.thinking),
         )

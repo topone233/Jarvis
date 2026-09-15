@@ -32,6 +32,8 @@ export interface MessageMetadata {
   cancelled?: boolean
   error?: string
   context_artifact_id?: string | null
+  /** User messages only: object filenames of the images pasted with it. */
+  images?: string[]
 }
 
 export interface Message {
@@ -152,11 +154,23 @@ export interface PromptSetting {
   is_default: boolean
 }
 
+export interface QuickPrompt {
+  /** What the button says. */
+  name: string
+  /** What one click fills the composer with. */
+  prompt: string
+}
+
 export interface AppSettings {
   prompts: {
     system_prompt: PromptSetting
     compaction_prompt: PromptSetting
     memory_prompt: PromptSetting
+  }
+  quick_prompts: {
+    /** In draw order; empty means the buttons were cleared on purpose. */
+    items: QuickPrompt[]
+    is_default: boolean
   }
 }
 
@@ -164,6 +178,9 @@ export type PromptKey = keyof AppSettings['prompts']
 
 /** A save: the text to store, or null to go back to the built-in one. */
 export type PromptPatch = Partial<Record<PromptKey, string | null>>
+
+/** Anything the settings PUT accepts: prompt texts and the quick-prompt list. */
+export type SettingsPatch = PromptPatch & { quick_prompts?: QuickPrompt[] | null }
 
 /** One row of the audit trail (`run_events`). Also what `audit` SSE events carry. */
 export interface RunEventRecord {

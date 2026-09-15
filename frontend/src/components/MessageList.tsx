@@ -8,6 +8,7 @@
  */
 
 import type { Message, RunEventRecord, RunStatus } from '../api/types'
+import { messageImageUrl } from '../api/endpoints'
 import { createTurn, reduce, type TurnPhase, type TurnState } from '../runs/reducer'
 import { AssistantTurn, type FeedbackKind } from './AssistantTurn'
 
@@ -24,8 +25,9 @@ export interface MessageListProps {
   /** Every run's audit trail in this conversation, keyed by run id. */
   trail: Record<string, RunEventRecord[]>
   gaveUp: boolean
-  /** The message just sent, shown before the server has stored it. */
-  pendingUser: string | null
+  /** The message just sent, shown before the server has stored it. Its images
+   *  are data URLs - the very same ones on their way to the server. */
+  pendingUser: { text: string; images: string[] } | null
   onReconnect(): void
   onRegenerate(messageId: string): void
   onFeedback(messageId: string, kind: FeedbackKind): void
@@ -46,9 +48,29 @@ export function MessageList({
     <>
       {messages.map((message) => {
         if (message.role === 'user') {
+          const images = message.metadata.images ?? []
           return (
             <div key={message.id} className="msg-user">
-              {message.content}
+              {images.length > 0 && (
+                <div className="msg-images">
+                  {images.map((_, index) => (
+                    <a
+                      key={index}
+                      href={messageImageUrl(message.conversation_id, message.id, index)}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="查看原图"
+                    >
+                      <img
+                        src={messageImageUrl(message.conversation_id, message.id, index)}
+                        alt={`用户发送的图片 ${index + 1}`}
+                        loading="lazy"
+                      />
+                    </a>
+                  ))}
+                </div>
+              )}
+              {message.content !== '' && message.content}
             </div>
           )
         }
@@ -69,7 +91,18 @@ export function MessageList({
           />
         )
       })}
-      {pendingUser !== null && <div className="msg-user">{pendingUser}</div>}
+      {pendingUser !== null && (
+        <div className="msg-user">
+          {pendingUser.images.length > 0 && (
+            <div className="msg-images">
+              {pendingUser.images.map((image, index) => (
+                <img key={index} src={image} alt={`用户发送的图片 ${index + 1}`} />
+              ))}
+            </div>
+          )}
+          {pendingUser.text !== '' && pendingUser.text}
+        </div>
+      )}
       {turn !== null && (
         <AssistantTurn
           key={turn.localId}
