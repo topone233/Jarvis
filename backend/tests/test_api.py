@@ -107,6 +107,10 @@ def test_project_conversation_and_streaming_run(client: TestClient, core: CoreSe
     memories = client.get("/api/memories").json()
     assert memories[0]["content"] == "喜欢简洁回答"
     assert memories[0]["source_excerpt"] == "我喜欢简洁回答。"
+    # The retrieval cache is plumbing: hundreds of floats the screen never
+    # shows, so the API leaves them behind.
+    assert "embedding_json" not in memories[0]
+    assert "embedding_model" not in memories[0]
 
 
 def test_a_run_without_memory_actions_has_no_memory_step(

@@ -262,6 +262,7 @@ class RunService:
                     "citation_count": len(bundle.citations),
                     "memory_count": len(bundle.memories),
                     "memory_keys": [memory["memory_key"] for memory in bundle.memories],
+                    "memory_mode": bundle.memory_mode,
                 },
             )
             broadcast.emit(

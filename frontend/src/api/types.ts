@@ -223,6 +223,40 @@ export interface MemoryUpdate {
 }
 
 /**
+ * One imported knowledge document (`GET /api/knowledge/documents`, active rows
+ * of `knowledge_documents`). The file's bytes live in the data directory's
+ * `objects/`; this row is the index's handle on it.
+ */
+export interface KnowledgeDocument {
+  id: string
+  project_id: string | null
+  title: string
+  original_filename: string
+  relative_path: string | null
+  mime_type: string
+  content_hash: string
+  stored_path: string
+  /** `ready`, or `ready_without_embeddings` when the embedding call failed. */
+  status: string
+  chunk_count: number
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * One file's outcome of an import. A document whose semantic index failed
+ * arrives twice - a `warning` entry, then the finished `ready_without_embeddings`
+ * one - and `summarizeImportResults` is where the pair becomes a single row.
+ */
+export interface KnowledgeImportResult {
+  filename: string
+  /** `ready` | `ready_without_embeddings` | `warning` | `skipped` */
+  status: string
+  reason?: string
+  document?: KnowledgeDocument
+}
+
+/**
  * One entry of the recycle bin (`GET /api/trash`). `snapshot` is the row as it
  * was when it was deleted, so a deleted memory can be shown without a way to
  * read soft-deleted rows back.

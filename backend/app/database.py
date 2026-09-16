@@ -5,10 +5,12 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
 
-from app.errors import ValidationError
-from app.utils import segment_for_index, utc_now
+import sqlite_vec
 
-SCHEMA_VERSION = 4
+from app.errors import ValidationError
+from app.utils import json_load, segment_for_index, utc_now
+
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -138,6 +140,8 @@ CREATE TABLE IF NOT EXISTS memories (
     confirmation_count INTEGER NOT NULL DEFAULT 1,
     source_message_id TEXT REFERENCES messages(id),
     source_excerpt TEXT NOT NULL,
+    embedding_json TEXT,
+    embedding_model TEXT,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -207,6 +211,15 @@ CREATE INDEX IF NOT EXISTS idx_trash_items_entity ON trash_items(entity_type, en
 """
 
 
+def vec_table_name(dim: int) -> str:
+    """The vec0 table holding chunk embeddings of one dimension.
+
+    One table per dimension, because vec0 fixes the vector width at CREATE
+    time and different embedding models have different widths.
+    """
+    return f"knowledge_chunks_vec_{int(dim)}"
+
+
 class Database:
     def __init__(self, data_directory: Path) -> None:
         self.data_directory = data_directory
@@ -241,6 +254,8 @@ class Database:
         ).fetchone()[0]
         if current < 2:
             self._rebuild_search_index(connection)
+        if current < 5:
+            self._backfill_vec_index(connection)
         # Gated on the column rather than on the recorded version, because the
         # two paths into this method disagree about what is already there: a
         # database from before this change has the table without the columns,
@@ -274,6 +289,21 @@ class Database:
         # it, so nothing is migrated out of it. Dropped rather than left behind,
         # because a column that still exists is a column someone will fill.
         self._drop_column_if_present(connection, "model_profiles", "reasoning_levels_json")
+        # Memory vectors are a write-through cache for relevance ranking, not
+        # data: they are computed lazily at retrieval time, so there is nothing
+        # to backfill and no version-gated migration - only columns to add.
+        self._add_column_if_missing(
+            connection,
+            "memories",
+            "embedding_json",
+            "ALTER TABLE memories ADD COLUMN embedding_json TEXT",
+        )
+        self._add_column_if_missing(
+            connection,
+            "memories",
+            "embedding_model",
+            "ALTER TABLE memories ADD COLUMN embedding_model TEXT",
+        )
 
     @staticmethod
     def _add_column_if_missing(
@@ -313,10 +343,66 @@ class Database:
             ],
         )
 
+    def _backfill_vec_index(self, connection: sqlite3.Connection) -> None:
+        """Rebuild the vec0 KNN tables from stored chunk embeddings.
+
+        The vec tables are derived data, so a full rebuild is always safe and
+        the migration is a rebuild rather than a one-time copy.
+        """
+        rows = connection.execute(
+            "SELECT id, project_id, embedding_json, embedding_model FROM knowledge_chunks"
+            " WHERE deleted_at IS NULL AND embedding_json IS NOT NULL"
+        ).fetchall()
+        by_dim: dict[int, list[sqlite3.Row]] = {}
+        for row in rows:
+            vector = json_load(row["embedding_json"], None)
+            if isinstance(vector, list) and vector:
+                by_dim.setdefault(len(vector), []).append(row)
+        for dim, entries in by_dim.items():
+            self.ensure_vec_table(connection, dim)
+            for row in entries:
+                vector = json_load(row["embedding_json"], None)
+                connection.execute(
+                    f"INSERT OR IGNORE INTO {vec_table_name(dim)}"
+                    "(chunk_id, embedding, embedding_model, project_id) VALUES (?, ?, ?, ?)",
+                    (
+                        row["id"],
+                        sqlite_vec.serialize_float32(vector),
+                        row["embedding_model"],
+                        row["project_id"] or "",
+                    ),
+                )
+
+    def ensure_vec_table(self, connection: sqlite3.Connection, dim: int) -> None:
+        """Create the per-dimension vec0 KNN table if it does not exist yet.
+
+        Embeddings are compared with cosine distance, and the two metadata
+        columns carry exactly the filters a search applies (the model that
+        produced the vectors and the project scope, "" for global - the same
+        convention knowledge_chunks_fts uses).
+        """
+        name = vec_table_name(dim)
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone()
+        if exists is None:
+            connection.execute(
+                f"CREATE VIRTUAL TABLE {name} USING vec0("
+                "chunk_id TEXT PRIMARY KEY,"
+                f"embedding FLOAT[{int(dim)}] distance_metric=cosine,"
+                "embedding_model TEXT,"
+                "project_id TEXT)"
+            )
+
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        # The extension is loadable per connection and cheap to load; every
+        # connection goes through here, so the vec tables work everywhere.
+        connection.enable_load_extension(True)
+        sqlite_vec.load(connection)
+        connection.enable_load_extension(False)
         return connection
 
     @contextmanager

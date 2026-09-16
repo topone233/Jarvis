@@ -154,6 +154,16 @@ export function BookmarkIcon(props: IconProps) {
   )
 }
 
+/** An open book: the knowledge base. */
+export function BookIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 6.6C10.8 5.3 8.9 4.6 4.6 4.6v13.2c4.3 0 6.2.7 7.4 2 1.2-1.3 3.1-2 7.4-2V4.6c-4.3 0-6.2.7-7.4 2Z" />
+      <path d="M12 6.6v13.2" />
+    </Icon>
+  )
+}
+
 export function FolderIcon(props: IconProps) {
   return (
     <Icon {...props}>

@@ -57,6 +57,20 @@ def _stream_run(run_service: RunService, run_id: str) -> StreamingResponse:
     )
 
 
+def _public_memory(memory: dict[str, Any]) -> dict[str, Any]:
+    """The API shape of a memory: the retrieval cache stays behind.
+
+    The cached vector is plumbing for relevance ranking - hundreds of floats
+    the screen never shows - and embedding_model only names the model that
+    produced it.
+    """
+    return {
+        key: value
+        for key, value in memory.items()
+        if key not in ("embedding_json", "embedding_model")
+    }
+
+
 def create_app(runtime: Runtime | None = None) -> FastAPI:
     app = FastAPI(title="Jarvis Core API", version="0.1.0")
     app.state.runtime = runtime or Runtime()
@@ -404,7 +418,10 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         project_id: str | None = None,
         core: CoreServices = Depends(services),
     ) -> list[dict[str, Any]]:
-        return core.store.list_memories(project_id=project_id, include_global=True)
+        return [
+            _public_memory(memory)
+            for memory in core.store.list_memories(project_id=project_id, include_global=True)
+        ]
 
     @app.patch("/api/memories/{memory_id}")
     async def update_memory(
@@ -412,7 +429,8 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         payload: MemoryUpdate,
         core: CoreServices = Depends(services),
     ) -> dict[str, Any]:
-        return core.store.update_memory(memory_id, payload.model_dump(exclude_unset=True))
+        changes = core.store.update_memory(memory_id, payload.model_dump(exclude_unset=True))
+        return _public_memory(changes)
 
     @app.delete("/api/memories/{memory_id}", status_code=204, response_model=None)
     async def delete_memory(memory_id: str, core: CoreServices = Depends(services)) -> None:

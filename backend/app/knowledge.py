@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import math
+import io
 import mimetypes
 import re
 from dataclasses import dataclass
@@ -55,6 +55,49 @@ ALLOWED_EXTENSIONS = {
     ".yml",
 }
 
+#: Documents parsed by a dedicated library rather than decoded as text. The
+#: extractors below are loaded lazily so the plain-text path does not pay for
+#: their imports at startup.
+OFFICE_EXTENSIONS = {
+    ".docx",
+    ".pdf",
+    ".pptx",
+    ".xlsx",
+}
+
+#: The 97-2003 binary formats. Pure Python cannot read them reliably, so they
+#: get their own message instead of the generic unsupported one.
+LEGACY_OFFICE_EXTENSIONS = {".doc", ".ppt", ".xls"}
+
+#: A backstop, not a UX limit - the same role MAX_IMAGE_BYTES plays for pastes.
+MAX_KNOWLEDGE_BYTES = 50 * 1024 * 1024
+
+#: One spreadsheet row beyond this is truncated, so a worksheet dump cannot
+#: turn into an unbounded import.
+MAX_SHEET_ROWS = 5_000
+
+#: A single cell holding a novel is pathological; keep it from dominating a chunk.
+MAX_CELL_CHARS = 500
+
+#: Total extracted text per document. Chunks are all embedded in one request,
+#: so a 100MB extraction would ask the embedding endpoint for thousands of
+#: vectors at once - this cap keeps that from happening.
+MAX_EXTRACTED_CHARS = 1_000_000
+
+_IMG_TAG_RE = re.compile(r"<img\b[^>]*>")
+# Data-URI image markdown mammoth's writer emits; the base64 body would
+# otherwise be indexed as noise tokens.
+_DATA_URI_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(data:[^)]*\)")
+
+# Stated explicitly because Windows resolves mimetypes through the registry,
+# which shadows the builtin map and often answers text/plain for OOXML types.
+_MIME_TYPES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pdf": "application/pdf",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
 
 @dataclass(frozen=True)
 class ImportItem:
@@ -73,6 +116,115 @@ def _decode_text(content: bytes) -> str:
     if detected is None:
         raise ValidationError("无法识别文件编码，请仅导入文本或源码文件。")
     return str(detected)
+
+
+def _cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return text[:MAX_CELL_CHARS]
+
+
+def _docx_to_text(content: bytes) -> str:
+    import mammoth
+
+    with io.BytesIO(content) as stream:
+        result = mammoth.convert_to_markdown(stream)
+    # mammoth turns embedded pictures into base64 data URIs, which would be
+    # indexed as noise tokens. The words are what a knowledge base is for.
+    return _IMG_TAG_RE.sub("", _DATA_URI_IMAGE_RE.sub("", result.value))
+
+
+def _xlsx_to_text(content: bytes) -> str:
+    from openpyxl import load_workbook
+
+    sections: list[str] = []
+    # The stream has to stay open for the whole read: a read_only workbook
+    # streams its rows lazily, long after load_workbook has returned.
+    with io.BytesIO(content) as stream:
+        workbook = load_workbook(stream, read_only=True, data_only=True)
+        try:
+            for sheet in workbook.worksheets:
+                rows: list[str] = []
+                for row in sheet.iter_rows(values_only=True):
+                    cells = [_cell_text(cell) for cell in row]
+                    if not any(cells):
+                        continue
+                    rows.append("| " + " | ".join(cells) + " |")
+                    if len(rows) >= MAX_SHEET_ROWS:
+                        break
+                if rows:
+                    sections.append(f"## 表格：{sheet.title}\n" + "\n".join(rows))
+        finally:
+            workbook.close()
+    return "\n\n".join(sections)
+
+
+def _pptx_to_text(content: bytes) -> str:
+    from pptx import Presentation
+
+    with io.BytesIO(content) as stream:
+        presentation = Presentation(stream)
+    sections: list[str] = []
+    for index, slide in enumerate(presentation.slides, start=1):
+        lines: list[str] = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for paragraph in shape.text_frame.paragraphs:
+                    text = "".join(run.text for run in paragraph.runs).strip()
+                    if text:
+                        lines.append(text)
+            if shape.has_table:
+                for row in shape.table.rows:
+                    cells = [_cell_text(cell.text) for cell in row.cells]
+                    if any(cells):
+                        lines.append("| " + " | ".join(cells) + " |")
+        if slide.has_notes_slide:
+            notes = slide.notes_slide.notes_text_frame.text.strip()
+            if notes:
+                lines.append(notes)
+        if lines:
+            sections.append(f"## 幻灯片 {index}\n" + "\n".join(lines))
+    return "\n\n".join(sections)
+
+
+def _pdf_to_text(content: bytes) -> str:
+    from pdfminer.high_level import extract_text
+
+    # Scanned PDFs hold pictures, not text; they come back empty and are
+    # skipped with their own message. There is no OCR in this pipeline.
+    raw = extract_text(io.BytesIO(content))
+    sections = []
+    for index, page in enumerate(raw.split("\f"), start=1):
+        page = page.strip()
+        if page:
+            sections.append(f"## 第 {index} 页\n{page}")
+    return "\n\n".join(sections)
+
+
+_EXTRACTORS = {
+    ".docx": _docx_to_text,
+    ".pdf": _pdf_to_text,
+    ".pptx": _pptx_to_text,
+    ".xlsx": _xlsx_to_text,
+}
+
+
+def _extract_text(suffix: str, content: bytes) -> str:
+    extractor = _EXTRACTORS.get(suffix)
+    if extractor is None:
+        return _decode_text(content)
+    try:
+        text = extractor(content)
+    except ValidationError:
+        raise
+    except Exception as error:
+        # A mislabeled file (a renamed text file with a .docx suffix, a
+        # truncated download) arrives as arbitrary bytes; the parsing
+        # libraries raise half a dozen different exceptions for that, so the
+        # catch has to be wide. The message is all the caller sees.
+        raise ValidationError("无法解析这个文档，文件可能已损坏或不是它声称的格式。") from error
+    return text[:MAX_EXTRACTED_CHARS]
 
 
 def _split_long_text(value: str, target_size: int, overlap_size: int) -> list[str]:
@@ -118,15 +270,6 @@ def chunk_text(value: str, target_size: int = 1_800, overlap_size: int = 220) ->
     return chunks
 
 
-def _cosine(left: list[float], right: list[float]) -> float:
-    if len(left) != len(right) or not left:
-        return 0
-    numerator = sum(a * b for a, b in zip(left, right, strict=True))
-    left_norm = math.sqrt(sum(item * item for item in left))
-    right_norm = math.sqrt(sum(item * item for item in right))
-    return numerator / (left_norm * right_norm) if left_norm and right_norm else 0
-
-
 class KnowledgeService:
     def __init__(self, store: Store, provider: OpenAICompatibleProvider) -> None:
         self.store = store
@@ -144,12 +287,22 @@ class KnowledgeService:
         results: list[dict[str, Any]] = []
         for item in items:
             suffix = Path(item.filename).suffix.lower()
-            if suffix not in ALLOWED_EXTENSIONS:
+            if suffix in LEGACY_OFFICE_EXTENSIONS:
                 results.append(
                     {
                         "filename": item.filename,
                         "status": "skipped",
-                        "reason": "当前仅支持文本、Markdown 和常见源码文件。",
+                        "reason": "旧版 Office 格式暂不支持，请在 Office 里另存为 "
+                        ".docx/.xlsx/.pptx 后再导入。",
+                    }
+                )
+                continue
+            if suffix not in ALLOWED_EXTENSIONS and suffix not in OFFICE_EXTENSIONS:
+                results.append(
+                    {
+                        "filename": item.filename,
+                        "status": "skipped",
+                        "reason": "当前仅支持文本、Markdown、源码和 docx/xlsx/pptx/pdf 文档。",
                     }
                 )
                 continue
@@ -158,12 +311,29 @@ class KnowledgeService:
                     {"filename": item.filename, "status": "skipped", "reason": "文件为空。"}
                 )
                 continue
+            if len(item.content) > MAX_KNOWLEDGE_BYTES:
+                results.append(
+                    {
+                        "filename": item.filename,
+                        "status": "skipped",
+                        "reason": "单个文件不能超过 50MB。",
+                    }
+                )
+                continue
             try:
-                text = _decode_text(item.content)
+                text = _extract_text(suffix, item.content)
             except ValidationError as error:
                 results.append(
                     {"filename": item.filename, "status": "skipped", "reason": str(error)}
                 )
+                continue
+            if suffix in OFFICE_EXTENSIONS and not text.strip():
+                reason = (
+                    "这份 PDF 没有可提取的文字（可能是扫描件）。"
+                    if suffix == ".pdf"
+                    else "未在文档中找到可提取的文字。"
+                )
+                results.append({"filename": item.filename, "status": "skipped", "reason": reason})
                 continue
             content_hash = hashlib.sha256(item.content).hexdigest()
             document_id_hint = hashlib.sha1(
@@ -177,7 +347,9 @@ class KnowledgeService:
                 title=Path(item.filename).stem or item.filename,
                 original_filename=item.filename,
                 relative_path=item.relative_path,
-                mime_type=mimetypes.guess_type(item.filename)[0] or "text/plain",
+                mime_type=_MIME_TYPES.get(suffix)
+                or mimetypes.guess_type(item.filename)[0]
+                or "text/plain",
                 content_hash=content_hash,
                 stored_path=str(stored_path),
             )
@@ -221,7 +393,14 @@ class KnowledgeService:
         project_id: str | None,
         profile: dict[str, Any] | None,
         limit: int = 5,
+        query_vector: list[float] | None = None,
     ) -> list[dict[str, Any]]:
+        """Hybrid keyword + semantic hits for one query.
+
+        `query_vector` lets a caller that already embedded this exact query
+        hand the vector over - the context build ranks memories with it
+        first - instead of paying for a second identical embedding call.
+        """
         fts_query = self._fts_query(query)
         fts_results = self.store.search_knowledge_fts(fts_query, project_id) if fts_query else []
         scored: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -231,12 +410,18 @@ class KnowledgeService:
             scored[item["id"]] = (0.45 / (index + 1), item)
         if profile and profile.get("embedding_model"):
             try:
-                query_vector = (await self.provider.embed(profile, [query]))[0]
-                vectors = self.store.get_knowledge_chunks_with_embeddings(
-                    project_id, profile["embedding_model"]
+                if query_vector is None:
+                    query_vector = (await self.provider.embed(profile, [query]))[0]
+                vec_hits = self.store.search_knowledge_vec(
+                    project_id,
+                    profile["embedding_model"],
+                    query_vector,
+                    limit,
                 )
-                for item in vectors:
-                    score = max(_cosine(query_vector, item["embedding"]), 0) * 0.75
+                for item in vec_hits:
+                    # Cosine distance to similarity, on the same 0.75 weight
+                    # the Python scan used, so ranking contracts stay put.
+                    score = max(1.0 - item["distance"], 0.0) * 0.75
                     existing = scored.get(item["id"])
                     scored[item["id"]] = (score + (existing[0] if existing else 0), item)
             except (ProviderError, IndexError):

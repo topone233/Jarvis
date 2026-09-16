@@ -77,6 +77,7 @@ describe('opening a profile in the form', () => {
       name: '本地模型',
       baseUrl: 'http://127.0.0.1:8790/v1',
       chatModel: 'stub-model',
+      embeddingModel: '',
       apiKey: '',
       contextWindow: '128000',
       outputTokenReserve: '8192',
@@ -234,6 +235,7 @@ describe('editing a profile', () => {
       name: '新名字',
       base_url: 'http://127.0.0.1:8790/v1',
       chat_model: 'stub-model',
+      embedding_model: null,
       ...VALUES,
     })
     // The whole point: absent, not empty. An explicit "" deletes the stored key.
@@ -339,5 +341,32 @@ describe('which profile is in effect', () => {
 
   it('has nothing to say about an empty list', () => {
     expect(effectiveDefault([])).toBeNull()
+  })
+})
+
+describe('embedding model', () => {
+  it('round-trips from the profile into the payloads', () => {
+    const draft = draftFrom(profile({ embedding_model: ' bge-m3 ' }))
+    expect(draft.embeddingModel).toBe(' bge-m3 ')
+    const values = parsed(draft)
+    expect(createPayload(draft, false, values).embedding_model).toBe('bge-m3')
+    expect(updatePayload(draft, values).embedding_model).toBe('bge-m3')
+  })
+
+  it('clears the stored model when the box is emptied', () => {
+    const draft = draftFrom(profile({ embedding_model: 'bge-m3' }))
+    draft.embeddingModel = ''
+    const values = parsed(draft)
+    expect(createPayload(draft, false, values).embedding_model).toBeNull()
+    expect(updatePayload(draft, values).embedding_model).toBeNull()
+  })
+
+  it('a fresh draft sends null, not a name', () => {
+    const draft = emptyDraft()
+    draft.name = '本地'
+    draft.baseUrl = 'http://127.0.0.1:8790/v1'
+    draft.chatModel = 'stub-model'
+    const values = parsed(draft)
+    expect(createPayload(draft, true, values).embedding_model).toBeNull()
   })
 })

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -18,6 +19,13 @@ from app.settings import (
 )
 from app.store import Store
 from app.tokens import IMAGE_TOKEN_ESTIMATE, estimate_tokens
+from app.utils import json_dump, json_load
+
+#: A memory joins the injected list only when its similarity to the current
+#: query clears the floor, and at most this many do. Tuned by hand and kept as
+#: code on purpose: they shape one prompt section, not user-facing behavior.
+MEMORY_RELEVANCE_FLOOR = 0.25
+MEMORY_RELEVANCE_LIMIT = 6
 
 
 @dataclass(frozen=True)
@@ -29,8 +37,30 @@ class ContextBundle:
     # retrieval step reports this list and the screen can say what the memory
     # step had to work with.
     memories: list[dict[str, Any]]
+    # How the injected list was chosen: "relevance" (ranked against the
+    # query), "forget_bypass" (everything listed so the model can name what
+    # to forget), or "fallback" (nothing to rank with - no embedding model,
+    # a blank query, or a failed embed call - so everything deduped is shown).
+    memory_mode: str
     input_token_estimate: int
     remaining_token_estimate: int
+
+
+def _cosine(left: list[float], right: list[float]) -> float:
+    """Plain cosine, guarding the shapes a half-finished cache can produce.
+
+    A dimension mismatch (the embedding endpoint changed width under the same
+    model name) or a zero vector is simply "no similarity", which ranks the
+    memory out instead of failing the turn.
+    """
+    if not left or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right, strict=False))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return dot / (left_norm * right_norm)
 
 
 class ContextManager:
@@ -113,6 +143,19 @@ class ContextManager:
             token_estimate=estimate_tokens(summary),
         )
 
+    @staticmethod
+    def is_forget_request(content: str) -> bool:
+        """Whether this turn asks the model to make it forget something.
+
+        A forget entry is copied from the <memory> list the model was shown,
+        so a turn that means to forget must be shown everything, dedup and
+        ranking alike. Heuristic on purpose and one-sided: it only widens
+        what is injected, never narrows it - a false positive fattens one
+        prompt, a false negative would hide a memory the user asked to name.
+        """
+        normalized = content.lower()
+        return "忘" in normalized or "forget" in normalized
+
     async def build(
         self,
         conversation_id: str,
@@ -121,25 +164,51 @@ class ContextManager:
     ) -> ContextBundle:
         conversation = self.store.get_conversation(conversation_id)
         artifact = self.store.get_latest_context_artifact(conversation_id)
-        memories = self.store.list_memories(
+        candidates = self.store.list_memories(
             project_id=conversation["project_id"],
             include_global=True,
         )[:16]
         # An image-only message has no words to search with; an empty query is
         # not an answer to any question, so nothing is looked up at all.
+        has_query = bool(user_query.strip())
+        query_vector: list[float] | None = None
+        if (
+            profile.get("embedding_model")
+            and has_query
+            and candidates
+            and not self.is_forget_request(user_query)
+        ):
+            try:
+                query_vector = await self._refresh_memory_vectors(candidates, profile, user_query)
+            except ProviderError:
+                query_vector = None
         citations = (
             await self.knowledge.search(
                 user_query,
                 project_id=conversation["project_id"],
                 profile=profile,
+                query_vector=query_vector,
             )
-            if user_query.strip()
+            if has_query
             else []
         )
-        system = self._assemble_system_instruction(memories, artifact, citations)
         raw_messages = self._messages_after_artifact(conversation_id, artifact)
         input_budget = profile["context_window"] - profile["output_token_reserve"]
-        selected_messages, estimate = self._fit_messages(system, raw_messages, input_budget)
+        # Pass one fits with every candidate listed. Its visible set only
+        # grows from here - the final system drops memories, never adds them -
+        # so a source it calls visible stays visible, while one it calls
+        # hidden gets its memory kept even if the second fit would reveal the
+        # source: keeping a duplicate beats dropping a memory's last carrier.
+        system = self._assemble_system_instruction(candidates, artifact, citations)
+        selected_messages, estimate, visible_ids = self._fit_messages(
+            system, raw_messages, input_budget
+        )
+        memories, mode = self._select_memories(
+            candidates, conversation_id, artifact, visible_ids, user_query, query_vector
+        )
+        if [memory["id"] for memory in memories] != [memory["id"] for memory in candidates]:
+            system = self._assemble_system_instruction(memories, artifact, citations)
+            selected_messages, estimate, _ = self._fit_messages(system, raw_messages, input_budget)
         # A cleared prompt is a choice the settings screen allows, and an empty
         # system message is not how to carry it out: some endpoints reject one
         # outright. Nothing is sent instead, which is what "no system prompt"
@@ -151,9 +220,115 @@ class ContextManager:
             messages=model_messages,
             citations=citations,
             memories=memories,
+            memory_mode=mode,
             input_token_estimate=estimate,
             remaining_token_estimate=remaining,
         )
+
+    def _select_memories(
+        self,
+        candidates: list[dict[str, Any]],
+        conversation_id: str,
+        artifact: dict[str, Any] | None,
+        visible_ids: set[str],
+        user_query: str,
+        query_vector: list[float] | None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """What this turn's <memory> section holds, and how it was chosen.
+
+        Dedup first - it is pure logic, and a memory it drops never needs a
+        vector. Ranking runs on what is left, against the query vector the
+        build already paid for.
+        """
+        if self.is_forget_request(user_query):
+            return candidates, "forget_bypass"
+        deduped = self._drop_present_memories(candidates, conversation_id, artifact, visible_ids)
+        if query_vector is None:
+            return deduped, "fallback"
+        return self._rank_memories(deduped, query_vector), "relevance"
+
+    def _drop_present_memories(
+        self,
+        candidates: list[dict[str, Any]],
+        conversation_id: str,
+        artifact: dict[str, Any] | None,
+        visible_ids: set[str],
+    ) -> list[dict[str, Any]]:
+        """Skip a memory whose information is already in front of the model.
+
+        A memory is the distilled form of one source message. While that
+        message is still visible in this turn's window, or has been folded
+        into the compaction artifact (a choice the user made: lossy summary
+        or not, it counts as present), injecting the memory again is
+        duplication. Once the source is gone from both - scrolled out of the
+        budget, deleted, or living in another conversation - the memory is
+        the fact's only carrier and comes back.
+        """
+        sources = self.store.get_messages_by_ids(
+            memory["source_message_id"] for memory in candidates if memory["source_message_id"]
+        )
+        placement = {row["id"]: row for row in sources}
+        kept: list[dict[str, Any]] = []
+        for memory in candidates:
+            source = placement.get(memory["source_message_id"])
+            if source is None or source["conversation_id"] != conversation_id:
+                kept.append(memory)
+                continue
+            if artifact is not None and source["ordinal"] <= artifact["end_ordinal"]:
+                continue
+            if source["id"] in visible_ids:
+                continue
+            kept.append(memory)
+        return kept
+
+    async def _refresh_memory_vectors(
+        self, memories: list[dict[str, Any]], profile: dict[str, Any], query: str
+    ) -> list[float]:
+        """Embed the query and every stale memory in one call; cache the rest.
+
+        A memory's vector is cached until its content changes or the profile
+        names another embedding model, so the missing ones are paid for once
+        and a steady-state turn embeds only the query. Candidates are
+        refreshed before dedup drops any of them on purpose: a memory
+        suppressed today holds its vector ready for the turn its source
+        scrolls out of the window.
+        """
+        model = profile["embedding_model"]
+        stale = [
+            memory
+            for memory in memories
+            if memory.get("embedding_model") != model or memory.get("embedding_json") is None
+        ]
+        texts = [query, *(memory["content"] for memory in stale)]
+        vectors = await self.provider.embed(profile, texts)
+        if len(vectors) != len(texts):
+            raise ProviderError("嵌入服务返回的向量数量不匹配。")
+        for memory, vector in zip(stale, vectors[1:], strict=True):
+            self.store.update_memory_embedding(memory["id"], vector, model)
+            # The ranking reads the records in hand, not the database again:
+            # the write-back has to land in both or the fresh vectors are
+            # invisible to the very call that produced them.
+            memory["embedding_json"] = json_dump(vector)
+            memory["embedding_model"] = model
+        return vectors[0]
+
+    @staticmethod
+    def _rank_memories(
+        memories: list[dict[str, Any]], query_vector: list[float]
+    ) -> list[dict[str, Any]]:
+        """The memories that clear the relevance floor, best first, capped.
+
+        Ties keep the kind-and-recency order the candidates arrived in, so
+        the ranking only ever promotes, never shuffles equal things.
+        """
+        scored: list[tuple[float, int, dict[str, Any]]] = []
+        for index, memory in enumerate(memories):
+            vector = json_load(memory.get("embedding_json"), None)
+            score = _cosine(query_vector, vector) if vector else 0.0
+            if score >= MEMORY_RELEVANCE_FLOOR:
+                scored.append((-score, index, memory))
+        scored.sort(key=lambda item: (item[0], item[1]))
+        return [memory for _, _, memory in scored[:MEMORY_RELEVANCE_LIMIT]]
 
     def _messages_after_artifact(
         self, conversation_id: str, artifact: dict[str, Any] | None
@@ -250,11 +425,14 @@ class ContextManager:
 
     def _fit_messages(
         self, system: str, messages: list[dict[str, Any]], input_budget: int
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[list[dict[str, Any]], int, set[str]]:
         """The newest messages that fit, as provider-shaped payloads, with the
         cost that was measured - build()'s estimate and the fitting have to be
-        the same number, so the fitting is where it comes from."""
+        the same number, so the fitting is where it comes from - plus the ids
+        of the messages that made the cut, which the memory dedup reads as
+        "visible in this turn's window"."""
         selected: list[dict[str, Any]] = []
+        visible_ids: set[str] = set()
         used = estimate_tokens(system)
         for message in reversed(messages):
             cost = self._cost(message)
@@ -263,8 +441,9 @@ class ContextManager:
             selected.append(
                 self._provider_message(message["role"], message["content"], message_images(message))
             )
+            visible_ids.add(message["id"])
             used += cost
-        return list(reversed(selected)), used
+        return list(reversed(selected)), used, visible_ids
 
     def _provider_message(self, role: str, content: str, images: list[str]) -> dict[str, Any]:
         """One message as the wire wants it: a string, or the multimodal shape

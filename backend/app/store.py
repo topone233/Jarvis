@@ -4,7 +4,9 @@ import sqlite3
 from collections.abc import Iterable
 from typing import Any, overload
 
-from app.database import Database
+import sqlite_vec
+
+from app.database import Database, vec_table_name
 from app.errors import NotFoundError
 from app.images import message_images
 from app.settings import COMPACT_PERCENT_DEFAULT
@@ -515,6 +517,28 @@ class Store:
         )
         return _record(self._require(row, "消息"), json_fields=("metadata_json",))
 
+    def get_messages_by_ids(self, ids: Iterable[str]) -> list[dict[str, Any]]:
+        """Bare placement rows for the ids named, skipping deleted messages.
+
+        Callers want to know where a message lives (which conversation, which
+        ordinal), not what it says - the memory dedup uses this to tell whether
+        a memory's source is still part of the visible conversation. A deleted
+        source is not returned on purpose: gone from the transcript, the memory
+        is the fact's only carrier again.
+        """
+        wanted = list(dict.fromkeys(ids))
+        if not wanted:
+            return []
+        placeholders = ", ".join("?" for _ in wanted)
+        rows = self.database.fetchall(
+            f"""
+            SELECT id, conversation_id, ordinal FROM messages
+            WHERE id IN ({placeholders}) AND deleted_at IS NULL
+            """,
+            tuple(wanted),
+        )
+        return _records(rows)
+
     def append_message(
         self,
         conversation_id: str,
@@ -909,6 +933,16 @@ class Store:
                 (successor_id, utc_now(), memory_id),
             )
 
+    def update_memory_embedding(
+        self, memory_id: str, vector: list[float], embedding_model: str
+    ) -> None:
+        """Cache a memory's retrieval vector and the model that produced it."""
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE memories SET embedding_json = ?, embedding_model = ? WHERE id = ?",
+                (json_dump(vector), embedding_model, memory_id),
+            )
+
     def update_memory(self, memory_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         self.get_memory(memory_id)
         values = {key: value for key, value in changes.items() if value is not None}
@@ -920,6 +954,11 @@ class Store:
             if key in values:
                 assignments.append(f"{key} = ?")
                 parameters.append(values[key])
+        if "content" in values:
+            # The cached vector describes the old text; keeping it would rank
+            # the memory against queries it no longer matches.
+            assignments.append("embedding_json = NULL")
+            assignments.append("embedding_model = NULL")
         assignments.append("updated_at = ?")
         parameters.append(utc_now())
         parameters.append(memory_id)
@@ -1016,6 +1055,7 @@ class Store:
         embedding_model: str | None,
     ) -> list[dict[str, Any]]:
         created: list[dict[str, Any]] = []
+        seen_dims: set[int] = set()
         with self.database.transaction() as connection:
             for chunk in chunks:
                 chunk_id = new_id()
@@ -1046,6 +1086,21 @@ class Store:
                     """,
                     (chunk_id, document_id, project_id or "", segment_for_index(chunk["content"])),
                 )
+                if chunk.get("embedding") and embedding_model:
+                    dim = len(chunk["embedding"])
+                    if dim not in seen_dims:
+                        self.database.ensure_vec_table(connection, dim)
+                        seen_dims.add(dim)
+                    connection.execute(
+                        f"INSERT INTO {vec_table_name(dim)}"
+                        "(chunk_id, embedding, embedding_model, project_id) VALUES (?, ?, ?, ?)",
+                        (
+                            chunk_id,
+                            sqlite_vec.serialize_float32(chunk["embedding"]),
+                            embedding_model,
+                            project_id or "",
+                        ),
+                    )
                 created.append(
                     {
                         "id": chunk_id,
@@ -1056,28 +1111,48 @@ class Store:
                 )
         return created
 
-    def get_knowledge_chunks_with_embeddings(
-        self, project_id: str | None, embedding_model: str
+    def search_knowledge_vec(
+        self,
+        project_id: str | None,
+        embedding_model: str,
+        query_vector: list[float],
+        limit: int,
     ) -> list[dict[str, Any]]:
-        if project_id is None:
-            query = """
-                SELECT c.*, d.title AS document_title
-                FROM knowledge_chunks c
-                JOIN knowledge_documents d ON d.id = c.document_id
-                WHERE c.project_id IS NULL AND c.deleted_at IS NULL AND d.deleted_at IS NULL
-                    AND c.embedding_model = ? AND c.embedding_json IS NOT NULL
-            """
-            parameters: tuple[object, ...] = (embedding_model,)
-        else:
-            query = """
-                SELECT c.*, d.title AS document_title
-                FROM knowledge_chunks c
-                JOIN knowledge_documents d ON d.id = c.document_id
-                WHERE c.project_id = ? AND c.deleted_at IS NULL AND d.deleted_at IS NULL
-                    AND c.embedding_model = ? AND c.embedding_json IS NOT NULL
-            """
-            parameters = (project_id, embedding_model)
-        return _records(self.database.fetchall(query, parameters), json_fields=("embedding_json",))
+        """The nearest chunks to a query vector, via the vec0 KNN table.
+
+        The table is chosen by the query's own dimension, so a table that does
+        not exist yet simply means nothing has been embedded at that width:
+        no semantic hits, not an error. The model and project filters are
+        metadata constraints, so the k returned are already the right k.
+        """
+        dim = len(query_vector)
+        table = vec_table_name(dim)
+        exists = self.database.fetchone(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        )
+        if exists is None:
+            return []
+        rows = self.database.fetchall(
+            f"""
+            SELECT v.chunk_id, v.distance, c.*, d.title AS document_title
+            FROM {table} v
+            JOIN knowledge_chunks c ON c.id = v.chunk_id
+            JOIN knowledge_documents d ON d.id = c.document_id
+            WHERE v.embedding MATCH ?
+              AND v.k = {int(limit)}
+              AND v.embedding_model = ?
+              AND v.project_id = ?
+              AND c.deleted_at IS NULL
+              AND d.deleted_at IS NULL
+            ORDER BY v.distance
+            """,
+            (
+                sqlite_vec.serialize_float32(query_vector),
+                embedding_model,
+                project_id or "",
+            ),
+        )
+        return _records(rows, json_fields=("embedding_json",))
 
     def search_knowledge_fts(
         self, query: str, project_id: str | None, limit: int = 12
@@ -1132,6 +1207,77 @@ class Store:
                 "DELETE FROM knowledge_chunks_fts WHERE document_id = ?",
                 (document_id,),
             )
+            # The vec tables are pure derived index, like the FTS rows: they
+            # go now, and a restore rebuilds them from knowledge_chunks.
+            # vec0 refuses an IN (subquery) constraint, so the ids go in as
+            # bound parameters, one DELETE per id. The sql filter keeps vec0's
+            # own shadow tables out of the list: they are ordinary CREATE
+            # TABLEs next to the one CREATE VIRTUAL TABLE.
+            vec_chunk_ids = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM knowledge_chunks WHERE document_id = ?", (document_id,)
+                ).fetchall()
+            ]
+            vec_tables = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                " AND name LIKE 'knowledge_chunks_vec_%'"
+                " AND sql LIKE 'CREATE VIRTUAL TABLE%'"
+            ).fetchall()
+            for table in vec_tables:
+                for chunk_id in vec_chunk_ids:
+                    connection.execute(
+                        f"DELETE FROM {table['name']} WHERE chunk_id = ?", (chunk_id,)
+                    )
+
+    def _revive_knowledge_chunks(self, connection: sqlite3.Connection, document_id: str) -> None:
+        """Rebuild the derived indexes of a restored document's chunks.
+
+        Deleting a document physically drops its FTS and vec rows while the
+        chunk rows only soft-delete, so restoring has to un-delete those rows
+        and re-derive both indexes from what knowledge_chunks still holds.
+        """
+        chunks = connection.execute(
+            "SELECT id, content, embedding_json, embedding_model, project_id"
+            " FROM knowledge_chunks WHERE document_id = ? AND deleted_at IS NOT NULL",
+            (document_id,),
+        ).fetchall()
+        if not chunks:
+            return
+        connection.execute(
+            "UPDATE knowledge_chunks SET deleted_at = NULL WHERE document_id = ?",
+            (document_id,),
+        )
+        seen_dims: set[int] = set()
+        for chunk in chunks:
+            connection.execute(
+                """
+                INSERT INTO knowledge_chunks_fts(chunk_id, document_id, project_id, content)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    chunk["id"],
+                    document_id,
+                    chunk["project_id"] or "",
+                    segment_for_index(chunk["content"]),
+                ),
+            )
+            vector = json_load(chunk["embedding_json"], None)
+            if isinstance(vector, list) and vector and chunk["embedding_model"]:
+                dim = len(vector)
+                if dim not in seen_dims:
+                    self.database.ensure_vec_table(connection, dim)
+                    seen_dims.add(dim)
+                connection.execute(
+                    f"INSERT OR IGNORE INTO {vec_table_name(dim)}"
+                    "(chunk_id, embedding, embedding_model, project_id) VALUES (?, ?, ?, ?)",
+                    (
+                        chunk["id"],
+                        sqlite_vec.serialize_float32(vector),
+                        chunk["embedding_model"],
+                        chunk["project_id"] or "",
+                    ),
+                )
 
     # Feedback and recycle bin
     def add_feedback(self, message_id: str, kind: str) -> dict[str, Any]:
@@ -1189,6 +1335,8 @@ class Store:
                 connection.execute(
                     f"UPDATE {table} SET deleted_at = NULL WHERE id = ?", (entity_id,)
                 )
+            if entity_type == "knowledge_document":
+                self._revive_knowledge_chunks(connection, entity_id)
             connection.execute(
                 "UPDATE trash_items SET restored_at = ? WHERE id = ?",
                 (utc_now(), trash_id),

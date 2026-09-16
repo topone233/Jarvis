@@ -9,8 +9,13 @@ dependencies = [
     "fastapi==0.115.12",
     "httpx==0.28.1",
     "keyring==25.6.0",
+    "mammoth==1.12.2",
+    "openpyxl==3.1.5",
+    "pdfminer-six==20260107",
     "pydantic==2.10.6",
     "python-multipart==0.0.20",
+    "python-pptx==1.0.2",
+    "sqlite-vec==0.1.9",
     "uvicorn[standard]==0.34.0",
 ]
 
@@ -20,6 +25,7 @@ dev = [
     "pytest==8.3.4",
     "pytest-asyncio==0.25.3",
     "ruff==0.9.10",
+    "types-openpyxl==3.1.5.20260827",
 ]
 
 [tool.pytest.ini_options]
@@ -51,3 +57,7 @@ warn_unused_ignores = true
 [tool.uv]
 package = false
 
+
+[[tool.mypy.overrides]]
+module = ["mammoth.*", "sqlite_vec"]
+ignore_missing_imports = true

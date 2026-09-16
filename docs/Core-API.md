@@ -139,7 +139,23 @@ them as a `memory_write` stage - which exists **only when there were actions**.
 A plain answer has no memory step at all, and no extra model call. A tail that
 fails to produce actions is treated as ordinary reply text and shown in full.
 
-- GET /api/memories?project_id={id}, PATCH and DELETE /api/memories/{id}
+Injection is selective. Candidates are the 16 most recent active memories;
+first a dedup pass drops any whose source message (recorded on the memory) is
+still visible in this turn's window or has been folded into the compaction
+artifact — the information is already in front of the model, so re-injecting
+it is duplication. When the model profile names an embedding model, the rest
+are ranked against the query vector (cosine, floor 0.25, at most 6) and only
+relevant ones are injected; vectors are cached on the memory row and refreshed
+lazily, one batched embed call per turn, shared with knowledge search. Without
+an embedding model, on a blank (image-only) query, or when the embed call
+fails, the deduped list is injected unranked — never worse than a plain dump.
+A query that means to forget (contains 忘/forget) lists everything, because
+forget entries must be copied from the `<memory>` list. The `context_retrieval`
+audit event reports the outcome as `memory_mode`: `relevance`, `forget_bypass`,
+or `fallback`.
+
+- GET /api/memories?project_id={id}, PATCH and DELETE /api/memories/{id}. The
+  API never returns the cached embedding columns; they are retrieval plumbing.
 - POST /api/messages/{id}/feedback with kind equal to up or down
 - POST /api/knowledge/import is multipart with files, optional project_id,
   model_profile_id, and matching relative_paths.
@@ -152,9 +168,12 @@ be restored there (POST /api/trash/{trash_id}/restore). The frontend's memory
 page has a deleted section for exactly that, plus a permanent delete, which is
 DELETE /api/trash/{trash_id} on the bin entry.
 
-Only text, Markdown, and common source-code formats are accepted in this
-release. Imports are copied into the user-selected Jarvis data directory; the
-service never alters the original source file or folder.
+Only text, Markdown, common source-code formats, and docx/xlsx/pptx/pdf are
+accepted in this release. The 97-2003 binary formats (.doc/.xls/.ppt) are
+rejected with a message asking for a resave; a scanned PDF extracts no text and
+is skipped. Imports are copied into the user-selected Jarvis data directory;
+the service never alters the original source file or folder. The document and
+retrieval design behind these endpoints is docs/RAG.md.
 
 ## Trash
 

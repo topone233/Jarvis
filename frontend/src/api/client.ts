@@ -51,7 +51,10 @@ export function withJsonBody(init: RequestInit, accept?: string): RequestInit {
   const headers: Record<string, string> = {
     ...(init.headers as Record<string, string> | undefined),
   }
-  if (init.body !== undefined) {
+  // Only a string body is JSON. A FormData body has to reach the browser
+  // unmarked so it carries its own multipart boundary with it - that is how
+  // the knowledge import sends files.
+  if (typeof init.body === 'string') {
     headers['Content-Type'] = 'application/json'
   }
   if (accept !== undefined) {

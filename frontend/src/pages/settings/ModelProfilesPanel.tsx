@@ -391,6 +391,18 @@ function ProfileForm({
         />
       </div>
       <div className="field">
+        <label htmlFor="profile-embedding-model">嵌入模型</label>
+        <input
+          id="profile-embedding-model"
+          value={draft.embeddingModel}
+          placeholder="留空 = 只用关键词检索"
+          onChange={(event) => onPatch({ embeddingModel: event.target.value })}
+        />
+        <span className="hint">
+          知识库语义检索用的模型（如 text-embedding-3-small、bge-m3）。不填时知识库只用关键词检索。
+        </span>
+      </div>
+      <div className="field">
         <label htmlFor="profile-api-key">API Key</label>
         <div className="field-control">
           <input
