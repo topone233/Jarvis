@@ -258,9 +258,12 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     @app.get("/api/conversations")
     async def list_conversations(
         project_id: str | None = None,
+        q: str | None = None,
         core: CoreServices = Depends(services),
     ) -> list[dict[str, Any]]:
-        return core.store.list_conversations(project_id)
+        # An empty q means "no filter" - the sidebar sends it while the search
+        # box is being cleared.
+        return core.store.list_conversations(project_id, query=q or None)
 
     @app.post("/api/conversations", status_code=201)
     async def create_conversation(

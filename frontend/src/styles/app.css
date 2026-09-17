@@ -148,6 +148,37 @@ input {
   color: var(--text-muted);
 }
 
+/* The search row lives between the top bar and the new-chat item, and reads
+   as a quiet field, not a box with a border - batch D removed the borders. */
+.sidebar-search {
+  padding: 0 10px 2px;
+}
+
+.sidebar-search input {
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  font-size: 13px;
+  outline: none;
+  transition: background 0.12s ease;
+}
+
+.sidebar-search input:focus {
+  background: var(--bg-active);
+}
+
+.sidebar-search input::placeholder {
+  color: var(--text-muted);
+}
+
+.sidebar-empty {
+  padding: 10px 10px 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .sidebar-item {
   display: flex;
   align-items: center;

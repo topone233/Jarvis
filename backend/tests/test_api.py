@@ -524,3 +524,48 @@ def test_a_body_sent_without_a_content_type_is_told_so(client: TestClient) -> No
     payload = response.json()
     assert payload["code"] == "request_validation"
     assert payload["detail"]
+
+
+def test_conversation_search_matches_titles_and_message_bodies(
+    client: TestClient, profile: dict[str, Any]
+) -> None:
+    """The sidebar's search narrows to conversations the keyword reaches.
+
+    A title hit is enough; so is a hit inside any message body of the
+    conversation, user or assistant. LIKE wildcards in the query match
+    themselves - searching "100%" finds "100%", not "1000".
+    """
+    by_title = client.post("/api/conversations", json={"title": "数据库迁移方案"}).json()
+    by_body = client.post("/api/conversations", json={"title": "随便聊聊"}).json()
+    by_percent = client.post("/api/conversations", json={"title": "完成度100%"}).json()
+    near_percent = client.post("/api/conversations", json={"title": "完成度1000分"}).json()
+    miss = client.post("/api/conversations", json={"title": "购物清单"}).json()
+
+    # The fake provider answers 这是测试回复。, so the reply's body joins the
+    # user's question in the searchable text of this conversation.
+    run = client.post(
+        f"/api/conversations/{by_body['id']}/runs",
+        json={"content": "sqlite-vec 的坑怎么解决？"},
+    )
+    assert run.status_code == 200
+
+    def titles(q: str) -> set[str]:
+        rows = client.get("/api/conversations", params={"q": q}).json()
+        return {row["title"] for row in rows}
+
+    assert titles("数据库迁移") == {"数据库迁移方案"}
+    assert titles("坑怎么解决") == {"随便聊聊"}
+    assert titles("测试回复") == {"随便聊聊"}
+    # The escaped wildcard: an unescaped pattern would sweep 1000分 in too.
+    assert titles("100%") == {"完成度100%"}
+    assert titles("不存在的词") == set()
+    # An empty q is "no filter", the same request the sidebar makes after
+    # clearing the search box.
+    every = client.get("/api/conversations").json()
+    assert {row["id"] for row in every} >= {
+        by_title["id"],
+        by_body["id"],
+        by_percent["id"],
+        near_percent["id"],
+        miss["id"],
+    }

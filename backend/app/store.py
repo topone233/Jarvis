@@ -75,6 +75,16 @@ def _profile_column_value(key: str, value: Any) -> Any:
     return value
 
 
+def _like_needle(query: str) -> str:
+    """Turns the user's text into a LIKE pattern that matches it literally.
+
+    LIKE's own wildcards (`%`, `_`) and the escape character itself are
+    escaped, so searching for `100%` finds `100%`, not every row.
+    """
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 class Store:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -332,22 +342,35 @@ class Store:
         self._soft_delete("projects", "project", project_id)
 
     # Conversations and messages
-    def list_conversations(self, project_id: str | None = None) -> list[dict[str, Any]]:
+    def list_conversations(
+        self, project_id: str | None = None, query: str | None = None
+    ) -> list[dict[str, Any]]:
+        # A query narrows to conversations whose title or any message body
+        # matches it, so the sidebar can filter in place. LIKE is
+        # case-insensitive for ASCII on its own, which is the wanted behavior
+        # for English; Chinese matches character for character.
+        filters = ["c.deleted_at IS NULL"]
+        parameters: list[object] = []
         if project_id is None:
-            query = """
-                SELECT * FROM conversations
-                WHERE project_id IS NULL AND deleted_at IS NULL
-                ORDER BY is_pinned DESC, updated_at DESC
-            """
-            parameters: tuple[object, ...] = ()
+            filters.append("c.project_id IS NULL")
         else:
-            query = """
-                SELECT * FROM conversations
-                WHERE project_id = ? AND deleted_at IS NULL
-                ORDER BY is_pinned DESC, updated_at DESC
-            """
-            parameters = (project_id,)
-        rows = self.database.fetchall(query, parameters)
+            filters.append("c.project_id = ?")
+            parameters.append(project_id)
+        if query:
+            needle = _like_needle(query)
+            filters.append(
+                "(c.title LIKE ? ESCAPE '\\' OR EXISTS ("
+                "SELECT 1 FROM messages m"
+                " WHERE m.conversation_id = c.id AND m.deleted_at IS NULL"
+                " AND m.content LIKE ? ESCAPE '\\'))"
+            )
+            parameters.extend([needle, needle])
+        rows = self.database.fetchall(
+            "SELECT c.* FROM conversations c"
+            f" WHERE {' AND '.join(filters)}"
+            " ORDER BY c.is_pinned DESC, c.updated_at DESC",
+            tuple(parameters),
+        )
         return _records(rows, bool_fields=("is_pinned",))
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:

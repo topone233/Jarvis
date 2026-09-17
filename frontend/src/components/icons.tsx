@@ -137,6 +137,16 @@ export function ChevronDownIcon(props: IconProps) {
   )
 }
 
+/** A magnifying glass: finding a conversation again among the pile. */
+export function SearchIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16.2 16.2 4.3 4.3" />
+    </Icon>
+  )
+}
+
 export function MessageIcon(props: IconProps) {
   return (
     <Icon {...props}>

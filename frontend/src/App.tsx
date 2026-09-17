@@ -112,9 +112,9 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
 
   async function remove(conversation: { id: string; title: string }) {
     const confirmed = await confirm.ask({
-      title: '把这段对话移到回收站？',
-      body: `「${conversation.title}」会被移到回收站，之后可以恢复。`,
-      confirmLabel: '移到回收站',
+      title: '删除这段对话？',
+      body: `「${conversation.title}」会被永久删除，消息、执行记录和点赞点踩一起删掉，无法恢复。`,
+      confirmLabel: '永久删除',
       danger: true,
     })
     if (!confirmed) {
@@ -123,7 +123,7 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
     try {
       await conversations.remove(conversation.id)
       // The row disappearing is the result; where it went is not on screen.
-      toast.show('已移到回收站')
+      toast.show('已删除')
     } catch {
       // This used to be an unhandled rejection: the row stayed where it was and
       // nothing on screen said why.
@@ -139,6 +139,8 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
         collapsed={collapsed}
         onToggle={toggleSidebar}
         onDelete={remove}
+        search={conversations.search}
+        onSearchChange={conversations.setSearch}
       />
       <main className="main">
         <Routes>

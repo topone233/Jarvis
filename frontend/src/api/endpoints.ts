@@ -12,8 +12,13 @@ import type {
   SettingsPatch,
 } from './types'
 
-export function listConversations(projectId?: string): Promise<Conversation[]> {
-  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''
+export function listConversations(
+  options: { projectId?: string; query?: string } = {},
+): Promise<Conversation[]> {
+  const params = new URLSearchParams()
+  if (options.projectId) params.set('project_id', options.projectId)
+  if (options.query) params.set('q', options.query)
+  const query = params.size > 0 ? `?${params.toString()}` : ''
   return api<Conversation[]>(`/api/conversations${query}`)
 }
 

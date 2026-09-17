@@ -31,7 +31,11 @@ describe('summarizeImportResults', () => {
 
   it('leaves a skipped row and its reason alone', () => {
     const rows = summarizeImportResults([
-      result({ filename: '旧.doc', status: 'skipped', reason: '旧版 Office 格式暂不支持，请在 Office 里另存为 .docx/.xlsx/.pptx 后再导入。' }),
+      result({
+        filename: '旧.doc',
+        status: 'skipped',
+        reason: '旧版 Office 格式暂不支持，请在 Office 里另存为 .docx/.xlsx/.pptx 后再导入。',
+      }),
     ])
     expect(rows).toHaveLength(1)
     expect(rows[0].status).toBe('skipped')
