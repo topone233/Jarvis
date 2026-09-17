@@ -1121,12 +1121,15 @@
   /* `height` rather than `min-height`, and a scroll of its own. Once the model
      form grew its call parameters the card could be taller than a short window,
      and anything past the bottom of the shell is clipped by `.app`'s
-     `overflow: hidden` - which made the top of the card unreachable too. */
+     `overflow: hidden` - which made the top of the card unreachable too.
+     A tinted backdrop, not white: the card only reads as floating if the page
+     behind it is a different colour - white on white was flat paper. */
   height: 100%;
   min-height: 0;
   overflow-y: auto;
   display: flex;
-  padding: 40px 20px;
+  background: var(--bg-subtle);
+  padding: 16px;
 }
 
 .setup-card {
@@ -1137,12 +1140,14 @@
   margin: auto;
   width: 100%;
   max-width: 520px;
-  padding: 30px 32px 26px;
-  border-radius: var(--radius-lg);
+  /* Tight, because every pixel here is taken from the panel's width: the card
+     is a window onto settings, not a poster to centre them in. */
+  padding: 16px 20px;
+  border-radius: var(--radius-md);
   background: var(--bg);
-  /* The card is white on a white page, so the shadow is not decoration - it is
-     the only thing drawing its edge now that the outline is gone. */
-  box-shadow: var(--shadow-input);
+  /* The heavier of the two page shadows, since the tinted backdrop makes the
+     lift believable - on white-on-white this one looked like dirt. */
+  box-shadow: var(--shadow-pop);
 }
 
 /* The card is padded enough that pulling the button 12px in from the corner
@@ -1160,24 +1165,51 @@
 }
 
 .setup-subtitle {
-  margin: 0 0 22px;
+  margin: 0 0 14px;
   color: var(--text-muted);
   font-size: 14px;
 }
 
 /* Once configured, the same card holds a list on the left and one panel on the
-   right. Wider, because the panel would otherwise be narrower than the wizard's
-   single column next to a list that no longer has anything to sit beside. */
+   right. Wider and taller than the wizard's, because the panels are forms and
+   lists that want the room - the page's 16px frame is all the margin they get.
+   Fixed height rather than auto: every panel is different, and a card that
+   respires with each tab switch reads as a window changing size. A panel taller
+   than the card scrolls inside itself instead. */
 .setup-card.is-manager {
-  max-width: 900px;
+  max-width: 980px;
+  height: min(700px, 100%);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Fill the card's remaining height so the panel — not the card — is what
+   gives when a tab's content runs long. */
+.setup-card.is-manager .setup-layout {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.setup-card.is-manager .setup-panel {
+  /* Drops the base min-height: the card's fixed height is the floor now, and
+     a minimum here would push the panel past it instead of scrolling. */
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* No subtitle in manager mode, so the title owns the gap down to the tabs. */
+.setup-card.is-manager .setup-title {
+  margin-bottom: 16px;
 }
 
 .setup-layout {
   display: grid;
   /* `minmax(0, 1fr)` rather than `1fr`: without it a long unbroken line in a
      prompt box would widen the column instead of wrapping inside it. */
-  grid-template-columns: 168px minmax(0, 1fr);
-  gap: 28px;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 24px;
   align-items: start;
 }
 

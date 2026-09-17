@@ -220,11 +220,9 @@ export function SetupPage({
           </button>
         )}
         <h1 className="setup-title">{configured ? '设置' : '配置 Jarvis'}</h1>
-        <p className="setup-subtitle">
-          {configured
-            ? '数据放在哪，用哪个模型，跟它说什么，都在这里改。'
-            : '两步就好，之后随时可以在左侧「设置」里改。'}
-        </p>
+        {/* Manager mode gets no subtitle: the tabs already say what each
+            section is, so a sentence repeating it is just whitespace. */}
+        {!configured && <p className="setup-subtitle">两步就好，之后随时可以在左侧「设置」里改。</p>}
 
         {!configured && (
           <div className="setup-steps">
