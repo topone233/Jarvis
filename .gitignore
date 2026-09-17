@@ -16,3 +16,6 @@ backend/.coverage
 frontend/node_modules/
 frontend/dist/
 
+
+# JetBrains IDE configuration, per machine.
+.idea/
