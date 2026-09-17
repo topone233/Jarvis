@@ -129,15 +129,19 @@ audit trail is the durable record; the broadcast above is only for the live run.
 
 ## Memory and knowledge
 
-Memory is decided by the main model inside the reply itself. The assembled
-system instruction ends with a directive (the user-editable `memory_prompt`)
-telling the model to append a fenced ```memory JSON block to the reply when the
-turn genuinely contains something to remember or something the user asked to
-forget, and never otherwise. The producer holds that tail back from the stream,
-strips it from the stored message once its actions are carried out, and audits
-them as a `memory_write` stage - which exists **only when there were actions**.
-A plain answer has no memory step at all, and no extra model call. A tail that
-fails to produce actions is treated as ordinary reply text and shown in full.
+Memory is decided by the main model inside the reply itself, via native tool
+calling. When the user-editable `memory_prompt` directive is present, the
+request registers two tools - `save_memory` (kind/key/content/confidence) and
+`forget_memory` (key/content, both copied from the injected memory list) - and
+the assistant message may carry content and `tool_calls` side by side. No
+`tool_choice` is set, the model decides when a turn deserves a call, and no
+tool result is ever sent back: a call is an instruction to record, not a
+question to answer. The producer carries the calls out once the reply is
+complete and audits them as a `memory_write` stage - which exists **only when
+the calls produced actions**. A plain answer has no memory step at all, no
+extra model call, and text that streams is shown whole; a call whose arguments
+do not parse leaves no trace. A cleared `memory_prompt` registers no tools,
+which is what "the model does not manage memory" means on the wire.
 
 Injection is selective. Candidates are the 16 most recent active memories;
 first a dedup pass drops any whose source message (recorded on the memory) is

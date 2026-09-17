@@ -9,7 +9,6 @@ from typing import Any
 
 from app.errors import ProviderError, ValidationError
 from app.images import parse_images, write_images
-from app.memory import split_memory_block
 from app.runtime import CoreServices, RunBroadcast
 from app.schemas import ThinkingLevel
 from app.store import INTERRUPTED_ERROR
@@ -281,12 +280,12 @@ class RunService:
                 "running",
                 {"model": choice.chat_model or profile["chat_model"]},
             )
-            # Accumulated raw, tail block included; everything shown or stored
-            # below is the visible prefix of it. While the model is writing a
-            # ```memory block the prefix simply stops growing, so no half-open
-            # JSON ever reaches the screen or a checkpoint.
+            # Accumulated as the stream delivers it; everything shown or stored
+            # is that text itself - with memory riding tool calls there is no
+            # tail to hold back, so what the user sees is what the model wrote.
             response_parts: list[str] = []
             reasoning_parts: list[str] = []
+            tool_calls: list[dict[str, Any]] = []
             usage: dict[str, Any] | None = None
             flushed = 0
             flushed_at = time.monotonic()
@@ -295,9 +294,10 @@ class RunService:
                 bundle.messages,
                 chat_model=choice.chat_model,
                 thinking=choice.thinking,
+                tools=bundle.tools,
             ):
                 if registry.is_cancelled(run_id):
-                    partial, _ = split_memory_block("".join(response_parts))
+                    partial = "".join(response_parts)
                     metadata = {
                         "run_id": run_id,
                         "citations": bundle.citations,
@@ -326,10 +326,12 @@ class RunService:
                     reasoning_parts.append(event.payload["text"])
                 elif event.kind == "delta":
                     response_parts.append(event.payload["text"])
+                elif event.kind == "tool_calls":
+                    tool_calls.extend(event.payload["calls"])
                 else:
                     continue
 
-                content, _ = split_memory_block("".join(response_parts))
+                content = "".join(response_parts)
                 reasoning = "".join(reasoning_parts)
                 broadcast.show_text(content=content, reasoning=reasoning)
                 now = time.monotonic()
@@ -349,26 +351,7 @@ class RunService:
                     flushed_at = now
 
             raw = "".join(response_parts).strip()
-            # What looked like a memory tail while streaming gets its verdict
-            # here. A block that produces real actions is stripped and carried
-            # out; anything else - an answer that just happens to end in such
-            # a fence, or JSON where nothing survived validation - is content
-            # like any other and is shown in full.
-            response, block = split_memory_block(raw)
-            actions: list[dict[str, Any]] = []
-            if block is not None:
-                actions = self.services.memory.apply_reply(
-                    reply=raw,
-                    user_content=user_message["content"],
-                    user_message_id=user_message["id"],
-                    project_id=conversation["project_id"],
-                )
-                if not actions:
-                    response = raw
-                    block = None
-            response = response.strip()
-            if not response:
-                response = "模型未返回可显示的文本。"
+            response = raw if raw else "模型未返回可显示的文本。"
             metadata = {
                 "run_id": run_id,
                 "citations": bundle.citations,
@@ -391,18 +374,25 @@ class RunService:
                 "message.completed",
                 {"message_id": assistant_id, "content": response, "metadata": metadata},
             )
-            if actions:
-                # The step exists only when it did something - a block that
-                # parsed to no valid actions leaves no trace at all, which is
-                # what keeps a plain answer free of a "写入记忆" row. The work
-                # is local and takes milliseconds, so both records carry
-                # effectively the same moment.
-                audit("memory_write", "running", {})
-                audit(
-                    "memory_write",
-                    "completed",
-                    {"count": len(actions), "items": actions},
+            if tool_calls:
+                # The step exists only when a call produced a valid action -
+                # a garbled or unrecognized call contributes no record at all,
+                # which is what keeps a plain answer free of a "写入记忆" row.
+                # The work is local and takes milliseconds, so both records
+                # carry effectively the same moment.
+                actions = self.services.memory.apply_tool_calls(
+                    tool_calls,
+                    user_content=user_message["content"],
+                    user_message_id=user_message["id"],
+                    project_id=conversation["project_id"],
                 )
+                if actions:
+                    audit("memory_write", "running", {})
+                    audit(
+                        "memory_write",
+                        "completed",
+                        {"count": len(actions), "items": actions},
+                    )
             broadcast.close()
         except ProviderError as error:
             # Best-effort bookkeeping: the conversation may already have been

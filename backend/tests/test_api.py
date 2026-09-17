@@ -20,11 +20,12 @@ from app.schemas import ThinkingLevel
 
 
 class MemoryReplyProvider:
-    """A model whose answer ends with a memory block.
+    """A model that answers and calls a memory tool in the same breath.
 
-    The block is how a run remembers now: the main model appends it, the run
-    strips it from what it shows, and the actions inside it are carried out
-    once the answer is complete.
+    The tool call is how a run remembers now: the assistant message carries
+    content and tool_calls side by side, the run shows the content, and the
+    call is carried out once the answer is complete - with no result ever
+    sent back.
     """
 
     async def stream_chat(
@@ -34,17 +35,31 @@ class MemoryReplyProvider:
         *,
         chat_model: str | None = None,
         thinking: ThinkingLevel = "off",
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del profile, messages, chat_model, thinking
         yield ProviderEvent("delta", {"text": "好的，记住了。"})
         yield ProviderEvent(
-            "delta",
+            "tool_calls",
             {
-                "text": "\n```memory\n"
-                '{"write": [{"kind": "preference", "key": "回复风格",'
-                ' "content": "喜欢简洁回答", "confidence": 0.9}]}\n```\n'
+                "calls": [
+                    {
+                        "id": "call_1",
+                        "name": "save_memory",
+                        "arguments": json.dumps(
+                            {
+                                "kind": "preference",
+                                "key": "回复风格",
+                                "content": "喜欢简洁回答",
+                                "confidence": 0.9,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ]
             },
         )
+        yield ProviderEvent("finish", {"reason": "tool_calls"})
         yield ProviderEvent("usage", {"usage": {"prompt_tokens": 12, "completion_tokens": 6}})
         yield ProviderEvent("done", {})
 
@@ -99,9 +114,9 @@ def test_project_conversation_and_streaming_run(client: TestClient, core: CoreSe
     # terminal event instead of as deltas; the client renders the same answer
     # either way, which is what makes reconnecting safe.
     assert "event: message.completed" in response.text
-    # The memory block is the model's business, never the user's: neither the
-    # deltas nor the finished answer carry it.
-    assert "```memory" not in response.text
+    # The tool protocol is the model's business, never the user's: neither the
+    # deltas nor the finished answer name it, and no result goes back.
+    assert "save_memory" not in response.text
     messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
     assert messages[-1]["content"] == "好的，记住了。"
     memories = client.get("/api/memories").json()
@@ -207,8 +222,9 @@ class QuietProvider:
         *,
         chat_model: str | None = None,
         thinking: ThinkingLevel = "off",
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
-        del profile, messages, chat_model, thinking
+        del profile, messages, chat_model, thinking, tools
         await asyncio.sleep(self.quiet)
         yield ProviderEvent("delta", {"text": "ready."})
         yield ProviderEvent("done", {})

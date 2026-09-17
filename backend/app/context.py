@@ -8,6 +8,7 @@ from typing import Any
 from app.errors import ProviderError
 from app.images import image_data_url, message_images
 from app.knowledge import KnowledgeService
+from app.memory import MEMORY_TOOLS
 from app.prompts import PROMPT_VERSION
 from app.provider import OpenAICompatibleProvider
 from app.settings import (
@@ -44,6 +45,10 @@ class ContextBundle:
     memory_mode: str
     input_token_estimate: int
     remaining_token_estimate: int
+    # The memory tools registered on this turn's request, present only when
+    # the memory directive says the model may manage memory at all. Cleared
+    # directive - the settings choice - means no tools on the wire.
+    tools: list[dict[str, Any]]
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -147,7 +152,7 @@ class ContextManager:
     def is_forget_request(content: str) -> bool:
         """Whether this turn asks the model to make it forget something.
 
-        A forget entry is copied from the <memory> list the model was shown,
+        A forget entry is copied from the 记忆 list the model was shown,
         so a turn that means to forget must be shown everything, dedup and
         ranking alike. Heuristic on purpose and one-sided: it only widens
         what is injected, never narrows it - a false positive fattens one
@@ -199,7 +204,8 @@ class ContextManager:
         # so a source it calls visible stays visible, while one it calls
         # hidden gets its memory kept even if the second fit would reveal the
         # source: keeping a duplicate beats dropping a memory's last carrier.
-        system = self._assemble_system_instruction(candidates, artifact, citations)
+        directive = read_prompt(self.store, MEMORY_PROMPT)
+        system = self._assemble_system_instruction(candidates, artifact, citations, directive)
         selected_messages, estimate, visible_ids = self._fit_messages(
             system, raw_messages, input_budget
         )
@@ -207,7 +213,7 @@ class ContextManager:
             candidates, conversation_id, artifact, visible_ids, user_query, query_vector
         )
         if [memory["id"] for memory in memories] != [memory["id"] for memory in candidates]:
-            system = self._assemble_system_instruction(memories, artifact, citations)
+            system = self._assemble_system_instruction(memories, artifact, citations, directive)
             selected_messages, estimate, _ = self._fit_messages(system, raw_messages, input_budget)
         # A cleared prompt is a choice the settings screen allows, and an empty
         # system message is not how to carry it out: some endpoints reject one
@@ -223,6 +229,7 @@ class ContextManager:
             memory_mode=mode,
             input_token_estimate=estimate,
             remaining_token_estimate=remaining,
+            tools=list(MEMORY_TOOLS) if directive else [],
         )
 
     def _select_memories(
@@ -234,7 +241,7 @@ class ContextManager:
         user_query: str,
         query_vector: list[float] | None,
     ) -> tuple[list[dict[str, Any]], str]:
-        """What this turn's <memory> section holds, and how it was chosen.
+        """What this turn's 记忆 section holds, and how it was chosen.
 
         Dedup first - it is pure logic, and a memory it drops never needs a
         vector. Ranking runs on what is left, against the query vector the
@@ -344,12 +351,12 @@ class ContextManager:
     ) -> str:
         sections: list[str] = []
         if previous:
-            sections.append(f"<previous_compact>\n{previous['content']}\n</previous_compact>")
+            sections.append(f"## 上一次的压缩摘要\n{previous['content']}")
         source = "\n".join(
             f"[{message['role']} #{message['ordinal']}]\n{message['content']}"
             for message in candidates
         )
-        sections.append(f"<history>\n{source}\n</history>")
+        sections.append(f"## 待压缩的对话记录\n{source}")
         return "\n\n".join(sections)
 
     @staticmethod
@@ -388,6 +395,7 @@ class ContextManager:
         memories: list[dict[str, Any]],
         artifact: dict[str, Any] | None,
         citations: list[dict[str, Any]],
+        directive: str,
     ) -> str:
         sections = [read_prompt(self.store, SYSTEM_PROMPT)]
         if memories:
@@ -395,20 +403,19 @@ class ContextManager:
                 f"- [{memory['kind']}] {memory['memory_key']}：{memory['content']}"
                 for memory in memories
             )
-            sections.append(f"<memory>\n{facts}\n</memory>")
+            sections.append(f"## 记忆\n{facts}")
         if artifact:
-            sections.append(f"<history>\n{artifact['content']}\n</history>")
+            sections.append(f"## 历史摘要\n{artifact['content']}")
         if citations:
             sources = "\n\n".join(
                 f"【知识:{citation['title']}】\n{citation['content'][:1_400]}"
                 for citation in citations
             )
-            sections.append(f"<knowledge>\n{sources}\n</knowledge>")
+            sections.append(f"## 知识资料\n{sources}")
         # Memory management rides on the main call: the directive tells the
-        # model how to append its ```memory block, and it can name memories
-        # only because the <memory> section above listed them. Cleared like
-        # any other prompt - a cleared memory prompt is a choice too.
-        directive = read_prompt(self.store, MEMORY_PROMPT)
+        # model when to use the memory tools, and it can name memories only
+        # because the 记忆 section above listed them. Cleared like any other
+        # prompt - a cleared memory prompt is a choice too.
         if directive:
             sections.append(directive)
         # Blank sections are dropped rather than joined, so a cleared prompt

@@ -28,6 +28,36 @@ def _content_to_text(content: Any) -> str:
     return ""
 
 
+def _accumulate_tool_call(tool_calls: dict[int, dict[str, Any]], call: Any) -> None:
+    """Fold one streamed tool-call delta into the call it belongs to.
+
+    The wire splits a call across chunks: an id and name may arrive once
+    while the arguments trickle in as string pieces, keyed by index. Pieces
+    of arguments concatenate; id and name overwrite.
+    """
+    if not isinstance(call, dict):
+        return
+    try:
+        index = int(call.get("index", 0))
+    except (TypeError, ValueError):
+        return
+    slot = tool_calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+    if call.get("id"):
+        slot["id"] = str(call["id"])
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return
+    if function.get("name"):
+        slot["name"] = str(function["name"])
+    if function.get("arguments"):
+        slot["arguments"] += str(function["arguments"])
+
+
+def _tool_calls_event(tool_calls: dict[int, dict[str, Any]]) -> ProviderEvent:
+    calls = [tool_calls[index] for index in sorted(tool_calls)]
+    return ProviderEvent("tool_calls", {"calls": calls})
+
+
 class OpenAICompatibleProvider:
     """Minimal OpenAI Chat Completions compatible transport."""
 
@@ -144,6 +174,7 @@ class OpenAICompatibleProvider:
         *,
         chat_model: str | None = None,
         thinking: ThinkingLevel = "off",
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         payload: dict[str, Any] = {
             **self._thinking_fields(profile, thinking),
@@ -155,6 +186,13 @@ class OpenAICompatibleProvider:
         # Same as complete_chat: no limit unless one was configured.
         if profile.get("max_tokens"):
             payload["max_tokens"] = profile["max_tokens"]
+        # Absent unless a caller registered tools. No tool_choice: the model
+        # decides when a call is worth making, which is the whole contract -
+        # these tools record things, they do not answer.
+        if tools:
+            payload["tools"] = tools
+        tool_calls: dict[int, dict[str, Any]] = {}
+        tool_calls_reported = False
         try:
             async with httpx.AsyncClient(transport=self.transport, timeout=120) as client:
                 async with client.stream(
@@ -172,6 +210,9 @@ class OpenAICompatibleProvider:
                             continue
                         value = line.removeprefix("data:").strip()
                         if value == "[DONE]":
+                            if tool_calls and not tool_calls_reported:
+                                yield _tool_calls_event(tool_calls)
+                                tool_calls_reported = True
                             yield ProviderEvent("done", {})
                             break
                         try:
@@ -181,6 +222,8 @@ class OpenAICompatibleProvider:
                         choices = chunk.get("choices", [])
                         if choices:
                             delta = choices[0].get("delta", {})
+                            for call in delta.get("tool_calls") or []:
+                                _accumulate_tool_call(tool_calls, call)
                             text = _content_to_text(delta.get("content"))
                             if text:
                                 yield ProviderEvent("delta", {"text": text})
@@ -191,9 +234,18 @@ class OpenAICompatibleProvider:
                                 yield ProviderEvent("reasoning", {"text": reasoning})
                             finish_reason = choices[0].get("finish_reason")
                             if finish_reason:
+                                if finish_reason == "tool_calls" and tool_calls:
+                                    yield _tool_calls_event(tool_calls)
+                                    tool_calls_reported = True
                                 yield ProviderEvent("finish", {"reason": finish_reason})
                         if chunk.get("usage"):
                             yield ProviderEvent("usage", {"usage": chunk["usage"]})
+                    # The [DONE] branch above reports on its way out; this one
+                    # covers a stream that just ends - a dropped [DONE], an
+                    # endpoint with no finish reason - so calls already
+                    # assembled are not lost to a nonstandard close.
+                    if tool_calls and not tool_calls_reported:
+                        yield _tool_calls_event(tool_calls)
         except httpx.HTTPError as error:
             raise ProviderError("模型流式连接中断。") from error
 

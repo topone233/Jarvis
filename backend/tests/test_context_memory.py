@@ -6,7 +6,6 @@ from typing import Any
 import pytest
 
 from app.errors import ProviderError
-from app.memory import parse_memory_block, split_memory_block
 from app.prompts import PROMPT_VERSION
 from app.runtime import CoreServices
 
@@ -25,23 +24,29 @@ def say(
     return message["id"]
 
 
-def remember(
+def save_call(
     core: CoreServices,
     content: str,
     source_message_id: str,
     *,
     key: str = "键",
     kind: str = "fact",
+    project_id: str | None = None,
 ) -> dict[str, Any]:
-    """Write one memory the way a reply's trailing block would."""
-    results = core.memory.apply_reply(
-        reply=(
-            '```memory\n{"write": ['
-            f'{{"kind": "{kind}", "key": "{key}", "content": "{content}"}}]}}\n```'
-        ),
+    """Write one memory the way a reply's tool call would."""
+    results = core.memory.apply_tool_calls(
+        [
+            {
+                "id": "call_1",
+                "name": "save_memory",
+                "arguments": json.dumps(
+                    {"kind": kind, "key": key, "content": content}, ensure_ascii=False
+                ),
+            }
+        ],
         user_content=content,
         user_message_id=source_message_id,
-        project_id=None,
+        project_id=project_id,
     )
     assert results and results[0]["action"] == "created"
     return results[0]["memory"]
@@ -64,62 +69,34 @@ def vocab_provider(
     monkeypatch.setattr(core.context.provider, "embed", embed)
 
 
-def test_a_reply_without_a_block_costs_nothing() -> None:
-    """The common case: no block, nothing to parse, nothing to apply."""
-    assert split_memory_block("普通回答。") == ("普通回答。", None)
-    assert split_memory_block("```python\nprint(1)\n```") == ("```python\nprint(1)\n```", None)
-
-
-def test_the_block_is_recognized_only_at_the_very_end() -> None:
-    """A mid-answer fence is the answer's own content, not a memory block."""
-    text = '前面```memory\n{"write":[]}\n后面。'
-    assert split_memory_block(text) == (text, None)
-
-
-def test_an_open_block_is_held_back_while_streaming() -> None:
-    """The fence needs no closing mark, so a half-written blob stays hidden."""
-    visible, body = split_memory_block('回答。\n```memory\n{"write": [{"kind":')
-    assert visible == "回答。\n"
-    assert body == '{"write": [{"kind":'
-
-
-def test_a_closed_block_is_split_from_the_reply() -> None:
-    visible, body = split_memory_block('回答。\n```memory\n{"write": []}\n```\n')
-    assert visible == "回答。\n"
-    assert body == '{"write": []}\n```\n'
-
-
-def test_the_parser_takes_the_object_and_leaves_the_prose() -> None:
-    parsed = parse_memory_block('说明文字 {"write": [], "forget": []} 结尾\n```')
-    assert parsed == {"write": [], "forget": []}
-    assert parse_memory_block("这不是 JSON") == {}
-    assert parse_memory_block("[1, 2, 3]") == {}
-
-
 @pytest.mark.asyncio
-async def test_a_write_confirms_the_same_fact_and_supersedes_a_changed_one(
+async def test_a_call_confirms_the_same_fact_and_supersedes_a_changed_one(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
-    def reply(write: str) -> str:
-        return f'好的。\n```memory\n{{"write": [{write}]}}\n```\n'
+    def call(content: str) -> dict[str, Any]:
+        return {
+            "id": "call_1",
+            "name": "save_memory",
+            "arguments": json.dumps(
+                {"kind": "preference", "key": "回复风格", "content": content},
+                ensure_ascii=False,
+            ),
+        }
 
-    first = core.memory.apply_reply(
-        reply=reply(
-            '{"kind": "preference", "key": "回复风格", "content": "喜欢简洁回答",'
-            ' "confidence": 0.9}'
-        ),
+    first = core.memory.apply_tool_calls(
+        [call("喜欢简洁回答")],
         user_content="我喜欢简洁回答。",
         user_message_id=say(core, profile, "我喜欢简洁回答。"),
         project_id=None,
     )
-    second = core.memory.apply_reply(
-        reply=reply('{"kind": "preference", "key": "回复风格", "content": "喜欢简洁回答"}'),
+    second = core.memory.apply_tool_calls(
+        [call("喜欢简洁回答")],
         user_content="我说过我喜欢简洁。",
         user_message_id=say(core, profile, "我说过我喜欢简洁。"),
         project_id=None,
     )
-    third = core.memory.apply_reply(
-        reply=reply('{"kind": "preference", "key": "回复风格", "content": "喜欢详细回答"}'),
+    third = core.memory.apply_tool_calls(
+        [call("喜欢详细回答")],
         user_content="现在想要详细的。",
         user_message_id=say(core, profile, "现在想要详细的。"),
         project_id=None,
@@ -141,16 +118,29 @@ async def test_a_write_confirms_the_same_fact_and_supersedes_a_changed_one(
 
 
 @pytest.mark.asyncio
-async def test_invalid_entries_are_dropped_silently(
+async def test_calls_the_model_was_never_given_are_ignored(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
-    """An unknown kind or a missing key is not a memory, whatever it calls itself."""
-    result = core.memory.apply_reply(
-        reply=(
-            '```memory\n{"write": ['
-            '{"kind": "guess", "key": "键", "content": "内容"},'
-            '{"kind": "fact", "key": "", "content": "没有键"}]}\n```'
-        ),
+    """An unknown tool name or broken arguments is not a memory action."""
+    result = core.memory.apply_tool_calls(
+        [
+            {"id": "call_1", "name": "delete_everything", "arguments": "{}"},
+            {"id": "call_2", "name": "save_memory", "arguments": "这不是 JSON"},
+            {
+                "id": "call_3",
+                "name": "save_memory",
+                "arguments": json.dumps(
+                    {"kind": "guess", "key": "键", "content": "内容"}, ensure_ascii=False
+                ),
+            },
+            {
+                "id": "call_4",
+                "name": "save_memory",
+                "arguments": json.dumps(
+                    {"kind": "fact", "key": "", "content": "没有键"}, ensure_ascii=False
+                ),
+            },
+        ],
         user_content="记一下。",
         user_message_id="msg_1",
         project_id=None,
@@ -161,22 +151,22 @@ async def test_invalid_entries_are_dropped_silently(
 
 
 @pytest.mark.asyncio
-async def test_a_forget_deletes_the_memory_its_entry_names(
+async def test_a_forget_deletes_the_memory_its_call_names(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
-    core.memory.apply_reply(
-        reply=(
-            '```memory\n{"write": ['
-            '{"kind": "preference", "key": "主题", "content": "喜欢深色主题"},'
-            '{"kind": "fact", "key": "编辑器", "content": "项目用 React"}]}\n```'
-        ),
-        user_content="记一下。",
-        user_message_id=say(core, profile, "记一下。"),
-        project_id=None,
-    )
+    save_call(core, "喜欢深色主题", say(core, profile, "记一下。"), key="主题", kind="preference")
+    save_call(core, "项目用 React", say(core, profile, "记一下。"), key="编辑器", kind="fact")
 
-    result = core.memory.apply_reply(
-        reply='```memory\n{"forget": [{"key": "主题", "content": "喜欢深色主题"}]}\n```',
+    result = core.memory.apply_tool_calls(
+        [
+            {
+                "id": "call_1",
+                "name": "forget_memory",
+                "arguments": json.dumps(
+                    {"key": "主题", "content": "喜欢深色主题"}, ensure_ascii=False
+                ),
+            }
+        ],
         user_content="忘掉我喜欢深色主题这件事。",
         user_message_id=say(core, profile, "忘掉我喜欢深色主题这件事。"),
         project_id=None,
@@ -199,8 +189,14 @@ async def test_a_forget_that_names_nothing_does_nothing(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
     """A key the model was never shown is a miss, not a deletion."""
-    result = core.memory.apply_reply(
-        reply='```memory\n{"forget": [{"key": "不存在的键", "content": "内容"}]}\n```',
+    result = core.memory.apply_tool_calls(
+        [
+            {
+                "id": "call_1",
+                "name": "forget_memory",
+                "arguments": json.dumps({"key": "不存在的键", "content": "内容"}),
+            }
+        ],
         user_content="忘掉。",
         user_message_id="msg_1",
         project_id=None,
@@ -215,30 +211,28 @@ async def test_a_forget_stays_inside_its_own_visibility(
 ) -> None:
     """A project conversation cannot forget a memory it was never shown.
 
-    Two memories may share a key - a global one and a project one. The entry's
+    Two memories may share a key - a global one and a project one. The call's
     content is what picks between them; the key alone would be too broad.
     """
-    core.memory.apply_reply(
-        reply=(
-            '```memory\n{"write": ['
-            '{"kind": "preference", "key": "主题", "content": "全局偏好"}]}\n```'
-        ),
-        user_content="记一下。",
-        user_message_id=say(core, profile, "记一下。"),
-        project_id=None,
-    )
+    save_call(core, "全局偏好", say(core, profile, "记一下。"), key="主题", kind="preference")
     project = core.store.create_project("项目", is_pinned=False)
-    core.memory.apply_reply(
-        reply=(
-            '```memory\n{"write": [{"kind": "fact", "key": "主题", "content": "项目偏好"}]}\n```'
-        ),
-        user_content="记一下。",
-        user_message_id=say(core, profile, "记一下。", project_id=project["id"]),
+    save_call(
+        core,
+        "项目偏好",
+        say(core, profile, "记一下。", project_id=project["id"]),
+        key="主题",
+        kind="fact",
         project_id=project["id"],
     )
 
-    result = core.memory.apply_reply(
-        reply='```memory\n{"forget": [{"key": "主题", "content": "项目偏好"}]}\n```',
+    result = core.memory.apply_tool_calls(
+        [
+            {
+                "id": "call_1",
+                "name": "forget_memory",
+                "arguments": json.dumps({"key": "主题", "content": "项目偏好"}, ensure_ascii=False),
+            }
+        ],
         user_content="忘掉项目里的那条。",
         user_message_id=say(core, profile, "忘掉项目里的那条。", project_id=project["id"]),
         project_id=project["id"],
@@ -258,7 +252,7 @@ async def test_a_memory_whose_source_is_still_visible_is_not_injected(
     """The source message is in this turn's window; injecting again is a copy."""
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
     message = core.store.append_message(conversation["id"], "user", "我喜欢简洁回答。")
-    remember(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
+    save_call(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
     core.store.append_message(conversation["id"], "user", "后来又说了点别的。")
 
     bundle = await core.context.build(conversation["id"], without_ranking(profile), "继续。")
@@ -278,7 +272,7 @@ async def test_a_memory_folded_into_the_artifact_is_not_injected(
     """
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
     message = core.store.append_message(conversation["id"], "user", "我喜欢简洁回答。")
-    remember(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
+    save_call(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
     core.store.create_context_artifact(
         conversation_id=conversation["id"],
         start_ordinal=1,
@@ -306,7 +300,7 @@ async def test_a_memory_whose_source_left_the_window_is_injected_again(
     """
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
     message = core.store.append_message(conversation["id"], "user", "我喜欢简洁回答。")
-    remember(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
+    save_call(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
     core.store.append_message(conversation["id"], "user", "闲聊。" * 1200)
     tight = {**without_ranking(profile), "context_window": 900, "output_token_reserve": 0}
 
@@ -321,7 +315,7 @@ async def test_a_memory_from_another_conversation_is_injected(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
     """A foreign source is never visible here, so the memory always injects."""
-    remember(core, "喜欢简洁回答", say(core, profile, "我喜欢简洁回答。"), key="回复风格")
+    save_call(core, "喜欢简洁回答", say(core, profile, "我喜欢简洁回答。"), key="回复风格")
     other = core.store.create_conversation("别处", None, profile["id"], False)
 
     bundle = await core.context.build(other["id"], without_ranking(profile), "你好")
@@ -337,8 +331,8 @@ async def test_only_memories_relevant_to_the_query_are_injected(
     core: CoreServices, profile: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     vocab_provider(core, monkeypatch, ("苹果", "香蕉", "天气"))
-    remember(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
-    remember(core, "用户关心天气", say(core, profile, "我每天看天气预报。"), key="天气")
+    save_call(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
+    save_call(core, "用户关心天气", say(core, profile, "我每天看天气预报。"), key="天气")
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
 
     bundle = await core.context.build(conversation["id"], profile, "今晚买点苹果")
@@ -353,7 +347,7 @@ async def test_a_turn_unrelated_to_every_memory_injects_none(
 ) -> None:
     """The user chose the strict reading: below the floor means not injected."""
     vocab_provider(core, monkeypatch, ("苹果", "香蕉", "天气"))
-    remember(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
+    save_call(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
 
     bundle = await core.context.build(conversation["id"], profile, "讲个笑话")
@@ -366,15 +360,15 @@ async def test_a_turn_unrelated_to_every_memory_injects_none(
 async def test_a_forget_request_lists_everything(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
-    """The forget flow copies entries from the <memory> list, so nothing may hide.
+    """The forget flow copies entries from the 记忆 list, so nothing may hide.
 
     The visible-source memory would be deduped on an ordinary turn; a turn
     that means to forget must still name it. Ranking is skipped with it.
     """
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
     message = core.store.append_message(conversation["id"], "user", "我喜欢简洁回答。")
-    remember(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
-    remember(core, "用户关心天气", say(core, profile, "我每天看天气预报。"), key="天气")
+    save_call(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
+    save_call(core, "用户关心天气", say(core, profile, "我每天看天气预报。"), key="天气")
 
     bundle = await core.context.build(
         conversation["id"], without_ranking(profile), "忘掉之前说过的话"
@@ -398,7 +392,7 @@ async def test_a_failed_embed_falls_back_to_the_deduped_list(
         raise ProviderError("嵌入服务不可用。")
 
     monkeypatch.setattr(core.context.provider, "embed", broken)
-    remember(core, "喜欢简洁回答", say(core, profile, "我喜欢简洁回答。"), key="回复风格")
+    save_call(core, "喜欢简洁回答", say(core, profile, "我喜欢简洁回答。"), key="回复风格")
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
 
     bundle = await core.context.build(conversation["id"], profile, "你好")
@@ -412,7 +406,7 @@ async def test_a_stale_embedding_is_recomputed_under_the_current_model(
     core: CoreServices, profile: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     vocab_provider(core, monkeypatch, ("苹果", "香蕉", "天气"))
-    memory = remember(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
+    memory = save_call(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
     core.store.update_memory_embedding(memory["id"], [0.5, 0.5, 0.5], "old-model")
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
 
@@ -433,7 +427,7 @@ async def test_a_stale_embedding_is_recomputed_under_the_current_model(
 async def test_editing_a_memory_drops_its_cached_vector(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
-    memory = remember(core, "旧的内容", say(core, profile, "记一下。"), key="键")
+    memory = save_call(core, "旧的内容", say(core, profile, "记一下。"), key="键")
     core.store.update_memory_embedding(memory["id"], [1.0, 0.0], profile["embedding_model"])
 
     core.store.update_memory(memory["id"], {"content": "新的内容"})
@@ -458,7 +452,7 @@ async def test_one_embed_call_serves_memories_and_knowledge(
         return await original(profile, texts)
 
     monkeypatch.setattr(core.provider, "embed", counting)
-    remember(core, "喜欢简洁回答", say(core, profile, "我喜欢简洁回答。"), key="回复风格")
+    save_call(core, "喜欢简洁回答", say(core, profile, "我喜欢简洁回答。"), key="回复风格")
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
 
     bundle = await core.context.build(conversation["id"], profile, "你好")

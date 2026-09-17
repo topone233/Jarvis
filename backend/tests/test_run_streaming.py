@@ -19,15 +19,23 @@ class PacedProvider:
     """A provider that stops partway so a test can inspect a run still going.
 
     It emits its whole script, then parks on ``release`` until the test lets it
-    finish. ``gated`` says the script has been emitted.
+    finish. ``gated`` says the script has been emitted. ``tail_events`` are
+    whole provider events (tool calls, a finish reason) set loose by the same
+    release.
     """
 
     def __init__(
-        self, chunks: list[str], reasoning: list[str] | None = None, tail: list[str] | None = None
+        self,
+        chunks: list[str],
+        reasoning: list[str] | None = None,
+        tail: list[str] | None = None,
+        tail_events: list[ProviderEvent] | None = None,
     ) -> None:
         self.chunks = chunks
         self.reasoning = reasoning or []
         self.tail = tail or []
+        self.tail_events = tail_events or []
+        self.last_tools: list[dict[str, Any]] | None = None
         self.release = asyncio.Event()
         self.gated = asyncio.Event()
 
@@ -38,8 +46,10 @@ class PacedProvider:
         *,
         chat_model: str | None = None,
         thinking: ThinkingLevel = "off",
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del profile, messages, chat_model, thinking
+        self.last_tools = tools
         for text in self.reasoning:
             yield ProviderEvent("reasoning", {"text": text})
         for chunk in self.chunks:
@@ -48,6 +58,8 @@ class PacedProvider:
         await self.release.wait()
         for chunk in self.tail:
             yield ProviderEvent("delta", {"text": chunk})
+        for event in self.tail_events:
+            yield event
 
     async def complete_chat(
         self,
@@ -85,9 +97,12 @@ def paced(core: CoreServices) -> Any:
     """Install a provider that stops partway, and let the test drive it."""
 
     def make(
-        chunks: list[str], reasoning: list[str] | None = None, tail: list[str] | None = None
+        chunks: list[str],
+        reasoning: list[str] | None = None,
+        tail: list[str] | None = None,
+        tail_events: list[ProviderEvent] | None = None,
     ) -> PacedProvider:
-        provider = PacedProvider(chunks, reasoning, tail)
+        provider = PacedProvider(chunks, reasoning, tail, tail_events)
         core.provider = provider  # type: ignore[assignment]
         return provider
 
@@ -184,27 +199,37 @@ async def test_the_run_is_findable_before_a_single_token_arrives(
     await _settle(core, run["id"])
 
 
-async def test_a_memory_tail_is_held_back_and_never_shown(
+def _save_call(arguments: str) -> ProviderEvent:
+    return ProviderEvent(
+        "tool_calls",
+        {"calls": [{"id": "call_1", "name": "save_memory", "arguments": arguments}]},
+    )
+
+
+async def test_a_memory_tool_call_rides_the_reply_and_is_carried_out(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:
-    """The block the model appends for memory belongs to the app, not the user.
+    """The call belongs to the app, the text to the user - both in one reply.
 
-    While it streams, the visible answer simply stops growing; once it parses,
-    the actions inside it are carried out and the answer on disk is the text
-    alone. The step it produces is the only sign any of it happened.
+    Text is never held back for a call: what streams is what the user reads.
+    The call itself is carried out at completion, and the step it produces is
+    the only sign any of it happened.
     """
+    arguments = json.dumps(
+        {"kind": "preference", "key": "回复风格", "content": "喜欢简洁回答"},
+        ensure_ascii=False,
+    )
     provider = paced(
         ["回" * 500],
-        tail=[
-            "\n```memory\n"
-            '{"write": [{"kind": "preference", "key": "回复风格",'
-            ' "content": "喜欢简洁回答"}]}\n```\n'
+        tail_events=[
+            _save_call(arguments),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
         ],
     )
     _, run = _begin(core, profile)
     await provider.gated.wait()
 
-    # Checkpointed mid-stream: the visible prefix, never the tail behind it.
+    # The answer streams whole: a pending tool call holds nothing back.
     assert core.store.get_message(run["assistant_message_id"])["content"] == "回" * 500
 
     provider.release.set()
@@ -217,27 +242,35 @@ async def test_a_memory_tail_is_held_back_and_never_shown(
         if event["stage"] == "memory_write"
     ]
     assert stages == [("memory_write", "running"), ("memory_write", "completed")]
+    # The request carried the memory tools: the model could not have called
+    # what the run never registered.
+    assert [tool["function"]["name"] for tool in provider.last_tools or []] == [
+        "save_memory",
+        "forget_memory",
+    ]
 
 
-async def test_a_tail_that_never_parses_is_shown_after_all(
+async def test_a_garbled_call_leaves_no_step_and_no_memory(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:
-    """A fence that turns out to be the answer's own content comes back.
+    """Arguments that do not parse are a call that never happened.
 
-    The held-back text was withheld under the assumption it was a memory
-    block; the assumption failed, so the answer is shown in full and no
-    memory step exists.
+    The answer is unaffected - there is no held-back tail to restore - and no
+    memory step exists, which keeps a plain answer free of a 写入记忆 row.
     """
-    provider = paced(["看到这段。"], tail=["\n```memory\n这不是 JSON\n```\n"])
+    provider = paced(
+        ["看到这段。"],
+        tail_events=[
+            _save_call("这不是 JSON"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+    )
     _, run = _begin(core, profile)
 
     provider.release.set()
     assert (await _settle(core, run["id"]))["status"] == "completed"
 
-    assert (
-        core.store.get_message(run["assistant_message_id"])["content"]
-        == "看到这段。\n```memory\n这不是 JSON\n```"
-    )
+    assert core.store.get_message(run["assistant_message_id"])["content"] == "看到这段。"
     assert core.store.list_memories() == []
     assert all(event["stage"] != "memory_write" for event in core.store.list_run_events(run["id"]))
 

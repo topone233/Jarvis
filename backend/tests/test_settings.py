@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.database import Database
+from app.memory import MEMORY_TOOLS
 from app.prompts import BASE_INSTRUCTION, MEMORY_MANAGEMENT_INSTRUCTION
 from app.provider import OpenAICompatibleProvider
 from app.runtime import CoreServices
@@ -198,8 +199,40 @@ async def test_the_saved_memory_prompt_is_the_directive_the_context_uses(
 
     system = next(message for message in bundle.messages if message["role"] == "system")
     # The directive closes the assembled instruction: the model reads the
-    # <memory> list and then, right before the conversation, how to act on it.
+    # 记忆 list and then, right before the conversation, when to act on it.
     assert system["content"].endswith("自定义记忆指令。")
+
+
+@pytest.mark.asyncio
+async def test_the_memory_prompt_registers_the_tools(
+    core: CoreServices, profile: dict[str, Any]
+) -> None:
+    """A directive that says the model may manage memory comes with the tools.
+
+    The tools travel with the bundle so the run registers on the same request
+    whose system message explains when to use them.
+    """
+    conversation = core.store.create_conversation("新对话", None, profile["id"], False)
+
+    bundle = await core.context.build(conversation["id"], profile, "你好")
+
+    assert [tool["function"]["name"] for tool in bundle.tools] == [
+        "save_memory",
+        "forget_memory",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_cleared_memory_prompt_registers_no_tools(
+    core: CoreServices, profile: dict[str, Any]
+) -> None:
+    """Cleared directive: the model is not told to manage memory at all."""
+    core.store.set_setting("memory_prompt", "")
+    conversation = core.store.create_conversation("新对话", None, profile["id"], False)
+
+    bundle = await core.context.build(conversation["id"], profile, "你好")
+
+    assert bundle.tools == []
 
 
 @pytest.mark.asyncio
@@ -272,6 +305,118 @@ async def test_no_limit_is_sent_when_none_was_configured(profile: dict[str, Any]
         pass
 
     assert "max_tokens" not in sent[0]
+
+
+def _stream_handler(sent: list[dict[str, Any]], chunks: list[dict[str, Any]]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        body = "".join(
+            "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n" for chunk in chunks
+        )
+        return httpx.Response(
+            200, text=body + "data: [DONE]\n\n", headers={"content-type": "text/event-stream"}
+        )
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_the_registered_tools_travel_on_the_wire(profile: dict[str, Any]) -> None:
+    sent: list[dict[str, Any]] = []
+    chunks: list[dict[str, Any]] = [
+        {"choices": [{"delta": {"content": "好"}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    provider = OpenAICompatibleProvider(
+        InMemorySecretStore(), transport=httpx.MockTransport(_stream_handler(sent, chunks))
+    )
+
+    async for _ in provider.stream_chat(
+        profile, [{"role": "user", "content": "你好"}], tools=MEMORY_TOOLS
+    ):
+        pass
+
+    assert sent[0]["tools"] == MEMORY_TOOLS
+    # No tool_choice: when a call is worth making is the model's own judgement.
+    assert "tool_choice" not in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_streamed_tool_call_deltas_arrive_as_one_event(profile: dict[str, Any]) -> None:
+    """The wire splits a call across chunks; the run sees it whole, once.
+
+    Arguments arrive as string pieces keyed by index, and the assembled call
+    is reported before the finish reason that closes it. A second stream with
+    the same call ends at [DONE] without a finish reason and still reports -
+    endpoints are not uniform about which one comes last.
+    """
+    sent: list[dict[str, Any]] = []
+    chunks = [
+        {"choices": [{"delta": {"content": "好的。"}, "finish_reason": None}]},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "save_memory",
+                                    "arguments": '{"kind": "fact",',
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [{"index": 0, "function": {"arguments": ' "key": "键"}'}}]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    provider = OpenAICompatibleProvider(
+        InMemorySecretStore(), transport=httpx.MockTransport(_stream_handler(sent, chunks))
+    )
+
+    events = [
+        event
+        async for event in provider.stream_chat(
+            profile, [{"role": "user", "content": "记一下。"}], tools=MEMORY_TOOLS
+        )
+    ]
+
+    assert [event.kind for event in events] == ["delta", "tool_calls", "finish", "done"]
+    call = events[1].payload["calls"][0]
+    assert call == {
+        "id": "call_1",
+        "name": "save_memory",
+        "arguments": '{"kind": "fact", "key": "键"}',
+    }
+
+    # The same stream, but with [DONE] doing the closing.
+    closing = [chunk for chunk in chunks if chunk["choices"][0].get("finish_reason") is None]
+    provider = OpenAICompatibleProvider(
+        InMemorySecretStore(), transport=httpx.MockTransport(_stream_handler(sent, closing))
+    )
+
+    events = [
+        event
+        async for event in provider.stream_chat(
+            profile, [{"role": "user", "content": "记一下。"}], tools=MEMORY_TOOLS
+        )
+    ]
+
+    assert [event.kind for event in events] == ["delta", "tool_calls", "done"]
 
 
 @pytest.mark.asyncio

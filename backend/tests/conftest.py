@@ -19,6 +19,10 @@ from app.secrets import InMemorySecretStore
 
 
 class FakeProvider:
+    def __init__(self) -> None:
+        # What the last streaming call was handed, for assertions on the wire.
+        self.last_tools: list[dict[str, Any]] | None = None
+
     async def stream_chat(
         self,
         profile: dict[str, Any],
@@ -26,8 +30,10 @@ class FakeProvider:
         *,
         chat_model: str | None = None,
         thinking: ThinkingLevel = "off",
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del profile, messages, chat_model, thinking
+        self.last_tools = tools
         yield ProviderEvent("delta", {"text": "这是"})
         yield ProviderEvent("delta", {"text": "测试回复。"})
         yield ProviderEvent("usage", {"usage": {"prompt_tokens": 12, "completion_tokens": 6}})
