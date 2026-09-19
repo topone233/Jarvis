@@ -17,6 +17,32 @@ local machine and is designed for one personal user.
 Secrets are write-only: a profile response exposes has_api_key, never an API
 key.
 
+### Retrieval models
+
+Embedding and rerank are one global config each, deliberately apart from the
+chat profiles - they serve every conversation the same way, and their keys
+outlive any single profile.
+
+- GET /api/retrieval-settings returns
+  `{"embedding": {base_url, model, has_api_key} | null, "rerank": {...} | null}`.
+- PUT /api/retrieval-settings saves both cards at once; per kind, a kind left
+  out is untouched and a kind sent as null is cleared (config and keyring entry
+  both). Inside a spec, api_key is write-only with the profile form's deal: a
+  value replaces the stored key, an empty string deletes it, absent or null
+  leaves it alone.
+- POST /api/retrieval-settings/embedding/test makes a real embed call and
+  returns `{ok, dimensions}`. POST /api/retrieval-settings/rerank/test makes a
+  real rerank call and returns `{ok}`. Both accept an optional body of
+  base_url / model / api_key; a field left out falls back to the stored
+  config, so a saved config can be re-tested without retyping the key. No
+  config anywhere and no fields sent is a 422.
+
+When rerank is configured, knowledge search sends the top 20 hybrid candidates
+to the rerank endpoint (Cohere-compatible `/rerank`) and the returned
+relevance_score becomes each hit's `score`, with `source: "reranked"`. A
+rerank call that fails only degrades the search back to the mixed order - it
+never fails the retrieval.
+
 Each profile carries two request fragments, thinking_on and thinking_off, both
 JSON objects and both empty by default. **Only thinking_off still reaches the
 wire.** It is merged into the provider request body *before* the fields this
@@ -147,7 +173,8 @@ Injection is selective. Candidates are the 16 most recent active memories;
 first a dedup pass drops any whose source message (recorded on the memory) is
 still visible in this turn's window or has been folded into the compaction
 artifact — the information is already in front of the model, so re-injecting
-it is duplication. When the model profile names an embedding model, the rest
+it is duplication. When a retrieval embedding model is configured (see
+Retrieval models), the rest
 are ranked against the query vector (cosine, floor 0.25, at most 6) and only
 relevant ones are injected; vectors are cached on the memory row and refreshed
 lazily, one batched embed call per turn, shared with knowledge search. Without
@@ -161,10 +188,12 @@ or `fallback`.
 - GET /api/memories?project_id={id}, PATCH and DELETE /api/memories/{id}. The
   API never returns the cached embedding columns; they are retrieval plumbing.
 - POST /api/messages/{id}/feedback with kind equal to up or down
-- POST /api/knowledge/import is multipart with files, optional project_id,
-  model_profile_id, and matching relative_paths.
-- GET /api/knowledge/documents?project_id={id}
-- GET /api/knowledge/search?query=...&project_id=...
+- POST /api/knowledge/import is multipart with files, optional project_id, and
+  matching relative_paths. Whether chunks get vectors depends on the retrieval
+  embedding config, not on any profile.
+- GET /api/knowledge/search?query=...&project_id=... Each hit carries score
+  (the reranker's relevance_score when rerank produced the order) and source
+  (`reranked`, `hybrid`, or `semantic`).
 - DELETE /api/knowledge/documents/{id}
 
 DELETE /api/memories/{id} soft-deletes: the row goes to the recycle bin and can

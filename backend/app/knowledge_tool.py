@@ -86,7 +86,6 @@ class KnowledgeToolService:
         command: str,
         *,
         project_id: str | None,
-        profile: dict[str, Any] | None,
     ) -> str:
         try:
             tokens = shlex.split(command)
@@ -102,7 +101,7 @@ class KnowledgeToolService:
         if name == "read":
             return self._read(arguments, project_id)
         if name == "grep":
-            return await self._grep(arguments, project_id, profile)
+            return await self._grep(arguments, project_id)
         return f"knowledge: 未知命令 {name}。" + USAGE
 
     # --- subcommands -----------------------------------------------------
@@ -192,7 +191,6 @@ class KnowledgeToolService:
         self,
         arguments: list[str],
         project_id: str | None,
-        profile: dict[str, Any] | None,
     ) -> str:
         if not arguments:
             return "knowledge: grep 缺少检索词。" + USAGE
@@ -203,7 +201,7 @@ class KnowledgeToolService:
             if isinstance(document, str):
                 return document
             document_id = document["id"]
-        hits = await self.knowledge.search(query, project_id=project_id, profile=profile)
+        hits = await self.knowledge.search(query, project_id=project_id)
         if document_id is not None:
             hits = [hit for hit in hits if hit["document_id"] == document_id]
         if not hits:

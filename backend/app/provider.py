@@ -71,8 +71,17 @@ class OpenAICompatibleProvider:
         self.transport = transport
 
     def _headers(self, profile: dict[str, Any]) -> dict[str, str]:
+        return self._authorized_headers(profile["id"])
+
+    def _authorized_headers(self, key_id: str | None, api_key: str | None = None) -> dict[str, str]:
+        """Request headers with, when there is one, a bearer credential.
+
+        The credential comes from the keyring by identifier, or straight from
+        the caller - a retrieval-settings test may try a key that has not been
+        saved yet.
+        """
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        secret = self.secrets.get(profile["id"])
+        secret = api_key or (self.secrets.get(key_id) if key_id else None)
         if secret:
             headers["Authorization"] = f"Bearer {secret}"
         return headers
@@ -249,16 +258,19 @@ class OpenAICompatibleProvider:
         except httpx.HTTPError as error:
             raise ProviderError("模型流式连接中断。") from error
 
-    async def embed(self, profile: dict[str, Any], texts: list[str]) -> list[list[float]]:
-        model = profile.get("embedding_model")
-        if not model:
-            raise ProviderError("当前模型配置未设置嵌入模型。")
-        payload = {"model": model, "input": texts}
+    async def embed(self, spec: dict[str, Any], texts: list[str]) -> list[list[float]]:
+        """Embed texts through the configured retrieval endpoint.
+
+        `spec` is a retrieval model config from the store - base_url, model,
+        key_id - not an LLM profile: embedding is retrieval plumbing and no
+        longer borrows a chat profile's endpoint or credential.
+        """
+        payload = {"model": spec["model"], "input": texts}
         try:
             async with httpx.AsyncClient(transport=self.transport, timeout=120) as client:
                 response = await client.post(
-                    self._endpoint(profile, "embeddings"),
-                    headers=self._headers(profile),
+                    self._endpoint(spec, "embeddings"),
+                    headers=self._authorized_headers(spec.get("key_id"), spec.get("api_key")),
                     json=payload,
                 )
         except httpx.HTTPError as error:
@@ -270,3 +282,34 @@ class OpenAICompatibleProvider:
             return [row["embedding"] for row in rows]
         except (KeyError, TypeError, ValueError) as error:
             raise ProviderError("嵌入服务返回了无法识别的响应。") from error
+
+    async def rerank(
+        self, spec: dict[str, Any], query: str, documents: list[str], top_n: int
+    ) -> list[tuple[int, float]]:
+        """Rerank candidate documents against a query; best first.
+
+        The one wire format every rerank endpoint speaks is Cohere's: a
+        `results` list of `{index, relevance_score}` naming positions in the
+        request's `documents`. Returned sorted by score, ties keeping the
+        candidate order, so a caller can trust the order it gets back.
+        """
+        payload = {"model": spec["model"], "query": query, "documents": documents, "top_n": top_n}
+        try:
+            async with httpx.AsyncClient(transport=self.transport, timeout=120) as client:
+                response = await client.post(
+                    self._endpoint(spec, "rerank"),
+                    headers=self._authorized_headers(spec.get("key_id"), spec.get("api_key")),
+                    json=payload,
+                )
+        except httpx.HTTPError as error:
+            raise ProviderError("重排服务请求失败。") from error
+        if response.is_error:
+            raise self._provider_error(response)
+        try:
+            results = [
+                (int(row["index"]), float(row["relevance_score"]))
+                for row in response.json()["results"]
+            ]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ProviderError("重排服务返回了无法识别的响应。") from error
+        return sorted(results, key=lambda item: -item[1])

@@ -34,14 +34,16 @@ import { useConfirm } from '../hooks/useConfirm'
 import { ModelProfilesPanel } from './settings/ModelProfilesPanel'
 import { PromptsPanel } from './settings/PromptsPanel'
 import { QuickPromptsPanel } from './settings/QuickPromptsPanel'
+import { RetrievalPanel } from './settings/RetrievalPanel'
 
-const TABS = ['directory', 'model', 'prompts', 'quick'] as const
+const TABS = ['directory', 'model', 'retrieval', 'prompts', 'quick'] as const
 
 type Tab = (typeof TABS)[number]
 
 const TAB_LABELS: Record<Tab, string> = {
   directory: '数据目录',
   model: '模型',
+  retrieval: '检索模型',
   prompts: '提示词',
   quick: '快捷指令',
 }
@@ -265,6 +267,7 @@ export function SetupPage({
             <div className="setup-panel">
               {tab === 'directory' && directorySection}
               {tab === 'model' && <ModelProfilesPanel configured />}
+              {tab === 'retrieval' && <RetrievalPanel />}
               {tab === 'prompts' && <PromptsPanel />}
               {tab === 'quick' && <QuickPromptsPanel />}
             </div>

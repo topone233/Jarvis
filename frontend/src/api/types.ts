@@ -111,7 +111,6 @@ export interface ModelProfile {
   base_url: string
   protocol: string
   chat_model: string
-  embedding_model: string | null
   context_window: number
   output_token_reserve: number
   /**
@@ -156,7 +155,6 @@ export interface ModelProfileInput {
   name: string
   base_url: string
   chat_model: string
-  embedding_model?: string | null
   api_key?: string | null
   context_window?: number
   output_token_reserve?: number
@@ -297,4 +295,37 @@ export interface Health {
   status: string
   configured: boolean
   service: string
+}
+
+/** One retrieval model config as `GET /api/retrieval-settings` returns it. */
+export interface RetrievalModelSetting {
+  base_url: string
+  model: string
+  /** Whether a key is stored. The key itself is never in here. */
+  has_api_key: boolean
+}
+
+/** Both retrieval configs; a kind the server has none of comes back null. */
+export interface RetrievalSettings {
+  embedding: RetrievalModelSetting | null
+  rerank: RetrievalModelSetting | null
+}
+
+/**
+ * The body of a retrieval-settings PUT (`schemas.py`'s `RetrievalSettingsUpdate`).
+ *
+ * Same key deal as profiles: a value replaces the stored key, an empty string
+ * deletes it, and leaving the field out keeps whatever is stored. A kind sent
+ * as null clears that whole config; a kind left out is untouched.
+ */
+export interface RetrievalSettingsPatch {
+  embedding?: { base_url: string; model: string; api_key?: string | null } | null
+  rerank?: { base_url: string; model: string; api_key?: string | null } | null
+}
+
+/** The response of the retrieval test endpoints. */
+export interface RetrievalTestResult {
+  ok: boolean
+  /** Only the embedding test reports this: the width of one vector. */
+  dimensions?: number
 }

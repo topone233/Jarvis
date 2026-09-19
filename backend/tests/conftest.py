@@ -22,6 +22,12 @@ class FakeProvider:
     def __init__(self) -> None:
         # What the last streaming call was handed, for assertions on the wire.
         self.last_tools: list[dict[str, Any]] | None = None
+        # Every rerank call, in order - a search that should rerank proves it
+        # by this record, and a reorder test swaps this method out.
+        self.rerank_calls: list[dict[str, Any]] = []
+        # The real provider owns the keyring; the endpoints that save API keys
+        # go through the same attribute, so the fake carries an in-memory one.
+        self.secrets = InMemorySecretStore()
 
     async def stream_chat(
         self,
@@ -52,9 +58,24 @@ class FakeProvider:
             "## 背景\n已压缩的历史。\n\n## 决定与约束\n保留用户偏好。\n\n## 未完成事项\n继续实现。"
         )
 
-    async def embed(self, profile: dict[str, Any], texts: list[str]) -> list[list[float]]:
-        del profile
+    async def embed(self, spec: dict[str, Any], texts: list[str]) -> list[list[float]]:
+        del spec
         return [[float(len(text)), 1.0] for text in texts]
+
+    async def rerank(
+        self, spec: dict[str, Any], query: str, documents: list[str], top_n: int
+    ) -> list[tuple[int, float]]:
+        """Stable passthrough: same order in, score 1.0 across the board.
+
+        A test that needs actual reshuffling monkeypatches this method; the
+        default must not reorder because the hybrid-search tests assert the
+        mixed order the candidate stage produced.
+        """
+        self.rerank_calls.append(
+            {"spec": spec, "query": query, "documents": documents, "top_n": top_n}
+        )
+        del spec, query
+        return [(index, 1.0) for index in range(min(top_n, len(documents)))]
 
     async def list_models(self, profile: dict[str, Any]) -> list[Any]:
         del profile
@@ -85,13 +106,31 @@ def profile(core: CoreServices) -> dict[str, Any]:
             "name": "测试模型",
             "base_url": "http://mock.local/v1",
             "chat_model": "mock-chat",
-            "embedding_model": "mock-embedding",
             "context_window": 4096,
             "output_token_reserve": 512,
             "is_default": True,
         },
         has_api_key=False,
     )
+
+
+@pytest.fixture
+def use_embedding(core: CoreServices):
+    """Turn the retrieval embedding config on, optionally naming the model.
+
+    Whether knowledge import/search and memory ranking embed is no longer a
+    property of a chat profile - it is the global retrieval config - so the
+    tests that want vectors call this, and the ones that do not, do not.
+    """
+
+    def _use(model: str = "mock-embedding") -> None:
+        core.store.set_retrieval_spec(
+            "embedding",
+            {"base_url": "http://mock.local/v1", "model": model},
+            has_api_key=False,
+        )
+
+    return _use
 
 
 @pytest.fixture

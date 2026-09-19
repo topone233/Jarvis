@@ -65,13 +65,6 @@ export interface ProfileDraft {
   baseUrl: string
   chatModel: string
   /**
-   * The model the knowledge base embeds chunks and queries with. Empty means
-   * none: knowledge search falls back to keyword-only, and saving clears what
-   * was stored. It is optional on purpose - an endpoint that serves no
-   * /embeddings must not be forced to name one.
-   */
-  embeddingModel: string
-  /**
    * Never filled in from the server, because the server does not know how to
    * tell anyone what it is. Empty means "leave whatever is stored alone".
    */
@@ -110,7 +103,6 @@ export function emptyDraft(): ProfileDraft {
     name: '',
     baseUrl: '',
     chatModel: '',
-    embeddingModel: '',
     apiKey: '',
     ...DEFAULTS,
   }
@@ -123,7 +115,6 @@ export function draftFrom(profile: ModelProfile): ProfileDraft {
     name: profile.name,
     baseUrl: profile.base_url,
     chatModel: profile.chat_model,
-    embeddingModel: profile.embedding_model ?? '',
     apiKey: '',
     contextWindow: String(profile.context_window),
     outputTokenReserve: String(profile.output_token_reserve),
@@ -285,8 +276,6 @@ export function createPayload(
     chat_model: draft.chatModel.trim(),
     // Nothing is stored yet, so there is nothing to preserve: null is honest.
     api_key: apiKey === '' ? null : apiKey,
-    // Nothing here either: an empty box clears the embedding model.
-    embedding_model: draft.embeddingModel.trim() === '' ? null : draft.embeddingModel.trim(),
     ...values,
     ...(isFirst ? { is_default: true } : {}),
   }
@@ -301,9 +290,6 @@ export function updatePayload(
     name: draft.name.trim(),
     base_url: draft.baseUrl.trim(),
     chat_model: draft.chatModel.trim(),
-    // Unlike the key below, an empty box is a statement here: it clears the
-    // stored embedding model (the column is nullable for exactly this).
-    embedding_model: draft.embeddingModel.trim() === '' ? null : draft.embeddingModel.trim(),
     ...values,
   }
   const apiKey = draft.apiKey.trim()

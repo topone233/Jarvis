@@ -28,13 +28,14 @@ Adaptive RAG：用一个 query classifier 按查询复杂度把每个 query 路�
 | 能力 | 当前实现 | 状态 | 位置 |
 | --- | --- | --- | --- |
 | 精确匹配层 | SQLite FTS5（bm25），中文按双字 bigram 切分 | ✅ | `app/utils.py` 的 `segment_for_index`、`knowledge_chunks_fts` |
-| Embedding | 任意 OpenAI 兼容 `/embeddings`，模型名与端点跟模型配置走 | ✅ 可配置化 | `app/provider.py` 的 `embed`、模型配置的「嵌入模型」字段 |
+| Embedding | 任意 OpenAI 兼容 `/embeddings`，全局检索模型配置（设置 → 检索模型），与 LLM 配置分离 | ✅ 可配置化 | `app/provider.py` 的 `embed`、`app/store.py` 的 `get_retrieval_spec` |
 | 语义相似层 | **sqlite-vec**（vec0 虚表按维度建表、cosine 距离 KNN） | ✅ | `app/store.py` 的 `search_knowledge_vec`、`app/database.py` 的 `ensure_vec_table` |
+| Reranker | Cohere 兼容 `/rerank`，混合检索取前 20 交给 rerank 模型重排后取前 limit；未配置或调用失败时降级为混合排序 | ✅ 可配置化 | `app/provider.py` 的 `rerank`、`app/knowledge.py` 的 `search` |
 | 文档理解 | **v0**：轻量提取器（mammoth / openpyxl / python-pptx / pdfminer.six） | ⚠️ Docling 的替换位 | `app/knowledge.py` 的 `_EXTRACTORS` |
 | Context Retrieval | 每轮自动检索，FTS 0.45 + 余弦 0.75 混合，取前 5，注入 `<knowledge>`，引用随 `context.ready` 给前端 | ✅ | `app/context.py` 的 `build()` |
 | 检索来源协调 | 单层混合检索 | ⚠️ 多层路由的挂载点 | `KnowledgeService.search` |
-| 管理界面 | 知识库页：导入 / 列表 / 删除 / 回收站 / 试检索 | ✅ | `frontend/src/pages/KnowledgePage.tsx` |
-| Query Classifier / PageIndex / Reranker / Daemon+RPC | 未建 | 🚧 见路线 | — |
+| 管理界面 | 知识库页：导入 / 列表 / 删除 / 回收站 / 试检索；设置 → 检索模型：嵌入 / rerank 各一张卡片（地址 / 模型名 / API Key / 测试 / 清除） | ✅ | `frontend/src/pages/KnowledgePage.tsx`、`frontend/src/pages/settings/RetrievalPanel.tsx` |
+| Query Classifier / PageIndex / Daemon+RPC | 未建 | 🚧 见路线 | — |
 
 ## 支持的格式
 
@@ -53,7 +54,9 @@ Adaptive RAG：用一个 query classifier 按查询复杂度把每个 query 路�
     → FTS5 索引 → [可选] 全部块向量 → 原文件字节存数据目录 objects/
 ```
 
-带嵌入模型的导入同时把向量写进 vec0 虚表（按维度一张表，`knowledge_chunks_vec_{dim}`，cosine 距离、模型与项目作为 metadata 过滤列）；检索时对查询向量做 KNN，余弦距离换算回相似度后沿用原来的 0.75 权重，FTS 0.45 权重不变。
+带嵌入配置的导入同时把向量写进 vec0 虚表（按维度一张表，`knowledge_chunks_vec_{dim}`，cosine 距离、模型与项目作为 metadata 过滤列）；检索时对查询向量做 KNN，余弦距离换算回相似度后沿用原来的 0.75 权重，FTS 0.45 权重不变。配置了 rerank 模型时，混合排序取前 20 条候选（`RERANK_CANDIDATES`）发给 rerank 接口，返回的 `relevance_score` 直接作为结果的 `score`，`source` 标为 `reranked`；rerank 调用失败只是降级回混合排序，检索不会失败。
+
+嵌入与 rerank 是**全局单一配置**：存设置 KV（`retrieval_embedding` / `retrieval_rerank`），API Key 存系统凭据管理器（固定标识 `retrieval-embedding` / `retrieval-rerank`），与模型配置（LLM）完全分离。记忆相关性排序与知识库共用嵌入配置；模型配置表单不再有「嵌入模型」字段（旧库迁移时把默认配置的值搬进检索配置）。
 
 ## 兜底上限（backstop，不是 UX）
 
@@ -74,10 +77,10 @@ Adaptive RAG：用一个 query classifier 按查询复杂度把每个 query 路�
 2. **Docling 作为可选的文档理解后端**：`_EXTRACTORS` 已经是分派点。Docling 带 torch/布局模型，重，建议按 Daemon + RPC 独立进程部署，主应用零负担；轻量提取器继续作为默认。
 3. **Query Classifier**：等真的有多层（至少 PageIndex 就位）可路由时才值得——现在两层混合检索一次调用的延迟低于一次分类调用。
 4. **PageIndex 长文档导航层**：长文档结构索引、溯源，独立于现有分块。
-5. **Reranker / 可插拔服务**：检索质量层；再往后把整个知识库按 MCP 或 HTTP sidecar 暴露给任意 agent。
+5. ~~Reranker~~ ✅ 已完成：Cohere 兼容 `/rerank`，独立检索模型配置，失败降级；剩下的是可插拔服务化——把整个知识库按 MCP 或 HTTP sidecar 暴露给任意 agent。
 
 ## 验证
 
-- 后端 `backend/tests/test_knowledge.py`：docx/xlsx/pptx/pdf 提取与检索、中文 CID 字体 PDF、图片剥离、截断上限、旧格式与坏文件跳过、KNN 最近邻正确性、删除清理 vec 行、恢复重建、迁移回填。
-- 前端 `frontend/src/api/knowledge.test.ts`：导入结果合并、accept 列表；`profiles.test.ts`：嵌入模型字段的往返。
+- 后端 `backend/tests/test_knowledge.py`：docx/xlsx/pptx/pdf 提取与检索、中文 CID 字体 PDF、图片剥离、截断上限、旧格式与坏文件跳过、KNN 最近邻正确性、删除清理 vec 行、恢复重建、迁移回填；`test_retrieval.py`：检索模型配置往返、api_key 语义、迁移搬家、rerank 重排与降级、测试端点。
+- 前端 `frontend/src/api/knowledge.test.ts`：导入结果合并、accept 列表；`retrieval.test.ts`：卡片载荷与 api_key 语义；`profiles.test.ts`：模型配置字段的往返。
 - 端到端：知识库页上传 → 列表 → 试检索 → 对话引用；恢复后检索复原。

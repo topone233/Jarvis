@@ -183,22 +183,19 @@ class ContextManager:
         # An image-only message has no words to search with; an empty query is
         # not an answer to any question, so nothing is looked up at all.
         has_query = bool(user_query.strip())
+        embedding_spec = self.store.get_retrieval_spec("embedding")
         query_vector: list[float] | None = None
-        if (
-            profile.get("embedding_model")
-            and has_query
-            and candidates
-            and not self.is_forget_request(user_query)
-        ):
+        if embedding_spec and has_query and candidates and not self.is_forget_request(user_query):
             try:
-                query_vector = await self._refresh_memory_vectors(candidates, profile, user_query)
+                query_vector = await self._refresh_memory_vectors(
+                    embedding_spec, candidates, user_query
+                )
             except ProviderError:
                 query_vector = None
         citations = (
             await self.knowledge.search(
                 user_query,
                 project_id=conversation["project_id"],
-                profile=profile,
                 query_vector=query_vector,
             )
             if has_query
@@ -300,25 +297,25 @@ class ContextManager:
         return kept
 
     async def _refresh_memory_vectors(
-        self, memories: list[dict[str, Any]], profile: dict[str, Any], query: str
+        self, spec: dict[str, Any], memories: list[dict[str, Any]], query: str
     ) -> list[float]:
         """Embed the query and every stale memory in one call; cache the rest.
 
-        A memory's vector is cached until its content changes or the profile
-        names another embedding model, so the missing ones are paid for once
-        and a steady-state turn embeds only the query. Candidates are
-        refreshed before dedup drops any of them on purpose: a memory
+        A memory's vector is cached until its content changes or the retrieval
+        setting names another embedding model, so the missing ones are paid
+        for once and a steady-state turn embeds only the query. Candidates
+        are refreshed before dedup drops any of them on purpose: a memory
         suppressed today holds its vector ready for the turn its source
         scrolls out of the window.
         """
-        model = profile["embedding_model"]
+        model = spec["model"]
         stale = [
             memory
             for memory in memories
             if memory.get("embedding_model") != model or memory.get("embedding_json") is None
         ]
         texts = [query, *(memory["content"] for memory in stale)]
-        vectors = await self.provider.embed(profile, texts)
+        vectors = await self.provider.embed(spec, texts)
         if len(vectors) != len(texts):
             raise ProviderError("嵌入服务返回的向量数量不匹配。")
         for memory, vector in zip(stale, vectors[1:], strict=True):

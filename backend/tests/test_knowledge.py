@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -13,7 +14,10 @@ from app.utils import segment_for_index
 
 
 @pytest.mark.asyncio
-async def test_import_and_hybrid_search(core: CoreServices, profile: dict[str, Any]) -> None:
+async def test_import_and_hybrid_search(
+    core: CoreServices, use_embedding: Callable[[], None]
+) -> None:
+    use_embedding()
     project = core.store.create_project("Jarvis", False)
     imported = await core.knowledge.import_items(
         [
@@ -24,18 +28,13 @@ async def test_import_and_hybrid_search(core: CoreServices, profile: dict[str, A
             )
         ],
         project_id=project["id"],
-        profile=profile,
     )
 
     assert imported[-1]["status"] == "ready"
     document = imported[-1]["document"]
     assert document["chunk_count"] == 1
 
-    results = await core.knowledge.search(
-        "SQLite 上下文",
-        project_id=project["id"],
-        profile=profile,
-    )
+    results = await core.knowledge.search("SQLite 上下文", project_id=project["id"])
 
     assert results
     assert results[0]["document_id"] == document["id"]
@@ -54,14 +53,13 @@ async def test_chinese_query_matches_a_sub_phrase(core: CoreServices) -> None:
             )
         ],
         project_id=project["id"],
-        profile=None,
     )
 
     for query in ("上下文", "压缩", "上下文压缩"):
-        results = await core.knowledge.search(query, project_id=project["id"], profile=None)
+        results = await core.knowledge.search(query, project_id=project["id"])
         assert results, f"未命中：{query}"
 
-    assert not await core.knowledge.search("记忆", project_id=project["id"], profile=None)
+    assert not await core.knowledge.search("记忆", project_id=project["id"])
 
 
 def test_segment_for_index_expands_cjk_runs_into_bigrams() -> None:
@@ -74,9 +72,7 @@ def test_segment_for_index_expands_cjk_runs_into_bigrams() -> None:
 @pytest.mark.asyncio
 async def test_import_never_writes_the_source_file(core: CoreServices) -> None:
     imported = await core.knowledge.import_items(
-        [ImportItem(filename="note.txt", content=b"original content")],
-        project_id=None,
-        profile=None,
+        [ImportItem(filename="note.txt", content=b"original content")], project_id=None
     )
     document = imported[-1]["document"]
 
@@ -90,9 +86,7 @@ async def test_import_never_writes_the_source_file(core: CoreServices) -> None:
 async def test_import_stores_content_and_section_shaped_chunks(core: CoreServices) -> None:
     content = "# 指南\n## 登录\n账号密码登录的用例。\n## 上传\n附件上传的用例。\n"
     imported = await core.knowledge.import_items(
-        [ImportItem(filename="guide.md", content=content.encode())],
-        project_id=None,
-        profile=None,
+        [ImportItem(filename="guide.md", content=content.encode())], project_id=None
     )
     document = imported[-1]["document"]
 
@@ -113,13 +107,11 @@ async def test_import_stores_content_and_section_shaped_chunks(core: CoreService
 async def test_search_reports_the_section_of_a_hit(core: CoreServices) -> None:
     content = "# doc\n## 用户管理\n登录的测试用例。\n## 订单管理\n下单的测试用例。\n"
     imported = await core.knowledge.import_items(
-        [ImportItem(filename="cases.md", content=content.encode())],
-        project_id=None,
-        profile=None,
+        [ImportItem(filename="cases.md", content=content.encode())], project_id=None
     )
     document = imported[-1]["document"]
 
-    results = await core.knowledge.search("登录 测试用例", project_id=None, profile=None)
+    results = await core.knowledge.search("登录 测试用例", project_id=None)
     assert results
     assert results[0]["document_id"] == document["id"]
     assert results[0]["section_id"] == "1.1"
@@ -300,13 +292,12 @@ async def test_docx_import_extracts_paragraphs(core: CoreServices) -> None:
     imported = await core.knowledge.import_items(
         [ImportItem(filename="设计.docx", content=_docx(["Jarvis 的知识库设计", "Local first"]))],
         project_id=None,
-        profile=None,
     )
     assert imported[-1]["status"] == "ready"
     document = imported[-1]["document"]
     assert document["chunk_count"] == 1
 
-    results = await core.knowledge.search("知识库", project_id=None, profile=None)
+    results = await core.knowledge.search("知识库", project_id=None)
     assert results
     assert results[0]["document_id"] == document["id"]
 
@@ -316,11 +307,10 @@ async def test_docx_import_keeps_words_but_not_picture_bytes(core: CoreServices)
     imported = await core.knowledge.import_items(
         [ImportItem(filename="带图.docx", content=_docx(["知识库正文"], with_image=True))],
         project_id=None,
-        profile=None,
     )
     assert imported[-1]["status"] == "ready"
 
-    results = await core.knowledge.search("知识库正文", project_id=None, profile=None)
+    results = await core.knowledge.search("知识库正文", project_id=None)
     assert results
     assert "data:image" not in results[0]["content"]
 
@@ -335,11 +325,10 @@ async def test_xlsx_import_extracts_sheet_rows(core: CoreServices) -> None:
             )
         ],
         project_id=None,
-        profile=None,
     )
     assert imported[-1]["status"] == "ready"
 
-    results = await core.knowledge.search("服务器", project_id=None, profile=None)
+    results = await core.knowledge.search("服务器", project_id=None)
     assert results
     assert "3200" in results[0]["content"]
 
@@ -348,27 +337,23 @@ async def test_xlsx_import_extracts_sheet_rows(core: CoreServices) -> None:
 async def test_xlsx_import_truncates_huge_sheets(core: CoreServices) -> None:
     rows = [["项目", "金额"]] + [[f"值{index}", index] for index in range(5_100)]
     imported = await core.knowledge.import_items(
-        [ImportItem(filename="大表.xlsx", content=_xlsx({"流水": rows}))],
-        project_id=None,
-        profile=None,
+        [ImportItem(filename="大表.xlsx", content=_xlsx({"流水": rows}))], project_id=None
     )
     assert imported[-1]["status"] == "ready"
 
-    hits = await core.knowledge.search("值4998", project_id=None, profile=None)
+    hits = await core.knowledge.search("值4998", project_id=None)
     assert hits
-    assert not await core.knowledge.search("值4999", project_id=None, profile=None)
+    assert not await core.knowledge.search("值4999", project_id=None)
 
 
 @pytest.mark.asyncio
 async def test_pptx_import_extracts_slides_and_notes(core: CoreServices) -> None:
     imported = await core.knowledge.import_items(
-        [ImportItem(filename="评审.pptx", content=_pptx())],
-        project_id=None,
-        profile=None,
+        [ImportItem(filename="评审.pptx", content=_pptx())], project_id=None
     )
     assert imported[-1]["status"] == "ready"
 
-    results = await core.knowledge.search("roadmap", project_id=None, profile=None)
+    results = await core.knowledge.search("roadmap", project_id=None)
     assert results
     assert "备注：先讲预算" in results[0]["content"]
 
@@ -382,11 +367,10 @@ async def test_pdf_import_extracts_pages(core: CoreServices) -> None:
             )
         ],
         project_id=None,
-        profile=None,
     )
     assert imported[-1]["status"] == "ready"
 
-    results = await core.knowledge.search("retrieval", project_id=None, profile=None)
+    results = await core.knowledge.search("retrieval", project_id=None)
     assert results
     assert "第 2 页" in results[0]["content"]
 
@@ -397,20 +381,17 @@ async def test_pdf_import_reads_chinese_through_a_cid_font(core: CoreServices) -
     imported = await core.knowledge.import_items(
         [ImportItem(filename="中文.pdf", content=_pdf(["知识库存放本地文档"], font="STSong"))],
         project_id=None,
-        profile=None,
     )
     assert imported[-1]["status"] == "ready"
 
-    results = await core.knowledge.search("知识库", project_id=None, profile=None)
+    results = await core.knowledge.search("知识库", project_id=None)
     assert results
 
 
 @pytest.mark.asyncio
 async def test_textless_pdf_is_reported_as_scanned(core: CoreServices) -> None:
     imported = await core.knowledge.import_items(
-        [ImportItem(filename="扫描.pdf", content=_pdf([]))],
-        project_id=None,
-        profile=None,
+        [ImportItem(filename="扫描.pdf", content=_pdf([]))], project_id=None
     )
     assert imported[-1]["status"] == "skipped"
     assert "扫描件" in imported[-1]["reason"]
@@ -419,9 +400,7 @@ async def test_textless_pdf_is_reported_as_scanned(core: CoreServices) -> None:
 @pytest.mark.asyncio
 async def test_legacy_office_formats_ask_for_a_resave(core: CoreServices) -> None:
     imported = await core.knowledge.import_items(
-        [ImportItem(filename="旧文档.doc", content=b"whatever")],
-        project_id=None,
-        profile=None,
+        [ImportItem(filename="旧文档.doc", content=b"whatever")], project_id=None
     )
     assert imported[-1]["status"] == "skipped"
     assert "另存为" in imported[-1]["reason"]
@@ -435,7 +414,6 @@ async def test_mislabeled_documents_are_skipped_not_fatal(core: CoreServices) ->
             ImportItem(filename="截断.pdf", content=b"%PDF-1.4\n"),
         ],
         project_id=None,
-        profile=None,
     )
     assert all(result["status"] == "skipped" for result in results)
     assert all(result["reason"] for result in results)
@@ -447,9 +425,7 @@ async def test_import_rejects_files_over_the_backstop(
 ) -> None:
     monkeypatch.setattr(knowledge_module, "MAX_KNOWLEDGE_BYTES", 10)
     imported = await core.knowledge.import_items(
-        [ImportItem(filename="太大.txt", content=b"x" * 11)],
-        project_id=None,
-        profile=None,
+        [ImportItem(filename="太大.txt", content=b"x" * 11)], project_id=None
     )
     assert imported[-1]["status"] == "skipped"
     assert "50MB" in imported[-1]["reason"]
@@ -459,12 +435,13 @@ async def test_import_rejects_files_over_the_backstop(
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_hits_the_nearest_chunk(core: CoreServices, profile: dict) -> None:
+async def test_semantic_search_hits_the_nearest_chunk(
+    core: CoreServices, use_embedding: Callable[[], None]
+) -> None:
     """A query whose vector exactly equals one chunk's must rank it first."""
+    use_embedding()
     short = core.knowledge.import_items(
-        [ImportItem(filename="短.txt", content=b" precisely seventeen ")],
-        project_id=None,
-        profile=profile,
+        [ImportItem(filename="短.txt", content=b" precisely seventeen ")], project_id=None
     )
     long_import = core.knowledge.import_items(
         [
@@ -474,29 +451,30 @@ async def test_semantic_search_hits_the_nearest_chunk(core: CoreServices, profil
             )
         ],
         project_id=None,
-        profile=profile,
     )
     short_doc = (await short)[-1]["document"]
     long_doc = (await long_import)[-1]["document"]
 
-    results = await core.knowledge.search(" precisely seventeen ", project_id=None, profile=profile)
+    results = await core.knowledge.search(" precisely seventeen ", project_id=None)
     assert results
     assert results[0]["document_id"] == short_doc["id"]
     assert results[0]["score"] > 0.5
 
     others = await core.knowledge.search(
-        "a far longer passage with many more words in it", project_id=None, profile=profile
+        "a far longer passage with many more words in it", project_id=None
     )
     assert others
     assert others[0]["document_id"] == long_doc["id"]
 
 
 @pytest.mark.asyncio
-async def test_delete_removes_the_vec_rows(core: CoreServices, profile: dict) -> None:
+async def test_delete_removes_the_vec_rows(
+    core: CoreServices, use_embedding: Callable[[], None]
+) -> None:
+    use_embedding()
     imported = await core.knowledge.import_items(
         [ImportItem(filename="临时.txt", content="被删除后就不再被向量检索命中".encode())],
         project_id=None,
-        profile=profile,
     )
     document = imported[-1]["document"]
     before = core.store.database.fetchall(
@@ -516,43 +494,70 @@ async def test_delete_removes_the_vec_rows(core: CoreServices, profile: dict) ->
 
 
 @pytest.mark.asyncio
-async def test_restore_rebuilds_fts_and_vec_from_chunks(core: CoreServices, profile: dict) -> None:
+async def test_restore_rebuilds_fts_and_vec_from_chunks(
+    core: CoreServices, use_embedding: Callable[[], None]
+) -> None:
     """Deleting drops the derived indexes; restoring must bring both back."""
+    use_embedding()
     imported = await core.knowledge.import_items(
         [ImportItem(filename="复活.txt", content="恢复之后要能被重新检索到".encode())],
         project_id=None,
-        profile=profile,
     )
     document = imported[-1]["document"]
     core.store.delete_knowledge_document(document["id"])
-    assert not await core.knowledge.search("恢复", project_id=None, profile=profile)
+    assert not await core.knowledge.search("恢复", project_id=None)
 
     trash = core.store.list_trash()
     core.store.restore_trash_item(trash[0]["id"])
 
-    results = await core.knowledge.search("恢复", project_id=None, profile=profile)
+    results = await core.knowledge.search("恢复", project_id=None)
     assert results
     assert results[0]["document_id"] == document["id"]
 
 
 @pytest.mark.asyncio
-async def test_a_missing_vec_table_means_no_semantic_hits(
-    core: CoreServices, profile: dict
-) -> None:
+async def test_a_missing_vec_table_means_no_semantic_hits(core: CoreServices) -> None:
     """A width nobody has embedded at yet is empty, not an error."""
     hits = core.store.search_knowledge_vec(None, "mock-embedding", [0.5] * 7, limit=5)
     assert hits == []
 
 
 @pytest.mark.asyncio
+async def test_a_zero_vector_is_no_similarity_not_a_crash(
+    core: CoreServices, use_embedding: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chunk that embeds to the zero vector gets NaN from cosine, which
+    sqlite-vec hands back as a NULL distance. That is "no similarity" - the
+    same verdict a zero vector gets everywhere else - not a failed search."""
+
+    async def zero(spec: dict[str, str], texts: list[str]) -> list[list[float]]:
+        del spec, texts
+        return [[0.0, 0.0]]
+
+    use_embedding()
+    monkeypatch.setattr(core.knowledge.provider, "embed", zero)
+    await core.knowledge.import_items(
+        [ImportItem(filename="零.txt", content="没有任何特征的内容".encode())],
+        project_id=None,
+    )
+
+    results = await core.knowledge.search("内容", project_id=None)
+
+    assert results
+    # The semantic weight (0.75) contributed nothing; what is left is the
+    # keyword side of the mix.
+    assert results[0]["score"] <= 0.45
+
+
+@pytest.mark.asyncio
 async def test_migration_backfills_vec_rows_from_stored_embeddings(
-    core: CoreServices, profile: dict
+    core: CoreServices, use_embedding: Callable[[], None]
 ) -> None:
     """A database from schema 4 has embeddings but no vec rows; backfill them."""
+    use_embedding()
     imported = await core.knowledge.import_items(
         [ImportItem(filename="旧库.txt", content="迁移之后向量行应该被补齐".encode())],
         project_id=None,
-        profile=profile,
     )
     document = imported[-1]["document"]
     with core.database.transaction() as connection:

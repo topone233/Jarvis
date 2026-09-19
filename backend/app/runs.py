@@ -338,7 +338,6 @@ class RunService:
                     output = await knowledge_tool.execute(
                         command,
                         project_id=conversation["project_id"],
-                        profile=profile,
                     )
                     audit(
                         "knowledge_tool",

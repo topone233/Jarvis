@@ -306,6 +306,11 @@ def chunk_text(
 
 
 class KnowledgeService:
+    #: How many mixed hits a rerank pass sees. Its whole value is picking
+    #: better from a wider net, so when one is configured the hybrid stage
+    #: casts further than the caller asked and the reranker does the cutting.
+    RERANK_CANDIDATES = 20
+
     def __init__(self, store: Store, provider: OpenAICompatibleProvider) -> None:
         self.store = store
         self.provider = provider
@@ -315,10 +320,10 @@ class KnowledgeService:
         items: list[ImportItem],
         *,
         project_id: str | None,
-        profile: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
         if not items:
             raise ValidationError("请至少选择一个文件。")
+        embedding_spec = self.store.get_retrieval_spec("embedding")
         results: list[dict[str, Any]] = []
         for item in items:
             suffix = Path(item.filename).suffix.lower()
@@ -401,16 +406,16 @@ class KnowledgeService:
             ]
             status = "ready"
             embedding_model: str | None = None
-            if profile and profile.get("embedding_model"):
+            if embedding_spec:
                 try:
                     vectors = await self.provider.embed(
-                        profile, [part["content"] for part in payloads]
+                        embedding_spec, [part["content"] for part in payloads]
                     )
                     if len(vectors) != len(payloads):
                         raise ProviderError("嵌入服务返回的向量数量不匹配。")
                     for payload, vector in zip(payloads, vectors, strict=True):
                         payload["embedding"] = vector
-                    embedding_model = profile["embedding_model"]
+                    embedding_model = embedding_spec["model"]
                 except ProviderError as error:
                     status = "ready_without_embeddings"
                     results.append(
@@ -432,16 +437,21 @@ class KnowledgeService:
         query: str,
         *,
         project_id: str | None,
-        profile: dict[str, Any] | None,
         limit: int = 8,
         query_vector: list[float] | None = None,
     ) -> list[dict[str, Any]]:
-        """Hybrid keyword + semantic hits for one query.
+        """Hybrid keyword + semantic hits for one query, optionally reranked.
 
         `query_vector` lets a caller that already embedded this exact query
         hand the vector over - the context build ranks memories with it
-        first - instead of paying for a second identical embedding call.
+        first - instead of paying for a second identical embedding call. With
+        a rerank model configured, the mixed ranking only nominates
+        RERANK_CANDIDATES; the reranker picks the final `limit` and its
+        relevance score becomes the hit's score.
         """
+        embedding_spec = self.store.get_retrieval_spec("embedding")
+        rerank_spec = self.store.get_retrieval_spec("rerank")
+        candidate_limit = self.RERANK_CANDIDATES if rerank_spec else limit
         fts_query = self._fts_query(query)
         fts_results = self.store.search_knowledge_fts(fts_query, project_id) if fts_query else []
         scored: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -449,31 +459,55 @@ class KnowledgeService:
         for index, item in enumerate(fts_results):
             fts_ids.add(item["id"])
             scored[item["id"]] = (0.45 / (index + 1), item)
-        if profile and profile.get("embedding_model"):
+        if embedding_spec:
             try:
                 if query_vector is None:
-                    query_vector = (await self.provider.embed(profile, [query]))[0]
+                    query_vector = (await self.provider.embed(embedding_spec, [query]))[0]
                 vec_hits = self.store.search_knowledge_vec(
                     project_id,
-                    profile["embedding_model"],
+                    embedding_spec["model"],
                     query_vector,
-                    limit,
+                    candidate_limit,
                 )
                 for item in vec_hits:
                     # Cosine distance to similarity, on the same 0.75 weight
                     # the Python scan used, so ranking contracts stay put.
-                    score = max(1.0 - item["distance"], 0.0) * 0.75
+                    # None is a zero vector's NaN - sqlite-vec hands NaN back
+                    # as NULL - and means "no similarity", the same verdict
+                    # _cosine gives a zero vector, not a crash.
+                    distance = item["distance"]
+                    score = 0.0 if distance is None else max(1.0 - distance, 0.0)
+                    score *= 0.75
                     existing = scored.get(item["id"])
                     scored[item["id"]] = (score + (existing[0] if existing else 0), item)
             except (ProviderError, IndexError):
                 pass
-        ordered = sorted(scored.values(), key=lambda item: item[0], reverse=True)[:limit]
+        candidates = sorted(scored.values(), key=lambda item: item[0], reverse=True)[
+            :candidate_limit
+        ]
+        reranked = False
+        if rerank_spec and len(candidates) > 1:
+            try:
+                ranking = await self.provider.rerank(
+                    rerank_spec,
+                    query,
+                    [item["content"] for _, item in candidates],
+                    limit,
+                )
+                candidates = [(relevance, candidates[index][1]) for index, relevance in ranking]
+                reranked = True
+            except ProviderError:
+                # A dead reranker must not take retrieval down with it: the
+                # mixed order stands, only the quality of the cut suffers.
+                pass
+        if not reranked:
+            candidates = candidates[:limit]
         # A hit's section label comes from the section model of the document
         # it lives in. Documents are parsed once per call, however many of
         # their chunks landed in the top-k.
         section_models: dict[str, tuple[str, dict[str, Any]]] = {}
         results: list[dict[str, Any]] = []
-        for score, item in ordered:
+        for score, item in candidates:
             section_id = item.get("section_id")
             section_title = None
             if section_id:
@@ -494,7 +528,9 @@ class KnowledgeService:
                     "section_title": section_title,
                     "content": item["content"],
                     "score": round(score, 4),
-                    "source": "hybrid" if item["id"] in fts_ids else "semantic",
+                    "source": "reranked"
+                    if reranked
+                    else ("hybrid" if item["id"] in fts_ids else "semantic"),
                 }
             )
         return results

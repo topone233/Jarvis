@@ -16,6 +16,13 @@ from app.utils import json_dump, json_load, new_id, segment_for_index, utc_now
 # than by anything they did. Shared with the run producer so both agree.
 INTERRUPTED_ERROR = "服务在生成过程中被终止，这一轮没有完成。"
 
+#: The two retrieval model configs live in the settings KV, one key each,
+#: with their API keys in the keyring under these fixed identifiers. They are
+#: deliberately not fields of an LLM profile: retrieval models serve every
+#: conversation the same way, and their keys outlive any chat profile.
+RETRIEVAL_SETTING_KEYS = {"embedding": "retrieval_embedding", "rerank": "retrieval_rerank"}
+RETRIEVAL_KEY_IDS = {"embedding": "retrieval-embedding", "rerank": "retrieval-rerank"}
+
 
 @overload
 def _record(
@@ -147,6 +154,48 @@ class Store:
         with self.database.transaction() as connection:
             connection.execute("DELETE FROM settings WHERE key = ?", (key,))
 
+    # Retrieval models (embedding / rerank) - configured apart from any LLM
+    # profile, one global spec per kind. The spec a caller gets carries the
+    # keyring identifier so the provider can authorize the call; the secret's
+    # value itself never travels through here. Whether a key exists is stored
+    # next to the endpoint, so a settings GET answers without touching the
+    # keyring - the same deal the model profiles' has_api_key column offers.
+    def get_retrieval_spec(self, kind: str) -> dict[str, Any] | None:
+        """The wire spec for one retrieval model, or None when unconfigured."""
+        spec = self.get_setting(RETRIEVAL_SETTING_KEYS[kind])
+        if not isinstance(spec, dict) or not spec.get("base_url") or not spec.get("model"):
+            return None
+        return {
+            "base_url": spec["base_url"],
+            "model": spec["model"],
+            "key_id": RETRIEVAL_KEY_IDS[kind],
+            "has_api_key": bool(spec.get("has_api_key")),
+        }
+
+    def set_retrieval_spec(
+        self, kind: str, spec: dict[str, Any] | None, *, has_api_key: bool | None = None
+    ) -> None:
+        """Store (or, with None, clear) one retrieval model's endpoint spec.
+
+        `has_api_key` records the outcome of a key write or delete and is
+        passed by the endpoint that just made one; None keeps the stored
+        flag, for the save-the-endpoint-without-touching-the-key path.
+        """
+        if spec is None:
+            self.delete_setting(RETRIEVAL_SETTING_KEYS[kind])
+            return
+        previous = self.get_setting(RETRIEVAL_SETTING_KEYS[kind])
+        if has_api_key is None:
+            has_api_key = bool(isinstance(previous, dict) and previous.get("has_api_key"))
+        self.set_setting(
+            RETRIEVAL_SETTING_KEYS[kind],
+            {
+                "base_url": spec["base_url"],
+                "model": spec["model"],
+                "has_api_key": has_api_key,
+            },
+        )
+
     def list_model_profiles(self) -> list[dict[str, Any]]:
         rows = self.database.fetchall(
             """
@@ -195,18 +244,17 @@ class Store:
             connection.execute(
                 """
                 INSERT INTO model_profiles(
-                    id, name, base_url, protocol, chat_model, embedding_model, context_window,
+                    id, name, base_url, protocol, chat_model, context_window,
                     output_token_reserve, max_tokens, compact_percent,
                     thinking_on_json, thinking_off_json,
                     is_default, has_api_key, created_at, updated_at, deleted_at
-                ) VALUES (?, ?, ?, 'chat_completions', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                ) VALUES (?, ?, ?, 'chat_completions', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     profile_id,
                     data["name"],
                     data["base_url"],
                     data["chat_model"],
-                    data.get("embedding_model"),
                     data["context_window"],
                     data["output_token_reserve"],
                     data.get("max_tokens"),
@@ -229,7 +277,6 @@ class Store:
             "name",
             "base_url",
             "chat_model",
-            "embedding_model",
             "context_window",
             "output_token_reserve",
             "max_tokens",
@@ -241,7 +288,7 @@ class Store:
         # Unset fields are already absent thanks to exclude_unset, so an explicit
         # null is a request to clear the field. Only the nullable ones can be
         # cleared; for the rest a null would be a value the column cannot hold.
-        nullable = {"embedding_model", "max_tokens"}
+        nullable = {"max_tokens"}
         values = {
             key: value
             for key, value in changes.items()

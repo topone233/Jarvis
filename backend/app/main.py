@@ -28,11 +28,14 @@ from app.schemas import (
     ProjectCreate,
     ProjectUpdate,
     RegenerateRequest,
+    RetrievalSettingsUpdate,
+    RetrievalTestRequest,
     RunRequest,
     SettingsUpdate,
     SetupRequest,
 )
 from app.sections import parse_sections
+from app.store import RETRIEVAL_KEY_IDS
 
 
 def _start_run(
@@ -233,6 +236,104 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         """
         profile = core.store.get_model_profile(profile_id)
         return {"models": await core.provider.list_models(profile)}
+
+    def _public_retrieval_settings(core: CoreServices) -> dict[str, Any]:
+        """The GET shape of both retrieval configs. has_api_key comes from the
+        stored flag, not a keyring probe - a read of the settings screen must
+        not be the thing that fails when the credential store is broken."""
+        result: dict[str, Any] = {}
+        for kind in ("embedding", "rerank"):
+            spec = core.store.get_retrieval_spec(kind)
+            result[kind] = (
+                None
+                if spec is None
+                else {
+                    "base_url": spec["base_url"],
+                    "model": spec["model"],
+                    "has_api_key": spec["has_api_key"],
+                }
+            )
+        return result
+
+    def _retrieval_test_spec(
+        core: CoreServices, kind: str, payload: RetrievalTestRequest | None
+    ) -> dict[str, Any]:
+        """The spec a test call runs with: the form's fields over the stored
+        config. A test may name an endpoint that is not saved yet - that is
+        the point of testing before saving - and with no form key the stored
+        one fills in, so a saved config can be re-tested bare."""
+        stored = core.store.get_retrieval_spec(kind)
+        base_url = (payload.base_url if payload else None) or (stored or {}).get("base_url")
+        model = (payload.model if payload else None) or (stored or {}).get("model")
+        if not base_url or not model:
+            raise ValidationError("请先填写接口地址和模型名。")
+        return {
+            "base_url": base_url,
+            "model": model,
+            "key_id": RETRIEVAL_KEY_IDS[kind],
+            "api_key": payload.api_key if payload else None,
+        }
+
+    @app.get("/api/retrieval-settings")
+    async def get_retrieval_settings(
+        core: CoreServices = Depends(services),
+    ) -> dict[str, Any]:
+        return _public_retrieval_settings(core)
+
+    @app.put("/api/retrieval-settings")
+    async def update_retrieval_settings(
+        payload: RetrievalSettingsUpdate,
+        core: CoreServices = Depends(services),
+    ) -> dict[str, Any]:
+        """Save both cards from one button; per kind, absent is untouched and
+        null is cleared (config and keyring entry both).
+
+        The key follows the model-profile form's deal: a value writes it, an
+        empty string deletes it, absent or null leaves it alone. The keyring
+        write happens before the spec is stored, so a failing credential
+        store leaves the old config fully in force.
+        """
+        updates = payload.model_dump(exclude_unset=True)
+        for kind in ("embedding", "rerank"):
+            if kind not in updates:
+                continue
+            values = updates[kind]
+            if values is None:
+                core.store.set_retrieval_spec(kind, None)
+                core.provider.secrets.delete(RETRIEVAL_KEY_IDS[kind])
+                continue
+            api_key = values.pop("api_key", None)
+            has_api_key: bool | None = None
+            if api_key:
+                core.provider.secrets.set(RETRIEVAL_KEY_IDS[kind], api_key)
+                has_api_key = True
+            elif api_key == "":
+                core.provider.secrets.delete(RETRIEVAL_KEY_IDS[kind])
+                has_api_key = False
+            core.store.set_retrieval_spec(
+                kind,
+                {"base_url": values["base_url"], "model": values["model"]},
+                has_api_key=has_api_key,
+            )
+        return _public_retrieval_settings(core)
+
+    @app.post("/api/retrieval-settings/embedding/test")
+    async def test_retrieval_embedding(
+        payload: RetrievalTestRequest | None = None,
+        core: CoreServices = Depends(services),
+    ) -> dict[str, Any]:
+        spec = _retrieval_test_spec(core, "embedding", payload)
+        vectors = await core.provider.embed(spec, ["连通性测试"])
+        return {"ok": True, "dimensions": len(vectors[0]) if vectors else 0}
+
+    @app.post("/api/retrieval-settings/rerank/test")
+    async def test_retrieval_rerank(
+        payload: RetrievalTestRequest | None = None,
+        core: CoreServices = Depends(services),
+    ) -> dict[str, Any]:
+        spec = _retrieval_test_spec(core, "rerank", payload)
+        await core.provider.rerank(spec, "连通性测试", ["测试文档一", "测试文档二"], 2)
+        return {"ok": True}
 
     @app.get("/api/projects")
     async def list_projects(core: CoreServices = Depends(services)) -> list[dict[str, Any]]:
@@ -459,17 +560,11 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     async def import_knowledge(
         files: list[UploadFile] = File(...),
         project_id: str | None = Form(default=None),
-        model_profile_id: str | None = Form(default=None),
         relative_paths: list[str] | None = Form(default=None),
         core: CoreServices = Depends(services),
     ) -> dict[str, Any]:
         if project_id:
             core.store.get_project(project_id)
-        profile: dict[str, Any] | None = None
-        if model_profile_id:
-            profile = core.store.get_model_profile(model_profile_id)
-        elif core.store.list_model_profiles():
-            profile = core.store.get_default_model_profile()
         paths = relative_paths or []
         items = [
             ImportItem(
@@ -483,7 +578,6 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             "items": await core.knowledge.import_items(
                 items,
                 project_id=project_id,
-                profile=profile,
             )
         }
 
@@ -491,19 +585,12 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     async def search_knowledge(
         query: str,
         project_id: str | None = None,
-        model_profile_id: str | None = None,
         core: CoreServices = Depends(services),
     ) -> dict[str, Any]:
-        profile: dict[str, Any] | None = None
-        if model_profile_id:
-            profile = core.store.get_model_profile(model_profile_id)
-        elif core.store.list_model_profiles():
-            profile = core.store.get_default_model_profile()
         return {
             "items": await core.knowledge.search(
                 query,
                 project_id=project_id,
-                profile=profile,
             )
         }
 

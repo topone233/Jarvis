@@ -24,13 +24,12 @@ async def _tool(core: CoreServices) -> KnowledgeToolService:
     await core.knowledge.import_items(
         [ImportItem(filename="sql-cases.md", content=CONTENT.encode())],
         project_id=None,
-        profile=None,
     )
     return KnowledgeToolService(core.store, core.knowledge)
 
 
 async def _one(service: KnowledgeToolService, command: str) -> str:
-    return await service.execute(command, project_id=None, profile=None)
+    return await service.execute(command, project_id=None)
 
 
 @pytest.mark.asyncio

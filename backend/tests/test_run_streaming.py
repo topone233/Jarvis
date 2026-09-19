@@ -244,7 +244,6 @@ async def _import_one_case(core: CoreServices) -> None:
     await core.knowledge.import_items(
         [ImportItem(filename="cases.md", content="# 用例\n## 登录\n弱口令用例。\n".encode())],
         project_id=None,
-        profile=None,
     )
 
 

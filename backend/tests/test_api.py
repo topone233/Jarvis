@@ -100,7 +100,6 @@ def test_project_conversation_and_streaming_run(client: TestClient, core: CoreSe
             "name": "Mock",
             "base_url": "http://mock.local/v1",
             "chat_model": "mock-chat",
-            "embedding_model": "mock-embedding",
             "context_window": 4096,
             "output_token_reserve": 512,
             "is_default": True,

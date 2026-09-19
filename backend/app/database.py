@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite_vec
 
 from app.errors import ValidationError
-from app.utils import json_load, segment_for_index, utc_now
+from app.utils import json_dump, json_load, segment_for_index, utc_now
 
 SCHEMA_VERSION = 6
 
@@ -31,7 +31,6 @@ CREATE TABLE IF NOT EXISTS model_profiles (
     base_url TEXT NOT NULL,
     protocol TEXT NOT NULL,
     chat_model TEXT NOT NULL,
-    embedding_model TEXT,
     context_window INTEGER NOT NULL,
     output_token_reserve INTEGER NOT NULL,
     -- NULL means "do not send max_tokens at all", which is not the same as
@@ -325,6 +324,40 @@ class Database:
             "ALTER TABLE knowledge_chunks ADD COLUMN section_id TEXT",
         )
         self._delete_legacy_knowledge_documents(connection)
+        # The embedding model stops being a field of an LLM profile: one global
+        # retrieval setting takes over. Gated on the column rather than on a
+        # recorded version - once the column is gone the move has happened, and
+        # a database created fresh never had the column at all. The default
+        # profile's model name moves with that profile's base URL (the old call
+        # path used it anyway); the API key does not move, because the keyring
+        # entry was keyed by the LLM profile's id, so the first save of the new
+        # form asks for it again.
+        self._move_embedding_model_to_retrieval_settings(connection)
+
+    def _move_embedding_model_to_retrieval_settings(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(model_profiles)")}
+        if "embedding_model" not in columns:
+            return
+        row = connection.execute(
+            "SELECT embedding_model, base_url FROM model_profiles"
+            " WHERE deleted_at IS NULL AND embedding_model IS NOT NULL"
+            " ORDER BY is_default DESC, created_at ASC LIMIT 1"
+        ).fetchone()
+        if row is not None:
+            connection.execute(
+                """
+                INSERT INTO settings(key, value_json, updated_at)
+                VALUES ('retrieval_embedding', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    json_dump({"base_url": row["base_url"], "model": row["embedding_model"]}),
+                    utc_now(),
+                ),
+            )
+        connection.execute("ALTER TABLE model_profiles DROP COLUMN embedding_model")
 
     def _delete_legacy_knowledge_documents(self, connection: sqlite3.Connection) -> None:
         """Remove every document that predates the stored-content model.

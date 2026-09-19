@@ -22,7 +22,6 @@ class ModelProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     base_url: str = Field(min_length=1, max_length=500)
     chat_model: str = Field(min_length=1, max_length=200)
-    embedding_model: str | None = Field(default=None, max_length=200)
     api_key: str | None = Field(default=None, max_length=1000)
     context_window: int = Field(default=128_000, ge=4_096, le=2_000_000)
     output_token_reserve: int = Field(default=8_192, ge=256, le=200_000)
@@ -60,7 +59,6 @@ class ModelProfileUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     base_url: str | None = Field(default=None, min_length=1, max_length=500)
     chat_model: str | None = Field(default=None, min_length=1, max_length=200)
-    embedding_model: str | None = Field(default=None, max_length=200)
     api_key: str | None = Field(default=None, max_length=1000)
     context_window: int | None = Field(default=None, ge=4_096, le=2_000_000)
     output_token_reserve: int | None = Field(default=None, ge=256, le=200_000)
@@ -170,6 +168,55 @@ class MemoryUpdate(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=5_000)
     memory_key: str | None = Field(default=None, min_length=1, max_length=200)
     confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class RetrievalModelSpec(BaseModel):
+    """One retrieval model config - the embedding endpoint or the reranker.
+
+    `api_key` is write-only: it goes to the keyring under the kind's fixed
+    identifier and never comes back out. A value replaces the stored key, an
+    empty string deletes it, and anything else - absent or null - leaves the
+    stored key untouched.
+    """
+
+    base_url: str = Field(min_length=1, max_length=500)
+    model: str = Field(min_length=1, max_length=200)
+    api_key: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str) -> str:
+        return value.strip().rstrip("/")
+
+
+class RetrievalSettingsUpdate(BaseModel):
+    """Both retrieval configs at once, with per-kind absent/null semantics.
+
+    A kind absent from the request is not touched; sent as null it is cleared
+    (config and keyring entry both). This is what lets one card save without
+    stomping the other.
+    """
+
+    embedding: RetrievalModelSpec | None = None
+    rerank: RetrievalModelSpec | None = None
+
+
+class RetrievalTestRequest(BaseModel):
+    """A test call against an endpoint, optionally not yet saved.
+
+    Every field is optional: absent fields mean "test what is stored", which
+    is how the 保存前测试 without re-typing the key works - the stored
+    keyring entry fills in.
+    """
+
+    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str | None) -> str | None:
+        return value.strip().rstrip("/") if value else value
 
 
 class FeedbackCreate(BaseModel):

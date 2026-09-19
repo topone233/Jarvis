@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -52,18 +53,13 @@ def save_call(
     return results[0]["memory"]
 
 
-def without_ranking(profile: dict[str, Any]) -> dict[str, Any]:
-    """A profile with no embedding model: dedup runs, ranking falls back."""
-    return {**profile, "embedding_model": None}
-
-
 def vocab_provider(
     core: CoreServices, monkeypatch: pytest.MonkeyPatch, vocab: tuple[str, ...]
 ) -> None:
     """embed() as a one-hot bag of words: similarity = shared vocab words."""
 
-    async def embed(profile: dict[str, Any], texts: list[str]) -> list[list[float]]:
-        del profile
+    async def embed(spec: dict[str, Any], texts: list[str]) -> list[list[float]]:
+        del spec
         return [[1.0 if word in text else 0.0 for word in vocab] for text in texts]
 
     monkeypatch.setattr(core.context.provider, "embed", embed)
@@ -118,9 +114,7 @@ async def test_a_call_confirms_the_same_fact_and_supersedes_a_changed_one(
 
 
 @pytest.mark.asyncio
-async def test_calls_the_model_was_never_given_are_ignored(
-    core: CoreServices, profile: dict[str, Any]
-) -> None:
+async def test_calls_the_model_was_never_given_are_ignored(core: CoreServices) -> None:
     """An unknown tool name or broken arguments is not a memory action."""
     result = core.memory.apply_tool_calls(
         [
@@ -185,9 +179,7 @@ async def test_a_forget_deletes_the_memory_its_call_names(
 
 
 @pytest.mark.asyncio
-async def test_a_forget_that_names_nothing_does_nothing(
-    core: CoreServices, profile: dict[str, Any]
-) -> None:
+async def test_a_forget_that_names_nothing_does_nothing(core: CoreServices) -> None:
     """A key the model was never shown is a miss, not a deletion."""
     result = core.memory.apply_tool_calls(
         [
@@ -255,7 +247,7 @@ async def test_a_memory_whose_source_is_still_visible_is_not_injected(
     save_call(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
     core.store.append_message(conversation["id"], "user", "后来又说了点别的。")
 
-    bundle = await core.context.build(conversation["id"], without_ranking(profile), "继续。")
+    bundle = await core.context.build(conversation["id"], profile, "继续。")
 
     assert bundle.memories == []
     assert bundle.memory_mode == "fallback"
@@ -284,7 +276,7 @@ async def test_a_memory_folded_into_the_artifact_is_not_injected(
         token_estimate=10,
     )
 
-    bundle = await core.context.build(conversation["id"], without_ranking(profile), "继续。")
+    bundle = await core.context.build(conversation["id"], profile, "继续。")
 
     assert bundle.memories == []
 
@@ -302,7 +294,7 @@ async def test_a_memory_whose_source_left_the_window_is_injected_again(
     message = core.store.append_message(conversation["id"], "user", "我喜欢简洁回答。")
     save_call(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
     core.store.append_message(conversation["id"], "user", "闲聊。" * 1200)
-    tight = {**without_ranking(profile), "context_window": 900, "output_token_reserve": 0}
+    tight = {**profile, "context_window": 900, "output_token_reserve": 0}
 
     bundle = await core.context.build(conversation["id"], tight, "继续。")
 
@@ -318,7 +310,7 @@ async def test_a_memory_from_another_conversation_is_injected(
     save_call(core, "喜欢简洁回答", say(core, profile, "我喜欢简洁回答。"), key="回复风格")
     other = core.store.create_conversation("别处", None, profile["id"], False)
 
-    bundle = await core.context.build(other["id"], without_ranking(profile), "你好")
+    bundle = await core.context.build(other["id"], profile, "你好")
 
     assert [memory["content"] for memory in bundle.memories] == ["喜欢简洁回答"]
 
@@ -328,8 +320,12 @@ async def test_a_memory_from_another_conversation_is_injected(
 
 @pytest.mark.asyncio
 async def test_only_memories_relevant_to_the_query_are_injected(
-    core: CoreServices, profile: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    core: CoreServices,
+    profile: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    use_embedding: Callable[[], None],
 ) -> None:
+    use_embedding()
     vocab_provider(core, monkeypatch, ("苹果", "香蕉", "天气"))
     save_call(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
     save_call(core, "用户关心天气", say(core, profile, "我每天看天气预报。"), key="天气")
@@ -343,9 +339,13 @@ async def test_only_memories_relevant_to_the_query_are_injected(
 
 @pytest.mark.asyncio
 async def test_a_turn_unrelated_to_every_memory_injects_none(
-    core: CoreServices, profile: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    core: CoreServices,
+    profile: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    use_embedding: Callable[[], None],
 ) -> None:
     """The user chose the strict reading: below the floor means not injected."""
+    use_embedding()
     vocab_provider(core, monkeypatch, ("苹果", "香蕉", "天气"))
     save_call(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
@@ -370,9 +370,7 @@ async def test_a_forget_request_lists_everything(
     save_call(core, "喜欢简洁回答", message["id"], key="回复风格", kind="preference")
     save_call(core, "用户关心天气", say(core, profile, "我每天看天气预报。"), key="天气")
 
-    bundle = await core.context.build(
-        conversation["id"], without_ranking(profile), "忘掉之前说过的话"
-    )
+    bundle = await core.context.build(conversation["id"], profile, "忘掉之前说过的话")
 
     assert sorted(memory["content"] for memory in bundle.memories) == [
         "喜欢简洁回答",
@@ -383,12 +381,16 @@ async def test_a_forget_request_lists_everything(
 
 @pytest.mark.asyncio
 async def test_a_failed_embed_falls_back_to_the_deduped_list(
-    core: CoreServices, profile: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    core: CoreServices,
+    profile: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    use_embedding: Callable[[], None],
 ) -> None:
     """An embedding endpoint being down must not take the turn down with it."""
+    use_embedding()
 
-    async def broken(profile: dict[str, Any], texts: list[str]) -> list[list[float]]:
-        del profile, texts
+    async def broken(spec: dict[str, Any], texts: list[str]) -> list[list[float]]:
+        del spec, texts
         raise ProviderError("嵌入服务不可用。")
 
     monkeypatch.setattr(core.context.provider, "embed", broken)
@@ -403,8 +405,12 @@ async def test_a_failed_embed_falls_back_to_the_deduped_list(
 
 @pytest.mark.asyncio
 async def test_a_stale_embedding_is_recomputed_under_the_current_model(
-    core: CoreServices, profile: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    core: CoreServices,
+    profile: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    use_embedding: Callable[[], None],
 ) -> None:
+    use_embedding()
     vocab_provider(core, monkeypatch, ("苹果", "香蕉", "天气"))
     memory = save_call(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
     core.store.update_memory_embedding(memory["id"], [0.5, 0.5, 0.5], "old-model")
@@ -416,7 +422,7 @@ async def test_a_stale_embedding_is_recomputed_under_the_current_model(
     row = core.database.fetchone(
         "SELECT embedding_json, embedding_model FROM memories WHERE id = ?", (memory["id"],)
     )
-    assert row["embedding_model"] == profile["embedding_model"]
+    assert row["embedding_model"] == "mock-embedding"
     assert json.loads(row["embedding_json"]) == [1.0, 0.0, 0.0]
 
 
@@ -428,7 +434,7 @@ async def test_editing_a_memory_drops_its_cached_vector(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:
     memory = save_call(core, "旧的内容", say(core, profile, "记一下。"), key="键")
-    core.store.update_memory_embedding(memory["id"], [1.0, 0.0], profile["embedding_model"])
+    core.store.update_memory_embedding(memory["id"], [1.0, 0.0], "mock-embedding")
 
     core.store.update_memory(memory["id"], {"content": "新的内容"})
 
@@ -441,15 +447,19 @@ async def test_editing_a_memory_drops_its_cached_vector(
 
 @pytest.mark.asyncio
 async def test_one_embed_call_serves_memories_and_knowledge(
-    core: CoreServices, profile: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    core: CoreServices,
+    profile: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    use_embedding: Callable[[], None],
 ) -> None:
     """The query is embedded once per turn and shared, not once per consumer."""
+    use_embedding()
     calls: list[list[str]] = []
     original = core.provider.embed
 
-    async def counting(profile: dict[str, Any], texts: list[str]) -> list[list[float]]:
+    async def counting(spec: dict[str, Any], texts: list[str]) -> list[list[float]]:
         calls.append(list(texts))
-        return await original(profile, texts)
+        return await original(spec, texts)
 
     monkeypatch.setattr(core.provider, "embed", counting)
     save_call(core, "喜欢简洁回答", say(core, profile, "我喜欢简洁回答。"), key="回复风格")
@@ -465,7 +475,9 @@ async def test_one_embed_call_serves_memories_and_knowledge(
 
 @pytest.mark.asyncio
 async def test_knowledge_citations_are_numbered_and_carry_an_outline(
-    core: CoreServices, profile: dict[str, Any]
+    core: CoreServices,
+    profile: dict[str, Any],
+    use_embedding: Callable[[], None],
 ) -> None:
     """The 知识资料 section shows numbered sources plus the hit document's map.
 
@@ -475,6 +487,7 @@ async def test_knowledge_citations_are_numbered_and_carry_an_outline(
     """
     from app.knowledge import ImportItem
 
+    use_embedding()
     await core.knowledge.import_items(
         [
             ImportItem(
@@ -483,7 +496,6 @@ async def test_knowledge_citations_are_numbered_and_carry_an_outline(
             )
         ],
         project_id=None,
-        profile=profile,
     )
     conversation = core.store.create_conversation("对话", None, profile["id"], False)
 
