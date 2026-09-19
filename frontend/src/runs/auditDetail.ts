@@ -47,6 +47,8 @@ export function detailLines(row: AuditRow): string[] {
       return memoryLines(payload)
     case 'knowledge_tool':
       return knowledgeLines(payload)
+    case 'skill_tool':
+      return skillLines(payload)
     case 'tool_rounds_exhausted':
       return ['连续多轮调用工具后仍未给出回答，已按轮次上限收尾。']
     default:
@@ -154,6 +156,22 @@ function knowledgeLines(payload: Record<string, unknown>): string[] {
   const lines: string[] = []
   if (typeof payload.command === 'string' && payload.command !== '') {
     lines.push(`knowledge ${payload.command}`)
+  }
+  if (typeof payload.output_chars === 'number') {
+    lines.push(`返回 ${payload.output_chars} 字符`)
+  }
+  return lines
+}
+
+/** A skill load or script run; a `/name` one says it came from the user. */
+function skillLines(payload: Record<string, unknown>): string[] {
+  const lines: string[] = []
+  if (typeof payload.command === 'string' && payload.command !== '') {
+    lines.push(
+      payload.trigger === 'user_request'
+        ? `技能 ${payload.command}（主动触发）`
+        : `skill ${payload.command}`,
+    )
   }
   if (typeof payload.output_chars === 'number') {
     lines.push(`返回 ${payload.output_chars} 字符`)

@@ -33,6 +33,8 @@ from app.schemas import (
     RunRequest,
     SettingsUpdate,
     SetupRequest,
+    SkillEnabledUpdate,
+    SkillImportRequest,
 )
 from app.sections import parse_sections
 from app.store import RETRIEVAL_KEY_IDS
@@ -334,6 +336,26 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         spec = _retrieval_test_spec(core, "rerank", payload)
         await core.provider.rerank(spec, "连通性测试", ["测试文档一", "测试文档二"], 2)
         return {"ok": True}
+
+    @app.get("/api/skills")
+    async def list_skills(core: CoreServices = Depends(services)) -> list[dict[str, Any]]:
+        return core.skills.list_skills()
+
+    @app.post("/api/skills/import", status_code=201)
+    async def import_skill(
+        payload: SkillImportRequest, core: CoreServices = Depends(services)
+    ) -> dict[str, Any]:
+        return core.skills.import_from_path(payload.path)
+
+    @app.put("/api/skills/{name}/enabled")
+    async def set_skill_enabled(
+        name: str, payload: SkillEnabledUpdate, core: CoreServices = Depends(services)
+    ) -> dict[str, Any]:
+        return core.skills.set_enabled(name, payload.enabled)
+
+    @app.delete("/api/skills/{name}", status_code=204, response_model=None)
+    async def delete_skill(name: str, core: CoreServices = Depends(services)) -> None:
+        core.skills.delete_skill(name)
 
     @app.get("/api/projects")
     async def list_projects(core: CoreServices = Depends(services)) -> list[dict[str, Any]]:

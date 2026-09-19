@@ -13,6 +13,8 @@ from app.images import parse_images, write_images
 from app.knowledge_tool import KNOWLEDGE_TOOLS, USAGE, KnowledgeToolService
 from app.runtime import CoreServices, RunBroadcast
 from app.schemas import ThinkingLevel
+from app.skills import SKILL_TOOLS, SkillToolService
+from app.skills import USAGE as SKILL_USAGE
 from app.store import INTERRUPTED_ERROR
 from app.tokens import estimate_tokens
 from app.utils import json_dump, new_id
@@ -280,6 +282,15 @@ class RunService:
                     "remaining_token_estimate": bundle.remaining_token_estimate,
                 },
             )
+            if bundle.forced_skill is not None:
+                # The user named the skill, so the load needed no round and no
+                # tool call - but it is still an action worth a step on the
+                # trail, or the answer would cite a skill nobody can see it used.
+                audit(
+                    "skill_tool",
+                    "completed",
+                    {"command": f"/{bundle.forced_skill}", "trigger": "user_request"},
+                )
             # The name that goes on the wire is the one worth auditing - the
             # composer may have named another model for this one run, and the
             # profile's own name would be wrong here.
@@ -297,7 +308,12 @@ class RunService:
             has_documents = bool(
                 self.services.store.list_knowledge_documents(conversation["project_id"])
             )
-            tools = [*bundle.tools, *(KNOWLEDGE_TOOLS if has_documents else [])]
+            skill_tool = SkillToolService(self.services.skills)
+            tools = [
+                *bundle.tools,
+                *(KNOWLEDGE_TOOLS if has_documents else []),
+                *(SKILL_TOOLS if self.services.skills.has_enabled() else []),
+            ]
             messages = list(bundle.messages)
             # The empty assistant row this run writes into rode along in the
             # single-round request and cost nothing there. In a tool loop it
@@ -306,6 +322,7 @@ class RunService:
             while messages and messages[-1]["role"] == "assistant" and not messages[-1]["content"]:
                 messages.pop()
             executed_commands: list[str] = []
+            skill_commands: list[str] = []
             response_parts: list[str] = []
             reasoning_parts: list[str] = []
             usage: dict[str, Any] | None = None
@@ -341,6 +358,25 @@ class RunService:
                     )
                     audit(
                         "knowledge_tool",
+                        "completed",
+                        {"command": command, "output_chars": len(output)},
+                    )
+                    return output
+                if name == "skill":
+                    command = parsed.get("command")
+                    if not isinstance(command, str) or not command.strip():
+                        return "skill: 空命令。" + SKILL_USAGE
+                    normalized = " ".join(command.split())
+                    if skill_commands.count(normalized) >= 2:
+                        return (
+                            "skill: 同一命令已重复调用两次，已阻止执行。"
+                            "请基于已获得的信息继续，或换一个命令。"
+                        )
+                    skill_commands.append(normalized)
+                    audit("skill_tool", "running", {"command": command})
+                    output = await skill_tool.execute(command)
+                    audit(
+                        "skill_tool",
                         "completed",
                         {"command": command, "output_chars": len(output)},
                     )

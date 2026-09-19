@@ -422,6 +422,7 @@ async def test_a_stale_embedding_is_recomputed_under_the_current_model(
     row = core.database.fetchone(
         "SELECT embedding_json, embedding_model FROM memories WHERE id = ?", (memory["id"],)
     )
+    assert row is not None
     assert row["embedding_model"] == "mock-embedding"
     assert json.loads(row["embedding_json"]) == [1.0, 0.0, 0.0]
 
@@ -441,6 +442,7 @@ async def test_editing_a_memory_drops_its_cached_vector(
     row = core.database.fetchone(
         "SELECT embedding_json, embedding_model FROM memories WHERE id = ?", (memory["id"],)
     )
+    assert row is not None
     assert row["embedding_json"] is None
     assert row["embedding_model"] is None
 

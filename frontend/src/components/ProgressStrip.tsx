@@ -30,6 +30,7 @@ const STAGE_LABELS: Record<string, string> = {
   model_stream: '生成回复',
   memory_write: '写入记忆',
   knowledge_tool: '查阅知识库',
+  skill_tool: '调用技能',
   tool_rounds_exhausted: '工具轮次已达上限',
 }
 

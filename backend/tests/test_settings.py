@@ -351,7 +351,7 @@ async def test_streamed_tool_call_deltas_arrive_as_one_event(profile: dict[str, 
     endpoints are not uniform about which one comes last.
     """
     sent: list[dict[str, Any]] = []
-    chunks = [
+    chunks: list[dict[str, Any]] = [
         {"choices": [{"delta": {"content": "好的。"}, "finish_reason": None}]},
         {
             "choices": [

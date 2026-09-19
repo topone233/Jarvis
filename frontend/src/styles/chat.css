@@ -1679,6 +1679,110 @@ button.citation-chip:hover {
   flex: 1;
 }
 
+/* --- Skills tab ------------------------------------------------------------ */
+
+/* The import row: a path box and its button, one field's worth of room. */
+.skill-import {
+  display: flex;
+  gap: 10px;
+}
+
+.skill-import input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Cards, at least three across in the panel's width: the inventory is scanned,
+   not read, and a grid of small tiles says that better than a tall list. */
+.skills-grid {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.skill-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+/* Broken is said by the text below the name; the card keeps its place in the
+   grid so deleting it is reachable from where it is, not from a second list. */
+.skill-card.is-broken {
+  background: var(--bg-hover);
+}
+
+.skill-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+
+.skill-head .spacer {
+  flex: 1;
+}
+
+.skill-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.skill-description {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.skill-error {
+  color: var(--bad-strong);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* The switch: a quiet pill when off, the calm blue when on. No borders - the
+   fill is the whole statement, the same way the rows carry theirs. */
+.skill-switch {
+  flex: none;
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-active);
+  display: inline-flex;
+  align-items: center;
+  transition: background 0.15s ease;
+}
+
+.skill-switch.is-on {
+  background: var(--accent-strong);
+}
+
+.skill-knob {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.2);
+  transition: transform 0.15s ease;
+}
+
+.skill-switch.is-on .skill-knob {
+  transform: translateX(14px);
+}
+
 /* The deleted section sits below the list, folded: it is where things go when
    they leave, not a second list to scan on every visit. */
 .memory-deleted {

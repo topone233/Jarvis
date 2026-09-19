@@ -208,6 +208,41 @@ is skipped. Imports are copied into the user-selected Jarvis data directory;
 the service never alters the original source file or folder. The document and
 retrieval design behind these endpoints is docs/RAG.md.
 
+## Skills
+
+Skills are the generic Agent Skills format - a folder with a SKILL.md whose
+YAML frontmatter declares `name` and `description`, plus any scripts and
+reference files it ships with - the same shape Claude Code and Codex read, so
+a folder written for those tools works here unchanged. They live in the data
+directory under `skills/`, copied in whole at import time: the source folder
+stays wherever it is, and moving or deleting it afterwards changes nothing.
+
+Progressive disclosure is what keeps the prompt cheap. When at least one skill
+is enabled, the system instruction carries a `## 可用技能` section listing
+name and description only. The full body enters the context two ways: the user
+types `/name` at the start of a message (the body is injected directly, and
+the audit records a `skill_tool` step with `trigger: user_request`), or the
+model calls the `skill` tool - `load <name>` returns the body plus the folder's
+file listing, `run <name> <script> [args...]` executes one of the skill's own
+scripts. Scripts run with the skill directory as their working directory
+(skills reference their assets relatively), `.py` on the backend's own
+interpreter, `.ps1` and `.bat`/`.cmd` through PowerShell and cmd, everything
+else refused; 120 seconds, 20,000 characters of combined output, and any
+failure comes back as text for the model to read. The same
+third-identical-command guard the knowledge tool has applies here too.
+
+Enable state lives in the settings KV as a list of disabled names, so absence
+of the row is what "skills default to on" means; deleting or re-enabling the
+last disabled skill removes the row again.
+
+- GET /api/skills - the inventory. A folder that exists but cannot be used
+  (no SKILL.md, bad frontmatter, name disagreeing with the folder) comes back
+  as a `broken` entry with the reason, not as silence.
+- POST /api/skills/import with `{path}` - validates and copies a local folder.
+  A name already installed is refused; so is the reserved name `compact`.
+- PUT /api/skills/{name}/enabled with `{enabled}` - flips the switch.
+- DELETE /api/skills/{name} - removes the folder and any disable entry.
+
 ## Trash
 
 Deleting a memory, model profile, or knowledge document moves it to the trash

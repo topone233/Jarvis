@@ -14,12 +14,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from conftest import FakeProvider
 from fastapi.testclient import TestClient
 
 from app.database import Database
 from app.errors import ProviderError
 from app.knowledge import ImportItem
 from app.runtime import CoreServices
+from app.secrets import InMemorySecretStore
 from app.store import Store
 
 EMBEDDING = {"base_url": "http://emb.local/v1", "model": "emb-1"}
@@ -98,12 +100,16 @@ def test_null_clears_the_config_and_its_key(client: TestClient, core: CoreServic
     assert body["rerank"] is None
     # The keyring entry went with it: a cleared config must not leave a key
     # behind that a future config silently picks up.
-    assert "retrieval-embedding" not in core.provider.secrets.values
+    secrets = core.provider.secrets
+    assert isinstance(secrets, InMemorySecretStore)
+    assert "retrieval-embedding" not in secrets.values
 
 
 def test_a_key_is_written_to_the_kind_identifier(client: TestClient, core: CoreServices) -> None:
     client.put("/api/retrieval-settings", json={"rerank": {**RERANK, "api_key": "sk-rr"}})
-    assert core.provider.secrets.values["retrieval-rerank"] == "sk-rr"
+    secrets = core.provider.secrets
+    assert isinstance(secrets, InMemorySecretStore)
+    assert secrets.values["retrieval-rerank"] == "sk-rr"
 
 
 # --- the test endpoints ---------------------------------------------------------
@@ -276,7 +282,9 @@ async def test_search_without_a_rerank_config_skips_the_stage(
     results = await core.knowledge.search("检索", project_id=None)
 
     assert results
-    assert core.provider.rerank_calls == []
+    fake = core.provider
+    assert isinstance(fake, FakeProvider)
+    assert fake.rerank_calls == []
     assert results[0]["source"] != "reranked"
 
 

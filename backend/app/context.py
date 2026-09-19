@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.errors import ProviderError
+from app.errors import NotFoundError, ProviderError, ValidationError
 from app.images import image_data_url, message_images
 from app.knowledge import KnowledgeService
 from app.memory import MEMORY_TOOLS
@@ -19,6 +19,7 @@ from app.settings import (
     SYSTEM_PROMPT,
     read_prompt,
 )
+from app.skills import SkillService
 from app.store import Store
 from app.tokens import IMAGE_TOKEN_ESTIMATE, estimate_tokens
 from app.utils import json_dump, json_load
@@ -56,6 +57,10 @@ class ContextBundle:
     # the memory directive says the model may manage memory at all. Cleared
     # directive - the settings choice - means no tools on the wire.
     tools: list[dict[str, Any]]
+    # The skill a `/name` message named and this turn force-loaded, kept for
+    # the audit trail. None for every turn that did not name one - including
+    # the ones where the model picks a skill up on its own through the tool.
+    forced_skill: str | None = None
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -81,10 +86,12 @@ class ContextManager:
         store: Store,
         provider: OpenAICompatibleProvider,
         knowledge: KnowledgeService,
+        skills: SkillService,
     ) -> None:
         self.store = store
         self.provider = provider
         self.knowledge = knowledge
+        self.skills = skills
 
     @staticmethod
     def is_compact_request(content: str) -> bool:
@@ -213,7 +220,10 @@ class ContextManager:
         # hidden gets its memory kept even if the second fit would reveal the
         # source: keeping a duplicate beats dropping a memory's last carrier.
         directive = read_prompt(self.store, MEMORY_PROMPT)
-        system = self._assemble_system_instruction(candidates, artifact, citations, directive)
+        skill_section, forced_skill, forced_section = self._skill_sections(user_query)
+        system = self._assemble_system_instruction(
+            candidates, artifact, citations, directive, skill_section, forced_section
+        )
         selected_messages, estimate, visible_ids = self._fit_messages(
             system, raw_messages, input_budget
         )
@@ -221,7 +231,9 @@ class ContextManager:
             candidates, conversation_id, artifact, visible_ids, user_query, query_vector
         )
         if [memory["id"] for memory in memories] != [memory["id"] for memory in candidates]:
-            system = self._assemble_system_instruction(memories, artifact, citations, directive)
+            system = self._assemble_system_instruction(
+                memories, artifact, citations, directive, skill_section, forced_section
+            )
             selected_messages, estimate, _ = self._fit_messages(system, raw_messages, input_budget)
         # A cleared prompt is a choice the settings screen allows, and an empty
         # system message is not how to carry it out: some endpoints reject one
@@ -238,7 +250,30 @@ class ContextManager:
             input_token_estimate=estimate,
             remaining_token_estimate=remaining,
             tools=list(MEMORY_TOOLS) if directive else [],
+            forced_skill=forced_skill if forced_section is not None else None,
         )
+
+    def _skill_sections(self, user_query: str) -> tuple[str | None, str | None, str | None]:
+        """What skills contribute to this turn: the standing list, the named
+        skill's full instructions, and which skill that was.
+
+        Both sections ride into the system instruction *before* the budget
+        fit, so a large skill body costs tokens where they are actually
+        counted. A slash name that stopped resolving between the match and
+        the read (deleted mid-turn) drops the forced section rather than
+        failing the turn.
+        """
+        skill_section = self.skills.summary_section()
+        forced_skill: str | None = None
+        forced_section: str | None = None
+        forced = self.skills.match_slash(user_query)
+        if forced is not None:
+            try:
+                forced_section = self.skills.body_section(str(forced["name"]))
+                forced_skill = str(forced["name"])
+            except (NotFoundError, ValidationError):
+                forced_section = None
+        return skill_section, forced_skill, forced_section
 
     def _select_memories(
         self,
@@ -404,6 +439,8 @@ class ContextManager:
         artifact: dict[str, Any] | None,
         citations: list[dict[str, Any]],
         directive: str,
+        skill_section: str | None = None,
+        forced_skill_section: str | None = None,
     ) -> str:
         sections = [read_prompt(self.store, SYSTEM_PROMPT)]
         if memories:
@@ -416,6 +453,13 @@ class ContextManager:
             sections.append(f"## 历史摘要\n{artifact['content']}")
         if citations:
             sections.append(f"## 知识资料\n{self._format_knowledge_section(citations)}")
+        # Skills: the standing list tells the model what exists; a `/name`
+        # message puts the named skill's full instructions right after it,
+        # so the model never has to spend a round loading what was named.
+        if skill_section:
+            sections.append(skill_section)
+        if forced_skill_section:
+            sections.append(forced_skill_section)
         # Memory management rides on the main call: the directive tells the
         # model when to use the memory tools, and it can name memories only
         # because the 记忆 section above listed them. Cleared like any other

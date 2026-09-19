@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ from app.provider import ProviderEvent
 from app.runs import RunChoice, RunService
 from app.runtime import CoreServices
 from app.schemas import ThinkingLevel
+from app.skills import SKILL_FILE
 
 
 class PacedProvider:
@@ -236,6 +238,127 @@ def _knowledge_call(command: str, call_id: str = "call_1") -> ProviderEvent:
             ]
         },
     )
+
+
+def _install_skill(core: CoreServices, tmp_path: Path) -> None:
+    source = tmp_path / "demo-src"
+    source.mkdir()
+    (source / SKILL_FILE).write_text(
+        "---\nname: demo\ndescription: 演示技能。\n---\n把句子倒序输出。\n",
+        encoding="utf-8",
+    )
+    core.skills.import_from_path(str(source))
+
+
+def _skill_call(command: str, call_id: str = "call_1") -> ProviderEvent:
+    return ProviderEvent(
+        "tool_calls",
+        {
+            "calls": [
+                {"id": call_id, "name": "skill", "arguments": json.dumps({"command": command})}
+            ]
+        },
+    )
+
+
+async def test_a_slash_message_loads_the_skill_without_a_tool_round(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    """`/name` puts the full instructions in the system prompt directly.
+
+    The user named the skill; spending a round making the model ask for what
+    it was already given would be ceremony. The load still shows as a step.
+    """
+    _install_skill(core, tmp_path)
+    provider = paced(["好的，已按技能执行。"])
+    _, run = _begin(core, profile, content="/demo 把这句话倒序")
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    system = (provider.last_messages or [])[0]
+    assert system["role"] == "system"
+    assert "技能指令：/demo" in system["content"]
+    assert "把句子倒序输出" in system["content"]
+    assert "## 可用技能" in system["content"]
+    steps = [
+        event for event in core.store.list_run_events(run["id"]) if event["stage"] == "skill_tool"
+    ]
+    assert [(step["state"], step["payload"]["trigger"]) for step in steps] == [
+        ("completed", "user_request")
+    ]
+
+
+async def test_the_model_loads_a_skill_through_the_tool(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    """The standing list names the skill; the load round fetches the body."""
+    _install_skill(core, tmp_path)
+    provider = paced(
+        ["我先载入技能。"],
+        tail_events=[
+            _skill_call("load demo"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["按技能执行完成。"]}],
+    )
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    assert core.store.get_message(run["assistant_message_id"])["content"] == "按技能执行完成。"
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    assert "把句子倒序输出" in tool_messages[0]["content"]
+    # Memory tools always ride; the skill tool is there because one is enabled.
+    assert [tool["function"]["name"] for tool in provider.last_tools or []] == [
+        "save_memory",
+        "forget_memory",
+        "skill",
+    ]
+    assert any(event["stage"] == "skill_tool" for event in core.store.list_run_events(run["id"]))
+
+
+async def test_no_skill_tool_when_every_skill_is_disabled(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    _install_skill(core, tmp_path)
+    core.skills.set_enabled("demo", False)
+    provider = paced(["好的。"])
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    assert "skill" not in [tool["function"]["name"] for tool in provider.last_tools or []]
+    system = (provider.last_messages or [])[0]
+    assert "可用技能" not in system["content"]
+
+
+async def test_a_repeated_skill_command_is_blocked_on_the_third_try(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    _install_skill(core, tmp_path)
+    repeated = {
+        "chunks": ["…"],
+        "tail_events": [
+            _skill_call("load demo", call_id="call_x"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+    }
+    provider = paced(
+        [],
+        tail_events=[
+            _skill_call("load demo", call_id="call_1"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[repeated],
+    )
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    assert len(tool_messages) == 10
+    assert all("把句子倒序输出" in m["content"] for m in tool_messages[:2])
+    assert all("已阻止执行" in m["content"] for m in tool_messages[2:])
 
 
 async def _import_one_case(core: CoreServices) -> None:

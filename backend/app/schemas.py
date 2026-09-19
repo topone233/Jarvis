@@ -105,6 +105,21 @@ class ProjectCreate(BaseModel):
     is_pinned: bool = False
 
 
+class SkillImportRequest(BaseModel):
+    """A local skill folder to copy into the data directory.
+
+    The backend reads the folder in place - the app is local and so is the
+    folder - validates its SKILL.md, and copies the tree under the skill's
+    own name. Nothing but the path crosses the wire.
+    """
+
+    path: str = Field(min_length=1, max_length=1000)
+
+
+class SkillEnabledUpdate(BaseModel):
+    enabled: bool
+
+
 class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     is_pinned: bool | None = None

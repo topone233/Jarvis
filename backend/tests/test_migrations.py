@@ -49,25 +49,19 @@ def test_migration_deletes_documents_that_predate_stored_content(tmp_path: Path)
 
     database.initialize()
 
-    assert (
-        database.fetchone(
-            "SELECT COUNT(*) AS n FROM knowledge_documents WHERE id = ?", (document["id"],)
-        )["n"]
-        == 0
+    count = database.fetchone(
+        "SELECT COUNT(*) AS n FROM knowledge_documents WHERE id = ?", (document["id"],)
     )
-    assert (
-        database.fetchone(
-            "SELECT COUNT(*) AS n FROM knowledge_chunks WHERE document_id = ?", (document["id"],)
-        )["n"]
-        == 0
+    assert count is not None and count["n"] == 0
+    count = database.fetchone(
+        "SELECT COUNT(*) AS n FROM knowledge_chunks WHERE document_id = ?", (document["id"],)
     )
-    assert (
-        database.fetchone(
-            "SELECT COUNT(*) AS n FROM knowledge_chunks_fts WHERE document_id = ?",
-            (document["id"],),
-        )["n"]
-        == 0
+    assert count is not None and count["n"] == 0
+    count = database.fetchone(
+        "SELECT COUNT(*) AS n FROM knowledge_chunks_fts WHERE document_id = ?",
+        (document["id"],),
     )
+    assert count is not None and count["n"] == 0
     assert not stored_file.exists()
 
 

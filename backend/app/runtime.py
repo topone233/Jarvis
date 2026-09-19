@@ -14,6 +14,7 @@ from app.knowledge import KnowledgeService
 from app.memory import MemoryService
 from app.provider import OpenAICompatibleProvider
 from app.secrets import KeyringSecretStore, SecretStore
+from app.skills import SkillService
 from app.store import Store
 
 
@@ -124,6 +125,7 @@ class CoreServices:
     knowledge: KnowledgeService
     context: ContextManager
     memory: MemoryService
+    skills: SkillService
     run_registry: RunRegistry
 
     @classmethod
@@ -134,7 +136,8 @@ class CoreServices:
         store.interrupt_orphaned_runs()
         provider = OpenAICompatibleProvider(secrets or KeyringSecretStore())
         knowledge = KnowledgeService(store, provider)
-        context = ContextManager(store, provider, knowledge)
+        skills = SkillService(store, data_directory)
+        context = ContextManager(store, provider, knowledge, skills)
         memory = MemoryService(store)
         return cls(
             database=database,
@@ -143,6 +146,7 @@ class CoreServices:
             knowledge=knowledge,
             context=context,
             memory=memory,
+            skills=skills,
             run_registry=RunRegistry(),
         )
 

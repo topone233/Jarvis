@@ -329,3 +329,17 @@ export interface RetrievalTestResult {
   /** Only the embedding test reports this: the width of one vector. */
   dimensions?: number
 }
+
+/** One installed skill as `GET /api/skills` returns it. */
+export interface SkillInfo {
+  name: string
+  description: string | null
+  enabled: boolean
+  /**
+   * True when the folder exists but its SKILL.md cannot be used - a missing
+   * frontmatter, a name that disagrees with the folder. `error` says why, and
+   * the card shows it instead of a switch that would do nothing.
+   */
+  broken: boolean
+  error: string | null
+}

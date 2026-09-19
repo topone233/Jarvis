@@ -35,8 +35,9 @@ import { ModelProfilesPanel } from './settings/ModelProfilesPanel'
 import { PromptsPanel } from './settings/PromptsPanel'
 import { QuickPromptsPanel } from './settings/QuickPromptsPanel'
 import { RetrievalPanel } from './settings/RetrievalPanel'
+import { SkillsPanel } from './settings/SkillsPanel'
 
-const TABS = ['directory', 'model', 'retrieval', 'prompts', 'quick'] as const
+const TABS = ['directory', 'model', 'retrieval', 'prompts', 'quick', 'skills'] as const
 
 type Tab = (typeof TABS)[number]
 
@@ -46,6 +47,7 @@ const TAB_LABELS: Record<Tab, string> = {
   retrieval: '检索模型',
   prompts: '提示词',
   quick: '快捷指令',
+  skills: '技能',
 }
 
 /** Anything unrecognised means the first tab, so an edited URL still lands somewhere. */
@@ -270,6 +272,7 @@ export function SetupPage({
               {tab === 'retrieval' && <RetrievalPanel />}
               {tab === 'prompts' && <PromptsPanel />}
               {tab === 'quick' && <QuickPromptsPanel />}
+              {tab === 'skills' && <SkillsPanel />}
             </div>
           </div>
         )}
