@@ -4,6 +4,10 @@ import { BrowserRouter } from 'react-router'
 
 import { App } from './App'
 import { ToastProvider } from './components/Toast'
+// The code font, bundled so every machine reads the same code. The css files
+// carry their own unicode-range subsets, so CJK text never downloads them.
+import '@fontsource/jetbrains-mono/400.css'
+import '@fontsource/jetbrains-mono/700.css'
 import './styles/tokens.css'
 import './styles/app.css'
 import './styles/chat.css'

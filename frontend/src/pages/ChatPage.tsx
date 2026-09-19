@@ -17,10 +17,12 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { getRun, listConversationRunEvents, listMessages, sendFeedback } from '../api/endpoints'
 import type { ThinkingLevel } from '../api/thinking'
-import type { Message, RunEventRecord } from '../api/types'
+import type { Citation, Message, RunEventRecord } from '../api/types'
 import { Composer } from '../components/Composer'
+import { CitationPanel } from '../components/CitationPanel'
 import { MessageList, type LastRun } from '../components/MessageList'
 import { ModelControls } from '../components/ModelControls'
+import { Outline } from '../components/Outline'
 import type { FeedbackKind } from '../components/AssistantTurn'
 import type { ConversationsController } from '../hooks/useConversations'
 import { useModelChoice } from '../hooks/useModelChoice'
@@ -60,6 +62,9 @@ export function ChatPage({
   const [pendingUser, setPendingUser] = useState<{ text: string; images: string[] } | null>(null)
   const [lastRun, setLastRun] = useState<LastRun | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // The citation whose excerpt or document the right drawer shows. Null is
+  // the drawer closed - the conversation owns the full width again.
+  const [activeCitation, setActiveCitation] = useState<Citation | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   const reload = conversations.reload
@@ -244,32 +249,36 @@ export function ChatPage({
 
   return (
     <div className="chat">
-      <header className="chat-header">
-        <span className="chat-title">{conversation?.title ?? '对话'}</span>
-      </header>
-
-      <div className="messages" ref={scrollRef}>
-        <div className="messages-inner">
-          {loadError !== null && (
-            <div className="load-error" role="alert">
-              <p className="load-error-title">{loadError}</p>
-              <p className="load-error-hint">
-                左侧列出的是当前数据目录里的对话。这个对话可能在另一个数据目录里，也可能已经被删掉了。
-              </p>
-            </div>
-          )}
-          <MessageList
-            messages={messages}
-            turn={turn}
-            lastRun={lastRun}
-            trail={trail}
-            gaveUp={gaveUp}
-            pendingUser={pendingUser}
-            onReconnect={reconnect}
-            onRegenerate={onRegenerate}
-            onFeedback={onFeedback}
-          />
+      <div className="chat-body">
+        <div className="messages" ref={scrollRef}>
+          <div className="messages-inner">
+            {loadError !== null && (
+              <div className="load-error" role="alert">
+                <p className="load-error-title">{loadError}</p>
+                <p className="load-error-hint">
+                  左侧列出的是当前数据目录里的对话。这个对话可能在另一个数据目录里，也可能已经被删掉了。
+                </p>
+              </div>
+            )}
+            <MessageList
+              messages={messages}
+              turn={turn}
+              lastRun={lastRun}
+              trail={trail}
+              gaveUp={gaveUp}
+              pendingUser={pendingUser}
+              onReconnect={reconnect}
+              onRegenerate={onRegenerate}
+              onFeedback={onFeedback}
+              onOpenCitation={setActiveCitation}
+            />
+          </div>
         </div>
+
+        <Outline containerRef={scrollRef} />
+        {activeCitation !== null && (
+          <CitationPanel citation={activeCitation} onClose={() => setActiveCitation(null)} />
+        )}
       </div>
 
       <Composer

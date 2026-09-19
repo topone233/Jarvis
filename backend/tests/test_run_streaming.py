@@ -22,6 +22,11 @@ class PacedProvider:
     finish. ``gated`` says the script has been emitted. ``tail_events`` are
     whole provider events (tool calls, a finish reason) set loose by the same
     release.
+
+    ``followups`` scripts the rounds *after* the first: the run loops once per
+    tool call it was given, and each subsequent ``stream_chat`` consumes the
+    next followup (the last one repeats). A followup without ``tail_events``
+    is how the loop reaches its final answer.
     """
 
     def __init__(
@@ -30,12 +35,16 @@ class PacedProvider:
         reasoning: list[str] | None = None,
         tail: list[str] | None = None,
         tail_events: list[ProviderEvent] | None = None,
+        followups: list[dict[str, Any]] | None = None,
     ) -> None:
         self.chunks = chunks
         self.reasoning = reasoning or []
         self.tail = tail or []
         self.tail_events = tail_events or []
+        self.followups = followups or []
         self.last_tools: list[dict[str, Any]] | None = None
+        self.last_messages: list[dict[str, Any]] | None = None
+        self.calls = 0
         self.release = asyncio.Event()
         self.gated = asyncio.Event()
 
@@ -48,8 +57,19 @@ class PacedProvider:
         thinking: ThinkingLevel = "off",
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
-        del profile, messages, chat_model, thinking
+        del profile, chat_model, thinking
         self.last_tools = tools
+        self.last_messages = messages
+        self.calls += 1
+        if self.calls > 1:
+            script = self.followups[min(self.calls - 2, len(self.followups) - 1)]
+            for text in script.get("reasoning", []):
+                yield ProviderEvent("reasoning", {"text": text})
+            for chunk in script.get("chunks", []):
+                yield ProviderEvent("delta", {"text": chunk})
+            for event in script.get("tail_events", []):
+                yield event
+            return
         for text in self.reasoning:
             yield ProviderEvent("reasoning", {"text": text})
         for chunk in self.chunks:
@@ -101,8 +121,9 @@ def paced(core: CoreServices) -> Any:
         reasoning: list[str] | None = None,
         tail: list[str] | None = None,
         tail_events: list[ProviderEvent] | None = None,
+        followups: list[dict[str, Any]] | None = None,
     ) -> PacedProvider:
-        provider = PacedProvider(chunks, reasoning, tail, tail_events)
+        provider = PacedProvider(chunks, reasoning, tail, tail_events, followups)
         core.provider = provider  # type: ignore[assignment]
         return provider
 
@@ -206,14 +227,151 @@ def _save_call(arguments: str) -> ProviderEvent:
     )
 
 
+def _knowledge_call(command: str, call_id: str = "call_1") -> ProviderEvent:
+    return ProviderEvent(
+        "tool_calls",
+        {
+            "calls": [
+                {"id": call_id, "name": "knowledge", "arguments": json.dumps({"command": command})}
+            ]
+        },
+    )
+
+
+async def _import_one_case(core: CoreServices) -> None:
+    from app.knowledge import ImportItem
+
+    await core.knowledge.import_items(
+        [ImportItem(filename="cases.md", content="# 用例\n## 登录\n弱口令用例。\n".encode())],
+        project_id=None,
+        profile=None,
+    )
+
+
+async def test_a_knowledge_call_rounds_to_a_final_answer(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """One tool call, one more round: the loop's whole shape.
+
+    The first round asks the knowledge base; the answer goes back as a tool
+    message and the second round's text is the answer that is kept. The step
+    shows in the audit as its own stage.
+    """
+    await _import_one_case(core)
+    provider = paced(
+        ["我看一下知识库。"],
+        tail_events=[
+            _knowledge_call("list"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["知识库里有一份 cases.md。"]}],
+    )
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    assert core.store.get_message(run["assistant_message_id"])["content"] == (
+        "知识库里有一份 cases.md。"
+    )
+    stages = [
+        (event["stage"], event["state"])
+        for event in core.store.list_run_events(run["id"])
+        if event["stage"] == "knowledge_tool"
+    ]
+    assert stages == [("knowledge_tool", "running"), ("knowledge_tool", "completed")]
+    # The wire carried the round protocol: an assistant message with its call,
+    # then the tool message the next round reads.
+    roles = [m["role"] for m in provider.last_messages or []]
+    assert roles[-3:] == ["user", "assistant", "tool"]
+    tool_message = (provider.last_messages or [])[-1]
+    assert tool_message["tool_call_id"] == "call_1"
+    assert "cases.md" in tool_message["content"]
+
+
+async def test_a_repeated_command_is_blocked_on_the_third_try(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """Twice is diligence, three times is a loop.
+
+    The same command runs twice; the third identical call gets a refusal as
+    its tool result, in words that redirect the model instead of an error it
+    would retry around.
+    """
+    await _import_one_case(core)
+    repeated = {
+        "chunks": ["…"],
+        "tail_events": [
+            _knowledge_call("list", call_id="call_x"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+    }
+    provider = paced(
+        [],
+        tail_events=[
+            _knowledge_call("list", call_id="call_1"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[repeated],
+    )
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    # Ten rounds, ten answers: two ran, then every identical call was turned
+    # away at the gate - the guard does not end the run, it starves the loop.
+    assert len(tool_messages) == 10
+    assert "共 1 份文档" in tool_messages[0]["content"]
+    assert "共 1 份文档" in tool_messages[1]["content"]
+    assert all("已阻止执行" in m["content"] for m in tool_messages[2:])
+
+
+async def test_rounds_exhausting_finishes_the_run_and_says_so(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """Ten rounds of nothing but calls still ends in a completed run.
+
+    The run is never left open: the budget closes it, the audit records why,
+    and the message says honestly that nothing displayable came out.
+    """
+    await _import_one_case(core)
+    provider = paced(
+        [],
+        tail_events=[
+            _knowledge_call("list", call_id="call_1"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[
+            {
+                "chunks": ["还在查。"],
+                "tail_events": [
+                    _knowledge_call("grep 登录", call_id="call_2"),
+                    ProviderEvent("finish", {"reason": "tool_calls"}),
+                ],
+            }
+        ],
+    )
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    assert any(
+        event["stage"] == "tool_rounds_exhausted" for event in core.store.list_run_events(run["id"])
+    )
+    assert core.store.get_message(run["assistant_message_id"])["content"] == (
+        "模型未返回可显示的文本。"
+    )
+
+
 async def test_a_memory_tool_call_rides_the_reply_and_is_carried_out(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:
     """The call belongs to the app, the text to the user - both in one reply.
 
     Text is never held back for a call: what streams is what the user reads.
-    The call itself is carried out at completion, and the step it produces is
-    the only sign any of it happened.
+    The call is answered in the round that carries it - the memory write
+    happens there, the result goes back on the wire, and the next round
+    produces the answer that is finally kept.
     """
     arguments = json.dumps(
         {"kind": "preference", "key": "回复风格", "content": "喜欢简洁回答"},
@@ -225,6 +383,7 @@ async def test_a_memory_tool_call_rides_the_reply_and_is_carried_out(
             _save_call(arguments),
             ProviderEvent("finish", {"reason": "tool_calls"}),
         ],
+        followups=[{"chunks": ["好的。"]}],
     )
     _, run = _begin(core, profile)
     await provider.gated.wait()
@@ -234,7 +393,7 @@ async def test_a_memory_tool_call_rides_the_reply_and_is_carried_out(
 
     provider.release.set()
     assert (await _settle(core, run["id"]))["status"] == "completed"
-    assert core.store.get_message(run["assistant_message_id"])["content"] == "回" * 500
+    assert core.store.get_message(run["assistant_message_id"])["content"] == "好的。"
     assert [m["content"] for m in core.store.list_memories()] == ["喜欢简洁回答"]
     stages = [
         (event["stage"], event["state"])
@@ -248,6 +407,11 @@ async def test_a_memory_tool_call_rides_the_reply_and_is_carried_out(
         "save_memory",
         "forget_memory",
     ]
+    # And the wire protocol held: the memory call was answered with a tool
+    # message in place, so the model could continue.
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    assert len(tool_messages) == 1
+    assert "已保存记忆" in tool_messages[0]["content"]
 
 
 async def test_a_garbled_call_leaves_no_step_and_no_memory(
@@ -264,13 +428,14 @@ async def test_a_garbled_call_leaves_no_step_and_no_memory(
             _save_call("这不是 JSON"),
             ProviderEvent("finish", {"reason": "tool_calls"}),
         ],
+        followups=[{"chunks": ["好的。"]}],
     )
     _, run = _begin(core, profile)
 
     provider.release.set()
     assert (await _settle(core, run["id"]))["status"] == "completed"
 
-    assert core.store.get_message(run["assistant_message_id"])["content"] == "看到这段。"
+    assert core.store.get_message(run["assistant_message_id"])["content"] == "好的。"
     assert core.store.list_memories() == []
     assert all(event["stage"] != "memory_write" for event in core.store.list_run_events(run["id"]))
 

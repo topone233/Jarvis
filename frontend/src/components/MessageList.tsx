@@ -7,7 +7,7 @@
  * without the partially-written answer appearing twice.
  */
 
-import type { Message, RunEventRecord, RunStatus } from '../api/types'
+import type { Citation, Message, RunEventRecord, RunStatus } from '../api/types'
 import { messageImageUrl } from '../api/endpoints'
 import { createTurn, reduce, type TurnPhase, type TurnState } from '../runs/reducer'
 import { AssistantTurn, type FeedbackKind } from './AssistantTurn'
@@ -31,6 +31,7 @@ export interface MessageListProps {
   onReconnect(): void
   onRegenerate(messageId: string): void
   onFeedback(messageId: string, kind: FeedbackKind): void
+  onOpenCitation(citation: Citation): void
 }
 
 export function MessageList({
@@ -43,6 +44,7 @@ export function MessageList({
   onReconnect,
   onRegenerate,
   onFeedback,
+  onOpenCitation,
 }: MessageListProps) {
   return (
     <>
@@ -50,7 +52,7 @@ export function MessageList({
         if (message.role === 'user') {
           const images = message.metadata.images ?? []
           return (
-            <div key={message.id} className="msg-user">
+            <div key={message.id} className="msg-user" data-outline="user">
               {images.length > 0 && (
                 <div className="msg-images">
                   {images.map((_, index) => (
@@ -88,6 +90,7 @@ export function MessageList({
             onReconnect={onReconnect}
             onRegenerate={onRegenerate}
             onFeedback={onFeedback}
+            onOpenCitation={onOpenCitation}
           />
         )
       })}
@@ -111,6 +114,7 @@ export function MessageList({
           onReconnect={onReconnect}
           onRegenerate={onRegenerate}
           onFeedback={onFeedback}
+          onOpenCitation={onOpenCitation}
         />
       )}
     </>

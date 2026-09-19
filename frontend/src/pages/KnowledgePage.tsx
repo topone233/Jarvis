@@ -181,146 +181,150 @@ export function KnowledgePage({ onClose }: { onClose(): void }) {
           导入的文档每轮对话都会被检索，命中的段落作为引用带给模型。文件存在本地数据目录里。
         </p>
 
-        {loadError !== null && <div className="form-error">{loadError}</div>}
-        {error !== null && <div className="form-error">{error}</div>}
+        {/* The card is a fixed-height window; everything below the subtitle
+            scrolls inside it rather than spilling past its bottom edge. */}
+        <div className="setup-body">
+          {loadError !== null && <div className="form-error">{loadError}</div>}
+          {error !== null && <div className="form-error">{error}</div>}
 
-        <div className="knowledge-actions">
-          <label className="button button-primary button-small">
-            {importing ? '正在导入…' : '上传文档'}
-            <input
-              ref={fileInput}
-              type="file"
-              multiple
-              accept={KNOWLEDGE_ACCEPT}
-              className="knowledge-file-input"
-              disabled={importing}
-              onChange={(event) => void upload(event.target.files)}
-            />
-          </label>
-          <span className="knowledge-note">
-            支持 docx、xlsx、pptx、pdf、markdown、txt 和源码文本；旧版 .doc/.xls/.ppt 请先在 Office
-            里另存。扫描版 PDF 没有可提取的文字。
-          </span>
-        </div>
+          <div className="knowledge-actions">
+            <label className="button button-primary button-small">
+              {importing ? '正在导入…' : '上传文档'}
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                accept={KNOWLEDGE_ACCEPT}
+                className="knowledge-file-input"
+                disabled={importing}
+                onChange={(event) => void upload(event.target.files)}
+              />
+            </label>
+            <span className="knowledge-note">
+              支持 docx、xlsx、pptx、pdf、markdown、txt 和源码文本；旧版 .doc/.xls/.ppt 请先在
+              Office 里另存。扫描版 PDF 没有可提取的文字。
+            </span>
+          </div>
 
-        {results !== null && results.length > 0 && (
-          <ul className="knowledge-imports">
-            {results.map((result) => (
-              <li key={result.filename} className="knowledge-import">
-                <span className={`badge${result.status === 'ready' ? '' : ' badge-quiet'}`}>
-                  {statusLabel(result.status)}
-                </span>
-                <span className="knowledge-import-line">
-                  {result.filename}
-                  {result.reason !== undefined && (
-                    <span className="profile-meta"> · {result.reason}</span>
-                  )}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {documents !== null && documents.length === 0 ? (
-          <p className="setup-empty">还没有文档。上传后它们会自动分块、建立索引。</p>
-        ) : (
-          <ul className="profile-list">
-            {(documents ?? []).map((document) => (
-              <li key={document.id} className="profile-row">
-                <div className="profile-head">
-                  <span className="profile-name">{document.title}</span>
-                  <span className="badge badge-quiet">{statusLabel(document.status)}</span>
-                  <span className="badge badge-quiet">{document.chunk_count} 块</span>
-                  <span className="spacer" />
-                  <button
-                    type="button"
-                    className="icon-button"
-                    title="删除"
-                    onClick={() => void remove(document)}
-                  >
-                    <TrashIcon size={15} />
-                  </button>
-                </div>
-                <span className="profile-meta">
-                  {document.original_filename} · 导入于{' '}
-                  {new Date(document.created_at).toLocaleDateString()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <div className="knowledge-search">
-          <input
-            value={query}
-            placeholder="输入关键词，试试文档会怎么被检索"
-            aria-label="试检索"
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                void runSearch()
-              }
-            }}
-          />
-          <button
-            type="button"
-            className="button button-ghost button-small"
-            disabled={searching}
-            onClick={() => void runSearch()}
-          >
-            {searching ? '检索中…' : '试检索'}
-          </button>
-        </div>
-
-        {searchResults !== null &&
-          (searchResults.length === 0 ? (
-            <p className="setup-empty">没有命中的段落。</p>
-          ) : (
-            <ul className="profile-list">
-              {searchResults.map((citation) => (
-                <li key={citation.chunk_id} className="profile-row">
-                  <div className="profile-head">
-                    <span className="profile-name">{citation.title}</span>
-                    <span className="badge badge-quiet">得分 {citation.score}</span>
-                  </div>
-                  <span className="profile-meta">{excerpt(citation.content)}</span>
-                </li>
-              ))}
-            </ul>
-          ))}
-
-        {deleted !== null && deleted.length > 0 && (
-          <details className="memory-deleted">
-            <summary>已删除（{deleted.length}）</summary>
-            <ul className="profile-list">
-              {deleted.map((item) => (
-                <li key={item.id} className="profile-row">
-                  <div className="profile-head">
-                    <span className="profile-name">{String(item.snapshot.title ?? '')}</span>
-                    <span className="spacer" />
-                    <button
-                      type="button"
-                      className="button button-ghost button-small"
-                      onClick={() => void restore(item)}
-                    >
-                      恢复
-                    </button>
-                    <button
-                      type="button"
-                      className="button button-danger button-small"
-                      onClick={() => void discard(item)}
-                    >
-                      永久删除
-                    </button>
-                  </div>
-                  <span className="profile-meta">
-                    {String(item.snapshot.original_filename ?? '')}
+          {results !== null && results.length > 0 && (
+            <ul className="knowledge-imports">
+              {results.map((result) => (
+                <li key={result.filename} className="knowledge-import">
+                  <span className={`badge${result.status === 'ready' ? '' : ' badge-quiet'}`}>
+                    {statusLabel(result.status)}
+                  </span>
+                  <span className="knowledge-import-line">
+                    {result.filename}
+                    {result.reason !== undefined && (
+                      <span className="profile-meta"> · {result.reason}</span>
+                    )}
                   </span>
                 </li>
               ))}
             </ul>
-          </details>
-        )}
+          )}
+
+          {documents !== null && documents.length === 0 ? (
+            <p className="setup-empty">还没有文档。上传后它们会自动分块、建立索引。</p>
+          ) : (
+            <ul className="profile-list">
+              {(documents ?? []).map((document) => (
+                <li key={document.id} className="profile-row">
+                  <div className="profile-head">
+                    <span className="profile-name">{document.title}</span>
+                    <span className="badge badge-quiet">{statusLabel(document.status)}</span>
+                    <span className="badge badge-quiet">{document.chunk_count} 块</span>
+                    <span className="spacer" />
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="删除"
+                      onClick={() => void remove(document)}
+                    >
+                      <TrashIcon size={15} />
+                    </button>
+                  </div>
+                  <span className="profile-meta">
+                    {document.original_filename} · 导入于{' '}
+                    {new Date(document.created_at).toLocaleDateString()}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="knowledge-search">
+            <input
+              value={query}
+              placeholder="输入关键词，试试文档会怎么被检索"
+              aria-label="试检索"
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  void runSearch()
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="button button-ghost button-small"
+              disabled={searching}
+              onClick={() => void runSearch()}
+            >
+              {searching ? '检索中…' : '试检索'}
+            </button>
+          </div>
+
+          {searchResults !== null &&
+            (searchResults.length === 0 ? (
+              <p className="setup-empty">没有命中的段落。</p>
+            ) : (
+              <ul className="profile-list">
+                {searchResults.map((citation) => (
+                  <li key={citation.chunk_id} className="profile-row">
+                    <div className="profile-head">
+                      <span className="profile-name">{citation.title}</span>
+                      <span className="badge badge-quiet">得分 {citation.score}</span>
+                    </div>
+                    <span className="profile-meta">{excerpt(citation.content)}</span>
+                  </li>
+                ))}
+              </ul>
+            ))}
+
+          {deleted !== null && deleted.length > 0 && (
+            <details className="memory-deleted">
+              <summary>已删除（{deleted.length}）</summary>
+              <ul className="profile-list">
+                {deleted.map((item) => (
+                  <li key={item.id} className="profile-row">
+                    <div className="profile-head">
+                      <span className="profile-name">{String(item.snapshot.title ?? '')}</span>
+                      <span className="spacer" />
+                      <button
+                        type="button"
+                        className="button button-ghost button-small"
+                        onClick={() => void restore(item)}
+                      >
+                        恢复
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-danger button-small"
+                        onClick={() => void discard(item)}
+                      >
+                        永久删除
+                      </button>
+                    </div>
+                    <span className="profile-meta">
+                      {String(item.snapshot.original_filename ?? '')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
       </div>
       {confirm.dialog}
     </div>

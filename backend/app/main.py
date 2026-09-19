@@ -32,6 +32,7 @@ from app.schemas import (
     SettingsUpdate,
     SetupRequest,
 )
+from app.sections import parse_sections
 
 
 def _start_run(
@@ -504,6 +505,33 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 project_id=project_id,
                 profile=profile,
             )
+        }
+
+    @app.get("/api/knowledge/documents/{document_id}/content")
+    async def get_knowledge_content(
+        document_id: str, core: CoreServices = Depends(services)
+    ) -> dict[str, Any]:
+        """The canonical text a citation's 查看原文 panel renders, plus its
+        section ids so the panel can offer the same addressing the model has."""
+        document = core.store.get_knowledge_document(document_id)
+        sections = parse_sections(document["content"], document["title"])
+        return {
+            "id": document["id"],
+            "title": document["title"],
+            "original_filename": document["original_filename"],
+            "content": document["content"],
+            "sections": [
+                # start/end ride along so the panel can slice the document and
+                # scroll straight to the cited section.
+                {
+                    "id": section.id,
+                    "level": section.level,
+                    "title": section.title,
+                    "start": section.start,
+                    "end": section.end,
+                }
+                for section in sections
+            ],
         }
 
     @app.delete("/api/knowledge/documents/{document_id}", status_code=204, response_model=None)

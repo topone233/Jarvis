@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
@@ -10,7 +11,7 @@ import sqlite_vec
 from app.errors import ValidationError
 from app.utils import json_load, segment_for_index, utc_now
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -160,6 +161,7 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
     mime_type TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     stored_path TEXT NOT NULL,
+    content TEXT NOT NULL,
     status TEXT NOT NULL,
     chunk_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -174,6 +176,7 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     document_id TEXT NOT NULL REFERENCES knowledge_documents(id),
     project_id TEXT REFERENCES projects(id),
     position INTEGER NOT NULL,
+    section_id TEXT,
     content TEXT NOT NULL,
     token_estimate INTEGER NOT NULL,
     embedding_json TEXT,
@@ -304,6 +307,82 @@ class Database:
             "embedding_model",
             "ALTER TABLE memories ADD COLUMN embedding_model TEXT",
         )
+        # Documents from before the stored-content model have no canonical
+        # text and no section ids; their chunks cannot address sections and
+        # the tools cannot read them. Deleted outright - the extraction they
+        # came from cannot be reproduced without the import - rather than
+        # carried as a second, degraded code path everywhere after.
+        self._add_column_if_missing(
+            connection,
+            "knowledge_documents",
+            "content",
+            "ALTER TABLE knowledge_documents ADD COLUMN content TEXT",
+        )
+        self._add_column_if_missing(
+            connection,
+            "knowledge_chunks",
+            "section_id",
+            "ALTER TABLE knowledge_chunks ADD COLUMN section_id TEXT",
+        )
+        self._delete_legacy_knowledge_documents(connection)
+
+    def _delete_legacy_knowledge_documents(self, connection: sqlite3.Connection) -> None:
+        """Remove every document that predates the stored-content model.
+
+        Runs on every startup but is a no-op once the table is clean. The
+        chunks, both indexes, any trash entry that would restore the
+        document, and the original file in objects/ all go with it - a
+        restore target that cannot be restored, or an orphaned blob on disk,
+        would each be a quieter version of the same lie.
+        """
+        legacy = connection.execute(
+            "SELECT id, stored_path FROM knowledge_documents WHERE content IS NULL"
+        ).fetchall()
+        if not legacy:
+            return
+        marks = ",".join("?" * len(legacy))
+        document_ids = [row["id"] for row in legacy]
+        chunk_ids = [
+            row["id"]
+            for row in connection.execute(
+                f"SELECT id FROM knowledge_chunks WHERE document_id IN ({marks})",
+                document_ids,
+            )
+        ]
+        if chunk_ids:
+            chunk_marks = ",".join("?" * len(chunk_ids))
+            vec_tables = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                " AND name LIKE 'knowledge_chunks_vec_%'"
+            ).fetchall()
+            for table in vec_tables:
+                connection.execute(
+                    f"DELETE FROM {table['name']} WHERE chunk_id IN ({chunk_marks})",
+                    chunk_ids,
+                )
+            connection.execute(
+                f"DELETE FROM knowledge_chunks_fts WHERE document_id IN ({marks})",
+                document_ids,
+            )
+            connection.execute(
+                f"DELETE FROM knowledge_chunks WHERE document_id IN ({marks})",
+                document_ids,
+            )
+        connection.execute(
+            "DELETE FROM trash_items WHERE entity_type = 'knowledge_document'"
+            f" AND entity_id IN ({marks})",
+            document_ids,
+        )
+        connection.execute(f"DELETE FROM knowledge_documents WHERE id IN ({marks})", document_ids)
+        objects = self.objects_directory
+        for row in legacy:
+            with contextlib.suppress(OSError):
+                stored = Path(row["stored_path"])
+                # The path is a join of this very directory at import time;
+                # the containment check is what keeps a tampered row from
+                # pointing the delete anywhere else.
+                if stored.is_file() and objects in stored.parents:
+                    stored.unlink()
 
     @staticmethod
     def _add_column_if_missing(

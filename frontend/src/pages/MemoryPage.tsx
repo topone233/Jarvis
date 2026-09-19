@@ -155,126 +155,134 @@ export function MemoryPage({ onClose }: { onClose(): void }) {
           Jarvis 在对话里记住的跨会话信息，每轮回答都会带给模型。可以改、可以删。
         </p>
 
-        {loadError !== null && <div className="form-error">{loadError}</div>}
-        {error !== null && <div className="form-error">{error}</div>}
+        {/* The card is a fixed-height window; everything below the subtitle
+            scrolls inside it rather than spilling past its bottom edge. */}
+        <div className="setup-body">
+          {loadError !== null && <div className="form-error">{loadError}</div>}
+          {error !== null && <div className="form-error">{error}</div>}
 
-        {memories !== null && memories.length === 0 ? (
-          <p className="setup-empty">还没有记忆。对话里明确说出的事实、偏好和决定会被自动记住。</p>
-        ) : (
-          <ul className="profile-list">
-            {(memories ?? []).map((memory) =>
-              editingId === memory.id ? (
-                <li key={memory.id} className="profile-row is-editing">
-                  <div className="field-row">
+          {memories !== null && memories.length === 0 ? (
+            <p className="setup-empty">
+              还没有记忆。对话里明确说出的事实、偏好和决定会被自动记住。
+            </p>
+          ) : (
+            <ul className="profile-list">
+              {(memories ?? []).map((memory) =>
+                editingId === memory.id ? (
+                  <li key={memory.id} className="profile-row is-editing">
+                    <div className="field-row">
+                      <div className="field">
+                        <label htmlFor={`memory-key-${memory.id}`}>键</label>
+                        <input
+                          id={`memory-key-${memory.id}`}
+                          value={draft.key}
+                          onChange={(event) => setDraft({ ...draft, key: event.target.value })}
+                        />
+                      </div>
+                      <div className="field">
+                        <label>类型</label>
+                        <input value={kindLabel(memory.kind)} disabled />
+                      </div>
+                    </div>
                     <div className="field">
-                      <label htmlFor={`memory-key-${memory.id}`}>键</label>
-                      <input
-                        id={`memory-key-${memory.id}`}
-                        value={draft.key}
-                        onChange={(event) => setDraft({ ...draft, key: event.target.value })}
+                      <label htmlFor={`memory-content-${memory.id}`}>内容</label>
+                      <textarea
+                        id={`memory-content-${memory.id}`}
+                        value={draft.content}
+                        onChange={(event) => setDraft({ ...draft, content: event.target.value })}
                       />
                     </div>
-                    <div className="field">
-                      <label>类型</label>
-                      <input value={kindLabel(memory.kind)} disabled />
+                    <div className="profile-actions">
+                      <button
+                        type="button"
+                        className="button button-primary button-small"
+                        onClick={() => void save(memory)}
+                      >
+                        保存
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-ghost button-small"
+                        onClick={() => setEditingId(null)}
+                      >
+                        取消
+                      </button>
                     </div>
-                  </div>
-                  <div className="field">
-                    <label htmlFor={`memory-content-${memory.id}`}>内容</label>
-                    <textarea
-                      id={`memory-content-${memory.id}`}
-                      value={draft.content}
-                      onChange={(event) => setDraft({ ...draft, content: event.target.value })}
-                    />
-                  </div>
-                  <div className="profile-actions">
-                    <button
-                      type="button"
-                      className="button button-primary button-small"
-                      onClick={() => void save(memory)}
-                    >
-                      保存
-                    </button>
-                    <button
-                      type="button"
-                      className="button button-ghost button-small"
-                      onClick={() => setEditingId(null)}
-                    >
-                      取消
-                    </button>
-                  </div>
-                </li>
-              ) : (
-                <li key={memory.id} className="profile-row">
-                  <div className="profile-head">
-                    <span className="badge">{kindLabel(memory.kind)}</span>
-                    <span className="profile-name">{memory.memory_key}</span>
-                    <span className="badge badge-quiet">
-                      {memory.scope === 'global' ? '全局' : '项目'}
-                    </span>
-                    {memory.confirmation_count > 1 && (
-                      <span className="badge badge-quiet">确认 {memory.confirmation_count} 次</span>
+                  </li>
+                ) : (
+                  <li key={memory.id} className="profile-row">
+                    <div className="profile-head">
+                      <span className="badge">{kindLabel(memory.kind)}</span>
+                      <span className="profile-name">{memory.memory_key}</span>
+                      <span className="badge badge-quiet">
+                        {memory.scope === 'global' ? '全局' : '项目'}
+                      </span>
+                      {memory.confirmation_count > 1 && (
+                        <span className="badge badge-quiet">
+                          确认 {memory.confirmation_count} 次
+                        </span>
+                      )}
+                      <span className="spacer" />
+                      <button
+                        type="button"
+                        className="button button-ghost button-small"
+                        onClick={() => startEdit(memory)}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        title="删除"
+                        onClick={() => void remove(memory)}
+                      >
+                        <TrashIcon size={15} />
+                      </button>
+                    </div>
+                    <span className="profile-meta">{memory.content}</span>
+                    {memory.source_excerpt !== '' && (
+                      <span className="profile-meta">来自：{memory.source_excerpt}</span>
                     )}
-                    <span className="spacer" />
-                    <button
-                      type="button"
-                      className="button button-ghost button-small"
-                      onClick={() => startEdit(memory)}
-                    >
-                      编辑
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      title="删除"
-                      onClick={() => void remove(memory)}
-                    >
-                      <TrashIcon size={15} />
-                    </button>
-                  </div>
-                  <span className="profile-meta">{memory.content}</span>
-                  {memory.source_excerpt !== '' && (
-                    <span className="profile-meta">来自：{memory.source_excerpt}</span>
-                  )}
-                </li>
-              ),
-            )}
-          </ul>
-        )}
-
-        {deleted !== null && deleted.length > 0 && (
-          <details className="memory-deleted">
-            <summary>已删除（{deleted.length}）</summary>
-            <ul className="profile-list">
-              {deleted.map((item) => (
-                <li key={item.id} className="profile-row">
-                  <div className="profile-head">
-                    <span className="badge badge-quiet">
-                      {kindLabel(String(item.snapshot.kind ?? ''))}
-                    </span>
-                    <span className="profile-name">{String(item.snapshot.memory_key ?? '')}</span>
-                    <span className="spacer" />
-                    <button
-                      type="button"
-                      className="button button-ghost button-small"
-                      onClick={() => void restore(item)}
-                    >
-                      恢复
-                    </button>
-                    <button
-                      type="button"
-                      className="button button-danger button-small"
-                      onClick={() => void discard(item)}
-                    >
-                      永久删除
-                    </button>
-                  </div>
-                  <span className="profile-meta">{String(item.snapshot.content ?? '')}</span>
-                </li>
-              ))}
+                  </li>
+                ),
+              )}
             </ul>
-          </details>
-        )}
+          )}
+
+          {deleted !== null && deleted.length > 0 && (
+            <details className="memory-deleted">
+              <summary>已删除（{deleted.length}）</summary>
+              <ul className="profile-list">
+                {deleted.map((item) => (
+                  <li key={item.id} className="profile-row">
+                    <div className="profile-head">
+                      <span className="badge badge-quiet">
+                        {kindLabel(String(item.snapshot.kind ?? ''))}
+                      </span>
+                      <span className="profile-name">{String(item.snapshot.memory_key ?? '')}</span>
+                      <span className="spacer" />
+                      <button
+                        type="button"
+                        className="button button-ghost button-small"
+                        onClick={() => void restore(item)}
+                      >
+                        恢复
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-danger button-small"
+                        onClick={() => void discard(item)}
+                      >
+                        永久删除
+                      </button>
+                    </div>
+                    <span className="profile-meta">{String(item.snapshot.content ?? '')}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
       </div>
       {confirm.dialog}
     </div>

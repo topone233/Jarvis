@@ -45,6 +45,10 @@ export function detailLines(row: AuditRow): string[] {
       return modelLines(payload)
     case 'memory_write':
       return memoryLines(payload)
+    case 'knowledge_tool':
+      return knowledgeLines(payload)
+    case 'tool_rounds_exhausted':
+      return ['连续多轮调用工具后仍未给出回答，已按轮次上限收尾。']
     default:
       return []
   }
@@ -143,6 +147,18 @@ function memoryLines(payload: Record<string, unknown>): string[] {
     return []
   }
   return payload.items.map(actionLine).filter(isString)
+}
+
+/** One row per run even across rounds - the latest command is what it shows. */
+function knowledgeLines(payload: Record<string, unknown>): string[] {
+  const lines: string[] = []
+  if (typeof payload.command === 'string' && payload.command !== '') {
+    lines.push(`knowledge ${payload.command}`)
+  }
+  if (typeof payload.output_chars === 'number') {
+    lines.push(`返回 ${payload.output_chars} 字符`)
+  }
+  return lines
 }
 
 function actionLine(item: unknown): string | null {

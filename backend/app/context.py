@@ -11,6 +11,7 @@ from app.knowledge import KnowledgeService
 from app.memory import MEMORY_TOOLS
 from app.prompts import PROMPT_VERSION
 from app.provider import OpenAICompatibleProvider
+from app.sections import format_outline_compact, parse_sections
 from app.settings import (
     COMPACT_PERCENT_DEFAULT,
     COMPACTION_PROMPT,
@@ -27,6 +28,12 @@ from app.utils import json_dump, json_load
 #: code on purpose: they shape one prompt section, not user-facing behavior.
 MEMORY_RELEVANCE_FLOOR = 0.25
 MEMORY_RELEVANCE_LIMIT = 6
+
+#: How much of a retrieved chunk rides in the system instruction. Raised from
+#: the old 1400 when chunks became section-shaped: a section header plus a
+#: whole test case is the unit the model can actually answer from, and a
+#: mid-case cut was one of the reasons list answers came back short.
+KNOWLEDGE_EXCERPT_CHARS = 2_800
 
 
 @dataclass(frozen=True)
@@ -197,6 +204,10 @@ class ContextManager:
             if has_query
             else []
         )
+        # The number the system instruction shows is the number the screen
+        # shows, so it is assigned once here and travels with the citation
+        # into the message metadata.
+        citations = [{**citation, "number": index + 1} for index, citation in enumerate(citations)]
         raw_messages = self._messages_after_artifact(conversation_id, artifact)
         input_budget = profile["context_window"] - profile["output_token_reserve"]
         # Pass one fits with every candidate listed. Its visible set only
@@ -407,11 +418,7 @@ class ContextManager:
         if artifact:
             sections.append(f"## 历史摘要\n{artifact['content']}")
         if citations:
-            sources = "\n\n".join(
-                f"【知识:{citation['title']}】\n{citation['content'][:1_400]}"
-                for citation in citations
-            )
-            sections.append(f"## 知识资料\n{sources}")
+            sections.append(f"## 知识资料\n{self._format_knowledge_section(citations)}")
         # Memory management rides on the main call: the directive tells the
         # model when to use the memory tools, and it can name memories only
         # because the 记忆 section above listed them. Cleared like any other
@@ -422,6 +429,56 @@ class ContextManager:
         # leaves the memories or the history opening the message instead of a
         # run of empty lines ahead of them.
         return "\n\n".join(section for section in sections if section)
+
+    def _format_knowledge_section(self, citations: list[dict[str, Any]]) -> str:
+        """The 知识资料 body: numbered excerpts, then each hit document's map.
+
+        The outline after the excerpts is the "you may be seeing only part of
+        it" signal - a document whose sections outnumber the excerpts shown
+        tells the model there is more to fetch before it answers a list-type
+        question. Outlines are the compact form (depth-shrunk, not cut) so a
+        wide document cannot eat the budget the excerpts paid for.
+
+        Documents are read here rather than riding the citations: the same
+        list is stored as message metadata for the screen, and a full
+        document has no business being copied into every message that cited
+        it.
+        """
+        blocks = [
+            "[{number}] 《{title}》 · {section_title}\n{content}".format(
+                number=citation["number"],
+                title=citation["title"],
+                section_title=citation.get("section_title") or "全文",
+                content=citation["content"][:KNOWLEDGE_EXCERPT_CHARS],
+            )
+            for citation in citations
+        ]
+        outlines: list[str] = []
+        seen_documents: set[str] = set()
+        for citation in citations:
+            document_id = citation["document_id"]
+            if document_id in seen_documents:
+                continue
+            seen_documents.add(document_id)
+            document = self.store.get_knowledge_document(document_id)
+            sections = parse_sections(document["content"], document["title"])
+            lead = (
+                "文档《{}》共 {} 节，其余章节可用 knowledge 工具 read 命令按 --section 获取，目录："
+            ).format(citation["title"], len(sections))
+            outlines.append(
+                lead
+                + "\n"
+                + format_outline_compact(
+                    document["title"],
+                    document["original_filename"],
+                    document["content"],
+                    sections,
+                )
+            )
+        parts = ["检索命中的知识片段，编号即回答中的引用编号：", *blocks]
+        if outlines:
+            parts.extend(outlines)
+        return "\n\n".join(parts)
 
     def _cost(self, message: dict[str, Any]) -> int:
         """What a stored message counts against the budget: its text and, at

@@ -219,3 +219,22 @@ export function CloseIcon(props: IconProps) {
     </Icon>
   )
 }
+
+/** Runs a code block: a play triangle. */
+export function PlayIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M8 5.5v13l10.5-6.5Z" />
+    </Icon>
+  )
+}
+
+/** Shows source: the angle brackets of a tag. */
+export function CodeIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m8.5 7-5 5 5 5" />
+      <path d="m15.5 7 5 5-5 5" />
+    </Icon>
+  )
+}

@@ -12,6 +12,10 @@ from charset_normalizer import from_bytes
 
 from app.errors import ProviderError, ValidationError
 from app.provider import OpenAICompatibleProvider
+from app.sections import (
+    parse_sections,
+    section_label,
+)
 from app.store import Store
 from app.tokens import estimate_tokens
 from app.utils import safe_filename, segment_for_index
@@ -245,28 +249,59 @@ def _split_long_text(value: str, target_size: int, overlap_size: int) -> list[st
     return chunks
 
 
-def chunk_text(value: str, target_size: int = 1_800, overlap_size: int = 220) -> list[str]:
-    sections = re.split(r"\n\s*\n", value)
-    chunks: list[str] = []
-    current = ""
+def chunk_text(
+    content: str,
+    target_size: int = 1_800,
+    overlap_size: int = 220,
+    fallback_title: str = "全文",
+) -> list[dict[str, str]]:
+    """One chunk per section, never crossing a section boundary.
+
+    A test-case document's sections are exactly what a query matches against,
+    so the section - not a blank-line window - is the retrieval unit: it lets
+    a hit be cited down to its own heading, and it stops a chunk from blending
+    half of one case with half of another. A section's chunk covers its *own*
+    text only - everything before its first child heading, or the whole span
+    for a leaf - because a parent's full span would re-embed every descendant,
+    and the big duplicated chunks would crowd the real hits out of the top-k.
+    A heading that only groups children (no text of its own) gets no chunk;
+    its words survive in the children's breadcrumbs. Oversized sections still
+    split internally (same long-text rule as before); every piece keeps the
+    section's id and opens with its breadcrumb, which is what carries the
+    heading's words into both the FTS index and the embedding.
+    """
+    sections = parse_sections(content, fallback_title)
+    by_id = {section.id: section for section in sections}
+    first_child: dict[str, int] = {}
     for section in sections:
-        section = section.strip()
-        if not section:
+        if "." in section.id:
+            parent = section.id.rsplit(".", 1)[0]
+            start = first_child.get(parent)
+            first_child[parent] = section.start if start is None else min(start, section.start)
+    chunks: list[dict[str, str]] = []
+    for section in sections:
+        own_end = first_child.get(section.id, section.end)
+        # The body starts past the section's own heading line - but only when
+        # there is one: a headingless document's root section begins at the
+        # first word, and skipping its first line would silently drop it. A
+        # heading that only groups children then has an empty body and gets
+        # no chunk (its words live in the children's breadcrumbs), and a
+        # leaf's text is its content without the heading the breadcrumb
+        # already restates.
+        newline = content.find("\n", section.start, own_end)
+        first_line_end = own_end if newline == -1 else newline
+        starts_with_heading = content[section.start : first_line_end].lstrip().startswith("#")
+        body_start = section.start if not starts_with_heading else first_line_end + 1
+        text = content[body_start:own_end].strip()
+        if not text:
             continue
-        if len(section) > target_size:
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.extend(_split_long_text(section, target_size, overlap_size))
-            continue
-        candidate = f"{current}\n\n{section}".strip() if current else section
-        if len(candidate) <= target_size:
-            current = candidate
+        header = f"【{section_label(section, by_id)}】\n"
+        if len(text) > target_size:
+            parts = _split_long_text(text, target_size, overlap_size)
         else:
-            chunks.append(current)
-            current = section
-    if current:
-        chunks.append(current)
+            parts = [text]
+        for part in parts:
+            chunks.append({"content": f"{header}{part}", "section_id": section.id})
     return chunks
 
 
@@ -352,10 +387,16 @@ class KnowledgeService:
                 or "text/plain",
                 content_hash=content_hash,
                 stored_path=str(stored_path),
+                content=text,
             )
-            parts = chunk_text(text)
+            parts = chunk_text(text, fallback_title=Path(item.filename).stem or item.filename)
             payloads: list[dict[str, Any]] = [
-                {"position": index, "content": part, "token_estimate": estimate_tokens(part)}
+                {
+                    "position": index,
+                    "content": part["content"],
+                    "section_id": part["section_id"],
+                    "token_estimate": estimate_tokens(part["content"]),
+                }
                 for index, part in enumerate(parts)
             ]
             status = "ready"
@@ -392,7 +433,7 @@ class KnowledgeService:
         *,
         project_id: str | None,
         profile: dict[str, Any] | None,
-        limit: int = 5,
+        limit: int = 8,
         query_vector: list[float] | None = None,
     ) -> list[dict[str, Any]]:
         """Hybrid keyword + semantic hits for one query.
@@ -427,17 +468,36 @@ class KnowledgeService:
             except (ProviderError, IndexError):
                 pass
         ordered = sorted(scored.values(), key=lambda item: item[0], reverse=True)[:limit]
-        return [
-            {
-                "chunk_id": item["id"],
-                "document_id": item["document_id"],
-                "title": item.get("document_title", "未命名文档"),
-                "content": item["content"],
-                "score": round(score, 4),
-                "source": "hybrid" if item["id"] in fts_ids else "semantic",
-            }
-            for score, item in ordered
-        ]
+        # A hit's section label comes from the section model of the document
+        # it lives in. Documents are parsed once per call, however many of
+        # their chunks landed in the top-k.
+        section_models: dict[str, tuple[str, dict[str, Any]]] = {}
+        results: list[dict[str, Any]] = []
+        for score, item in ordered:
+            section_id = item.get("section_id")
+            section_title = None
+            if section_id:
+                model = section_models.get(item["document_id"])
+                if model is None:
+                    document = self.store.get_knowledge_document(item["document_id"])
+                    sections = parse_sections(document["content"], document["title"])
+                    model = (document["content"], {s.id: s for s in sections})
+                    section_models[item["document_id"]] = model
+                label = section_label(model[1][section_id], model[1])
+                section_title = label
+            results.append(
+                {
+                    "chunk_id": item["id"],
+                    "document_id": item["document_id"],
+                    "title": item.get("document_title", "未命名文档"),
+                    "section_id": section_id,
+                    "section_title": section_title,
+                    "content": item["content"],
+                    "score": round(score, 4),
+                    "source": "hybrid" if item["id"] in fts_ids else "semantic",
+                }
+            )
+        return results
 
     @staticmethod
     def _fts_query(query: str) -> str:

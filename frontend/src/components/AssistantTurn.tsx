@@ -9,9 +9,10 @@
 
 import { useState } from 'react'
 
+import type { Citation } from '../api/types'
 import { useCopy } from '../hooks/useCopy'
 import type { TurnState } from '../runs/reducer'
-import { Markdown } from './Markdown'
+import { MarkdownWithCitations } from './Markdown'
 import { ProgressStrip } from './ProgressStrip'
 import { ReasoningPanel } from './ReasoningPanel'
 import { CheckIcon, CopyIcon, RefreshIcon, ThumbDownIcon, ThumbUpIcon } from './icons'
@@ -25,6 +26,8 @@ export interface AssistantTurnProps {
   onReconnect(): void
   onRegenerate(messageId: string): void
   onFeedback(messageId: string, kind: FeedbackKind): void
+  /** Opens the right-side panel on a `[n]` mark or a citation chip. */
+  onOpenCitation(citation: Citation): void
 }
 
 export function AssistantTurn({
@@ -33,6 +36,7 @@ export function AssistantTurn({
   onReconnect,
   onRegenerate,
   onFeedback,
+  onOpenCitation,
 }: AssistantTurnProps) {
   const [copied, copy] = useCopy()
   const [vote, setVote] = useState<FeedbackKind | null>(null)
@@ -73,16 +77,25 @@ export function AssistantTurn({
         </div>
       )}
 
-      {turn.content !== '' && <Markdown text={turn.content} />}
+      {turn.content !== '' && (
+        <MarkdownWithCitations text={turn.content} citations={turn.citations} onOpen={onOpenCitation} />
+      )}
       {busy && !turn.detached && <span className="cursor" />}
 
       {turn.citations.length > 0 && (
         <div className="citation-row">
           {turn.citations.map((citation) => (
-            <span key={citation.chunk_id} className="citation-chip" title={citation.content}>
+            <button
+              key={citation.chunk_id}
+              type="button"
+              className="citation-chip"
+              title={citation.content}
+              onClick={() => onOpenCitation(citation)}
+            >
+              {citation.number !== undefined && <span className="badge">{citation.number}</span>}
               <span className="label">{citation.title || citation.source || '知识库'}</span>
               <span className="score">{citation.score.toFixed(2)}</span>
-            </span>
+            </button>
           ))}
         </div>
       )}

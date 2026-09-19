@@ -88,6 +88,21 @@ describe('detailLines', () => {
     expect(lines).toEqual(['把第 1 到 6 条消息折叠成了一份摘要。'])
   })
 
+  it('shows the knowledge command a round ran', () => {
+    expect(
+      detailLines(row('knowledge_tool', 'completed', { command: 'list', output_chars: 312 })),
+    ).toEqual(['knowledge list', '返回 312 字符'])
+    expect(detailLines(row('knowledge_tool', 'running', { command: 'read cases --section 2.3' }))).toEqual(
+      ['knowledge read cases --section 2.3'],
+    )
+  })
+
+  it('says why a run closed on the round budget', () => {
+    expect(detailLines(row('tool_rounds_exhausted', 'completed', { rounds: 10 }))).toEqual([
+      '连续多轮调用工具后仍未给出回答，已按轮次上限收尾。',
+    ])
+  })
+
   it('stays empty for stages and payloads with nothing to say', () => {
     expect(detailLines(row('context_compaction', 'completed', { compacted: false }))).toEqual([])
     expect(detailLines(row('model_stream', 'running', {}))).toEqual([])

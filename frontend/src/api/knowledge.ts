@@ -1,7 +1,12 @@
 /** Knowledge base calls: import, list, search, delete - named after what they do. */
 
 import { api } from './client'
-import type { Citation, KnowledgeDocument, KnowledgeImportResult } from './types'
+import type {
+  Citation,
+  KnowledgeContent,
+  KnowledgeDocument,
+  KnowledgeImportResult,
+} from './types'
 
 export function listKnowledgeDocuments(): Promise<KnowledgeDocument[]> {
   return api<KnowledgeDocument[]>('/api/knowledge/documents')
@@ -30,6 +35,11 @@ export function deleteKnowledgeDocument(documentId: string): Promise<void> {
 /** The same search a run does, without going through a run. */
 export function searchKnowledge(query: string): Promise<{ items: Citation[] }> {
   return api<{ items: Citation[] }>(`/api/knowledge/search?query=${encodeURIComponent(query)}`)
+}
+
+/** The canonical text behind a citation, for the 查看原文 panel. */
+export function fetchKnowledgeContent(documentId: string): Promise<KnowledgeContent> {
+  return api<KnowledgeContent>(`/api/knowledge/documents/${documentId}/content`)
 }
 
 /** The extensions the file picker offers, in step with the backend's two sets. */

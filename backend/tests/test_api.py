@@ -22,11 +22,15 @@ from app.schemas import ThinkingLevel
 class MemoryReplyProvider:
     """A model that answers and calls a memory tool in the same breath.
 
-    The tool call is how a run remembers now: the assistant message carries
-    content and tool_calls side by side, the run shows the content, and the
-    call is carried out once the answer is complete - with no result ever
-    sent back.
+    The tool call is how a run remembers: the assistant message carries
+    content and tool_calls side by side, and the run answers the call - the
+    memory write happens in the round that carries it, so the model can carry
+    on. The second stream call is the followup round after the tool result:
+    a plain final answer with nothing more to call.
     """
+
+    def __init__(self) -> None:
+        self.calls = 0
 
     async def stream_chat(
         self,
@@ -38,6 +42,12 @@ class MemoryReplyProvider:
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del profile, messages, chat_model, thinking
+        self.calls += 1
+        if self.calls > 1:
+            yield ProviderEvent("delta", {"text": "好的，记住了。"})
+            yield ProviderEvent("usage", {"usage": {"prompt_tokens": 12, "completion_tokens": 6}})
+            yield ProviderEvent("done", {})
+            return
         yield ProviderEvent("delta", {"text": "好的，记住了。"})
         yield ProviderEvent(
             "tool_calls",
@@ -374,12 +384,26 @@ def test_import_search_and_restore_document(client: TestClient) -> None:
     assert found.status_code == 200
     assert found.json()["items"]
 
+    content = client.get(f"/api/knowledge/documents/{document['id']}/content")
+    assert content.status_code == 200
+    body = content.json()
+    assert body["content"].startswith("def context_retrieval")
+    assert body["sections"] == [
+        {"id": "1", "level": 1, "title": "source", "start": 0, "end": len(body["content"])}
+    ]
+
+    missing = client.get("/api/knowledge/documents/nope/content")
+    assert missing.status_code == 404
+
     deleted = client.delete(f"/api/knowledge/documents/{document['id']}")
     assert deleted.status_code == 204
     trash = client.get("/api/trash").json()
     document_trash = next(item for item in trash if item["entity_type"] == "knowledge_document")
     restored = client.post(f"/api/trash/{document_trash['id']}/restore")
     assert restored.status_code == 200
+    # A restored document keeps its canonical text: the citation panel reads
+    # it exactly as before the trip through the recycle bin.
+    assert client.get(f"/api/knowledge/documents/{document['id']}/content").status_code == 200
 
 
 def test_a_built_frontend_is_served_by_the_same_process(

@@ -49,9 +49,6 @@
      same white as what is behind it - the composer, the setup card. */
   --shadow-input: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 20px rgba(16, 24, 40, 0.06);
   --shadow-pop: 0 6px 20px rgba(16, 24, 40, 0.1);
-  /* What the chat header wears instead of a rule under it. Cast downward only,
-     and spent by the time it reaches the first line of the conversation. */
-  --shadow-header: 0 4px 12px -6px rgba(16, 24, 40, 0.16);
 
   /* The halo a focused field or the focused composer wears. Never a line. */
   --ring-accent: 0 0 0 4px var(--accent-soft);
@@ -60,7 +57,10 @@
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC',
     'Hiragino Sans GB', Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
+  /* JetBrains Mono is bundled (see main.tsx) so code looks the same on every
+     machine; the rest of the stack only speaks for glyphs it does not cover -
+     CJK comments, chiefly - and for the instant before the font arrives. */
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
 
   --sidebar-width: 260px;
   --sidebar-collapsed: 60px;

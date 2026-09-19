@@ -1006,6 +1006,7 @@ class Store:
         mime_type: str,
         content_hash: str,
         stored_path: str,
+        content: str,
     ) -> dict[str, Any]:
         document_id = new_id()
         now = utc_now()
@@ -1014,9 +1015,9 @@ class Store:
                 """
                 INSERT INTO knowledge_documents(
                     id, project_id, title, original_filename, relative_path, mime_type,
-                    content_hash, stored_path, status, chunk_count, created_at,
+                    content_hash, stored_path, content, status, chunk_count, created_at,
                     updated_at, deleted_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, NULL)
                 """,
                 (
                     document_id,
@@ -1027,6 +1028,7 @@ class Store:
                     mime_type,
                     content_hash,
                     stored_path,
+                    content,
                     now,
                     now,
                 ),
@@ -1040,16 +1042,23 @@ class Store:
         return _record(self._require(row, "知识文档"))
 
     def list_knowledge_documents(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        # Content is named out rather than SELECT *: a full extracted document
+        # rides the row, and the list view wants none of it.
+        projection = (
+            "id, project_id, title, original_filename, relative_path, mime_type,"
+            " content_hash, stored_path, status, chunk_count, created_at, updated_at,"
+            " deleted_at"
+        )
         if project_id is None:
-            query = """
-                SELECT * FROM knowledge_documents
+            query = f"""
+                SELECT {projection} FROM knowledge_documents
                 WHERE project_id IS NULL AND deleted_at IS NULL
                 ORDER BY updated_at DESC
             """
             parameters: tuple[object, ...] = ()
         else:
-            query = """
-                SELECT * FROM knowledge_documents
+            query = f"""
+                SELECT {projection} FROM knowledge_documents
                 WHERE project_id = ? AND deleted_at IS NULL
                 ORDER BY updated_at DESC
             """
@@ -1086,15 +1095,17 @@ class Store:
                 connection.execute(
                     """
                     INSERT INTO knowledge_chunks(
-                        id, document_id, project_id, position, content, token_estimate,
-                        embedding_json, embedding_model, created_at, deleted_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                        id, document_id, project_id, position, section_id, content,
+                        token_estimate, embedding_json, embedding_model, created_at,
+                        deleted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                     """,
                     (
                         chunk_id,
                         document_id,
                         project_id,
                         chunk["position"],
+                        chunk.get("section_id"),
                         chunk["content"],
                         chunk["token_estimate"],
                         json_dump(chunk["embedding"]) if chunk.get("embedding") else None,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import Any
 
 from app.errors import ProviderError, ValidationError
 from app.images import parse_images, write_images
+from app.knowledge_tool import KNOWLEDGE_TOOLS, USAGE, KnowledgeToolService
 from app.runtime import CoreServices, RunBroadcast
 from app.schemas import ThinkingLevel
 from app.store import INTERRUPTED_ERROR
@@ -20,6 +22,12 @@ from app.utils import json_dump, new_id
 # every token. Whichever limit is reached first triggers a write.
 CHECKPOINT_SECONDS = 0.5
 CHECKPOINT_CHARACTERS = 400
+
+# Tool rounds one run may spend before it is finished whether it likes it or
+# not. Generous on purpose - a list-type question over a sectioned document
+# legitimately wants ls, inspect, and several reads - but bounded, because an
+# unbounded loop is one confused model away from an open tab that never ends.
+MAX_TOOL_ROUNDS = 10
 
 # How long a subscriber may be left with nothing to read. A run can be quiet
 # for a long time - the model is thinking, a tool call is in flight - and a
@@ -280,31 +288,198 @@ class RunService:
                 "running",
                 {"model": choice.chat_model or profile["chat_model"]},
             )
-            # Accumulated as the stream delivers it; everything shown or stored
-            # is that text itself - with memory riding tool calls there is no
-            # tail to hold back, so what the user sees is what the model wrote.
+            # The tool rounds. A round that ends in tool calls is not the
+            # answer - its text was a stop on the way ("我来查一下"), shown
+            # live and replaced by the next round's. The loop owns the wire's
+            # protocol details: an assistant message carrying its tool calls,
+            # one tool message per call, memory answered in place.
+            knowledge_tool = KnowledgeToolService(self.services.store, self.services.knowledge)
+            has_documents = bool(
+                self.services.store.list_knowledge_documents(conversation["project_id"])
+            )
+            tools = [*bundle.tools, *(KNOWLEDGE_TOOLS if has_documents else [])]
+            messages = list(bundle.messages)
+            # The empty assistant row this run writes into rode along in the
+            # single-round request and cost nothing there. In a tool loop it
+            # would sit between turns on the wire - an assistant turn with no
+            # part in the conversation - so it does not ride anymore.
+            while messages and messages[-1]["role"] == "assistant" and not messages[-1]["content"]:
+                messages.pop()
+            executed_commands: list[str] = []
             response_parts: list[str] = []
             reasoning_parts: list[str] = []
-            tool_calls: list[dict[str, Any]] = []
             usage: dict[str, Any] | None = None
             flushed = 0
             flushed_at = time.monotonic()
-            async for event in self.services.provider.stream_chat(
-                profile,
-                bundle.messages,
-                chat_model=choice.chat_model,
-                thinking=choice.thinking,
-                tools=bundle.tools,
-            ):
+
+            async def answer_tool_call(call: dict[str, Any]) -> str:
+                """One tool call's output, and the audit rows describing it."""
+                name = str(call.get("name", ""))
+                try:
+                    parsed = json.loads(call.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    parsed = None
+                if not isinstance(parsed, dict):
+                    parsed = {}
+                if name == "knowledge":
+                    command = parsed.get("command")
+                    if not isinstance(command, str) or not command.strip():
+                        return "knowledge: 空命令。" + USAGE
+                    normalized = " ".join(command.split())
+                    # The third identical call is a loop, not a query. Blocked
+                    # at the gate with the words that redirect the model.
+                    if executed_commands.count(normalized) >= 2:
+                        return (
+                            "knowledge: 同一命令已重复调用两次，已阻止执行。"
+                            "请基于已获得的信息作答，或换一个命令。"
+                        )
+                    executed_commands.append(normalized)
+                    audit("knowledge_tool", "running", {"command": command})
+                    output = await knowledge_tool.execute(
+                        command,
+                        project_id=conversation["project_id"],
+                        profile=profile,
+                    )
+                    audit(
+                        "knowledge_tool",
+                        "completed",
+                        {"command": command, "output_chars": len(output)},
+                    )
+                    return output
+                if name in ("save_memory", "forget_memory"):
+                    # Multi-round protocol: an assistant message's tool calls
+                    # must be answered, so memory writes happen right here
+                    # instead of after the stream, and the result text tells
+                    # the model what landed.
+                    actions = self.services.memory.apply_tool_calls(
+                        [call],
+                        user_content=user_message["content"],
+                        user_message_id=user_message["id"],
+                        project_id=conversation["project_id"],
+                    )
+                    if not actions:
+                        return "没有执行任何记忆操作：参数无效或无法定位目标记忆。"
+                    audit("memory_write", "running", {})
+                    audit("memory_write", "completed", {"count": len(actions), "items": actions})
+                    action = actions[0]
+                    memory = action.get("memory")
+                    key = memory.get("memory_key", "") if isinstance(memory, dict) else ""
+                    verbs = {
+                        "created": f"已保存记忆：{key}",
+                        "superseded": f"已更新记忆：{key}",
+                        "confirmed": f"记忆未变化，已确认：{key}",
+                        "forgotten": f"已忘记 {action.get('count', 1)} 条记忆：{key}",
+                    }
+                    return verbs.get(str(action.get("action")), "已处理。")
+                return f"knowledge: unknown tool: {name}。"
+
+            for _ in range(MAX_TOOL_ROUNDS):
+                tool_calls: list[dict[str, Any]] = []
+                async for event in self.services.provider.stream_chat(
+                    profile,
+                    messages,
+                    chat_model=choice.chat_model,
+                    thinking=choice.thinking,
+                    tools=tools,
+                ):
+                    if registry.is_cancelled(run_id):
+                        partial = "".join(response_parts)
+                        metadata = {
+                            "run_id": run_id,
+                            "citations": bundle.citations,
+                            "reasoning": "".join(reasoning_parts),
+                            "cancelled": True,
+                        }
+                        store.update_message(assistant_id, partial, metadata)
+                        store.update_run(
+                            run_id,
+                            status="cancelled",
+                            input_token_estimate=bundle.input_token_estimate,
+                            output_token_estimate=estimate_tokens(partial),
+                            completed=True,
+                        )
+                        audit("model_stream", "cancelled", {})
+                        broadcast.show_text(content=partial, reasoning="".join(reasoning_parts))
+                        broadcast.finish(
+                            "run.cancelled",
+                            {"run_id": run_id, "message_id": assistant_id, "content": partial},
+                        )
+                        return
+                    if event.kind == "usage":
+                        usage = event.payload["usage"]
+                        continue
+                    if event.kind == "reasoning":
+                        reasoning_parts.append(event.payload["text"])
+                    elif event.kind == "delta":
+                        response_parts.append(event.payload["text"])
+                    elif event.kind == "tool_calls":
+                        tool_calls.extend(event.payload["calls"])
+                    else:
+                        continue
+
+                    content = "".join(response_parts)
+                    reasoning = "".join(reasoning_parts)
+                    broadcast.show_text(content=content, reasoning=reasoning)
+                    now = time.monotonic()
+                    # Reasoning counts towards the window as well: a model can think for
+                    # a long time before its first visible word, and that thinking is
+                    # exactly what a reload would otherwise lose.
+                    if (
+                        len(content) + len(reasoning) - flushed >= CHECKPOINT_CHARACTERS
+                        or now - flushed_at >= CHECKPOINT_SECONDS
+                    ):
+                        store.update_message(
+                            assistant_id,
+                            content,
+                            {
+                                "run_id": run_id,
+                                "citations": bundle.citations,
+                                "reasoning": reasoning,
+                            },
+                        )
+                        flushed = len(content) + len(reasoning)
+                        flushed_at = now
+
+                if not tool_calls:
+                    # A round with nothing to answer is the answer.
+                    break
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "".join(response_parts),
+                        "tool_calls": [
+                            {
+                                "id": str(call.get("id", "")),
+                                "type": "function",
+                                "function": {
+                                    "name": str(call.get("name", "")),
+                                    "arguments": call.get("arguments", ""),
+                                },
+                            }
+                            for call in tool_calls
+                        ],
+                    }
+                )
+                for call in tool_calls:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id", "")),
+                            "content": await answer_tool_call(call),
+                        }
+                    )
+                response_parts = []
+                reasoning_parts = []
+                flushed = 0
+                flushed_at = time.monotonic()
+                broadcast.show_text(content="", reasoning="")
+                # Between rounds the stream is not running, so its own cancel
+                # check cannot fire; the stop button has to work here too.
                 if registry.is_cancelled(run_id):
                     partial = "".join(response_parts)
-                    metadata = {
-                        "run_id": run_id,
-                        "citations": bundle.citations,
-                        "reasoning": "".join(reasoning_parts),
-                        "cancelled": True,
-                    }
-                    store.update_message(assistant_id, partial, metadata)
+                    store.update_message(
+                        assistant_id, partial, {"run_id": run_id, "cancelled": True}
+                    )
                     store.update_run(
                         run_id,
                         status="cancelled",
@@ -313,42 +488,16 @@ class RunService:
                         completed=True,
                     )
                     audit("model_stream", "cancelled", {})
-                    broadcast.show_text(content=partial, reasoning="".join(reasoning_parts))
                     broadcast.finish(
                         "run.cancelled",
                         {"run_id": run_id, "message_id": assistant_id, "content": partial},
                     )
                     return
-                if event.kind == "usage":
-                    usage = event.payload["usage"]
-                    continue
-                if event.kind == "reasoning":
-                    reasoning_parts.append(event.payload["text"])
-                elif event.kind == "delta":
-                    response_parts.append(event.payload["text"])
-                elif event.kind == "tool_calls":
-                    tool_calls.extend(event.payload["calls"])
-                else:
-                    continue
-
-                content = "".join(response_parts)
-                reasoning = "".join(reasoning_parts)
-                broadcast.show_text(content=content, reasoning=reasoning)
-                now = time.monotonic()
-                # Reasoning counts towards the window as well: a model can think for
-                # a long time before its first visible word, and that thinking is
-                # exactly what a reload would otherwise lose.
-                if (
-                    len(content) + len(reasoning) - flushed >= CHECKPOINT_CHARACTERS
-                    or now - flushed_at >= CHECKPOINT_SECONDS
-                ):
-                    store.update_message(
-                        assistant_id,
-                        content,
-                        {"run_id": run_id, "citations": bundle.citations, "reasoning": reasoning},
-                    )
-                    flushed = len(content) + len(reasoning)
-                    flushed_at = now
+            else:
+                # The round budget ran out while the model was still asking
+                # for tools. Finish with whatever the last round wrote rather
+                # than dropping the run, and say why in the audit.
+                audit("tool_rounds_exhausted", "completed", {"rounds": MAX_TOOL_ROUNDS})
 
             raw = "".join(response_parts).strip()
             response = raw if raw else "模型未返回可显示的文本。"
@@ -368,31 +517,10 @@ class RunService:
             )
             audit("model_stream", "completed", {"usage": usage or {}})
             broadcast.show_text(content=response, reasoning="".join(reasoning_parts))
-            # The answer is on its way before the memory step reports, so the
-            # stream stays open only for the moment the actions take.
             broadcast.emit(
                 "message.completed",
                 {"message_id": assistant_id, "content": response, "metadata": metadata},
             )
-            if tool_calls:
-                # The step exists only when a call produced a valid action -
-                # a garbled or unrecognized call contributes no record at all,
-                # which is what keeps a plain answer free of a "写入记忆" row.
-                # The work is local and takes milliseconds, so both records
-                # carry effectively the same moment.
-                actions = self.services.memory.apply_tool_calls(
-                    tool_calls,
-                    user_content=user_message["content"],
-                    user_message_id=user_message["id"],
-                    project_id=conversation["project_id"],
-                )
-                if actions:
-                    audit("memory_write", "running", {})
-                    audit(
-                        "memory_write",
-                        "completed",
-                        {"count": len(actions), "items": actions},
-                    )
             broadcast.close()
         except ProviderError as error:
             # Best-effort bookkeeping: the conversation may already have been

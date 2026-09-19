@@ -29,6 +29,8 @@ const STAGE_LABELS: Record<string, string> = {
   context_retrieval: '检索上下文',
   model_stream: '生成回复',
   memory_write: '写入记忆',
+  knowledge_tool: '查阅知识库',
+  tool_rounds_exhausted: '工具轮次已达上限',
 }
 
 export function ProgressStrip({ audits }: { audits: AuditRow[] }) {

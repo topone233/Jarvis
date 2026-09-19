@@ -463,6 +463,40 @@ async def test_one_embed_call_serves_memories_and_knowledge(
     assert bundle.memory_mode == "relevance"
 
 
+@pytest.mark.asyncio
+async def test_knowledge_citations_are_numbered_and_carry_an_outline(
+    core: CoreServices, profile: dict[str, Any]
+) -> None:
+    """The 知识资料 section shows numbered sources plus the hit document's map.
+
+    The number on the excerpt is the number the screen shows, so it is part
+    of the citation record itself. The outline after the excerpts is the
+    "there is more in this document" signal a list-type question depends on.
+    """
+    from app.knowledge import ImportItem
+
+    await core.knowledge.import_items(
+        [
+            ImportItem(
+                filename="cases.md",
+                content="# 用例\n## 登录\n弱口令用例。\n## 上传\n附件用例。\n".encode(),
+            )
+        ],
+        project_id=None,
+        profile=profile,
+    )
+    conversation = core.store.create_conversation("对话", None, profile["id"], False)
+
+    bundle = await core.context.build(conversation["id"], profile, "登录测试用例")
+
+    assert bundle.citations and bundle.citations[0]["number"] == 1
+    system = bundle.messages[0]["content"]
+    assert "[1] 《cases》 · 1.1 登录" in system
+    assert "SECTIONS: 3" in system
+    assert "## 上传" in system
+    assert "--section" in system
+
+
 def test_memories_table_has_embedding_cache_columns(core: CoreServices) -> None:
     columns = {row["name"] for row in core.database.fetchall("PRAGMA table_info(memories)")}
     assert {"embedding_json", "embedding_model"} <= columns

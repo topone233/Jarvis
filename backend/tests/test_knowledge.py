@@ -86,6 +86,46 @@ async def test_import_never_writes_the_source_file(core: CoreServices) -> None:
     ).exists()
 
 
+@pytest.mark.asyncio
+async def test_import_stores_content_and_section_shaped_chunks(core: CoreServices) -> None:
+    content = "# 指南\n## 登录\n账号密码登录的用例。\n## 上传\n附件上传的用例。\n"
+    imported = await core.knowledge.import_items(
+        [ImportItem(filename="guide.md", content=content.encode())],
+        project_id=None,
+        profile=None,
+    )
+    document = imported[-1]["document"]
+
+    stored = core.store.get_knowledge_document(document["id"])
+    assert stored["content"] == content
+
+    chunks = core.database.fetchall(
+        "SELECT section_id, content FROM knowledge_chunks"
+        " WHERE document_id = ? AND deleted_at IS NULL ORDER BY position",
+        (document["id"],),
+    )
+    assert [row["section_id"] for row in chunks] == ["1.1", "1.2"]
+    assert chunks[0]["content"].startswith("【1.1 登录】")
+    assert "账号密码" in chunks[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_search_reports_the_section_of_a_hit(core: CoreServices) -> None:
+    content = "# doc\n## 用户管理\n登录的测试用例。\n## 订单管理\n下单的测试用例。\n"
+    imported = await core.knowledge.import_items(
+        [ImportItem(filename="cases.md", content=content.encode())],
+        project_id=None,
+        profile=None,
+    )
+    document = imported[-1]["document"]
+
+    results = await core.knowledge.search("登录 测试用例", project_id=None, profile=None)
+    assert results
+    assert results[0]["document_id"] == document["id"]
+    assert results[0]["section_id"] == "1.1"
+    assert "用户管理" in results[0]["section_title"]
+
+
 # --- Document fixtures -------------------------------------------------------
 #
 # Hand-built rather than checked-in binaries, so every test states the file

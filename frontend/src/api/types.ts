@@ -15,9 +15,32 @@ export interface Citation {
   chunk_id: string
   document_id: string
   title: string
+  /** The section the chunk lives in; null for a headingless document. */
+  section_id?: string | null
+  section_title?: string | null
   content: string
   score: number
   source: string
+  /** The `[n]` the system instruction assigns; absent on older messages. */
+  number?: number
+}
+
+/** One heading of a stored document, as the content endpoint returns it. */
+export interface KnowledgeSectionRef {
+  id: string
+  level: number
+  title: string
+  start: number
+  end: number
+}
+
+/** The canonical text of a knowledge document, for the citation panel. */
+export interface KnowledgeContent {
+  id: string
+  title: string
+  original_filename: string
+  content: string
+  sections: KnowledgeSectionRef[]
 }
 
 /**
