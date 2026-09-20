@@ -13,6 +13,7 @@ from app.images import parse_images, write_images
 from app.knowledge_tool import KNOWLEDGE_TOOLS, USAGE, KnowledgeToolService
 from app.runtime import CoreServices, RunBroadcast
 from app.schemas import ThinkingLevel
+from app.settings import read_tool_limits
 from app.skills import SKILL_TOOLS, SkillToolService
 from app.skills import USAGE as SKILL_USAGE
 from app.store import INTERRUPTED_ERROR
@@ -26,10 +27,8 @@ CHECKPOINT_SECONDS = 0.5
 CHECKPOINT_CHARACTERS = 400
 
 # Tool rounds one run may spend before it is finished whether it likes it or
-# not. Generous on purpose - a list-type question over a sectioned document
-# legitimately wants ls, inspect, and several reads - but bounded, because an
-# unbounded loop is one confused model away from an open tab that never ends.
-MAX_TOOL_ROUNDS = 10
+# not, and the gate on repeating one identical call inside a window, are both
+# user settings - see `settings.ToolLimits`.
 
 # How long a subscriber may be left with nothing to read. A run can be quiet
 # for a long time - the model is thinking, a tool call is in flight - and a
@@ -41,6 +40,48 @@ HEARTBEAT_SECONDS = 10.0
 
 def encode_sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json_dump(payload)}\n\n"
+
+
+class RepeatGuard:
+    """The gate that stops one identical call being asked for over and over.
+
+    A call is identified by its tool name plus its arguments - whitespace and
+    key order aside, so `{"a": 1}` and `{ "a" : 1 }` are the same call. Each
+    call that gets through is stamped; within the window at most `limit` of
+    the same identity may execute, and the next one is turned away with words
+    that redirect the model rather than an error it would retry around.
+
+    The window slides: a call older than it no longer counts, so a legitimate
+    polling call spread wider than the window is never blocked. A call refused
+    here is not stamped - it never executed, so it spends nothing.
+    """
+
+    def __init__(self, limit: int, window_seconds: int) -> None:
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._stamps: dict[tuple[str, str], list[float]] = {}
+
+    def gate(self, name: str, arguments: str, *, now: float) -> str | None:
+        """None to let the call through (and stamp it); otherwise the refusal."""
+        try:
+            parsed = json.loads(arguments or "{}")
+        except json.JSONDecodeError:
+            # Arguments that do not parse have no meaning to normalize away;
+            # the raw text is the identity, and two different garbles are two
+            # different calls.
+            identity = arguments
+        else:
+            identity = json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        key = (name, identity)
+        stamps = [stamp for stamp in self._stamps.get(key, []) if now - stamp < self.window_seconds]
+        if len(stamps) >= self.limit:
+            return (
+                f"{name}: 同一调用在 {self.window_seconds} 秒内已执行 {self.limit} 次，"
+                "已阻止执行。请基于已获得的信息作答，或改变调用方式。"
+            )
+        stamps.append(now)
+        self._stamps[key] = stamps
+        return None
 
 
 @dataclass(frozen=True)
@@ -304,6 +345,8 @@ class RunService:
             # live and replaced by the next round's. The loop owns the wire's
             # protocol details: an assistant message carrying its tool calls,
             # one tool message per call, memory answered in place.
+            limits = read_tool_limits(store)
+            guard = RepeatGuard(limits.repeat_limit, limits.repeat_window_seconds)
             knowledge_tool = KnowledgeToolService(self.services.store, self.services.knowledge)
             has_documents = bool(
                 self.services.store.list_knowledge_documents(conversation["project_id"])
@@ -321,17 +364,45 @@ class RunService:
             # part in the conversation - so it does not ride anymore.
             while messages and messages[-1]["role"] == "assistant" and not messages[-1]["content"]:
                 messages.pop()
-            executed_commands: list[str] = []
-            skill_commands: list[str] = []
             response_parts: list[str] = []
             reasoning_parts: list[str] = []
             usage: dict[str, Any] | None = None
             flushed = 0
             flushed_at = time.monotonic()
 
-            async def answer_tool_call(call: dict[str, Any]) -> str:
-                """One tool call's output, and the audit rows describing it."""
+            async def answer_tool_call(call: dict[str, Any], round_text: str) -> str:
+                """One tool call's output, and the audit rows describing it.
+
+                Every call is auditable, whatever it was: the raw tool-call
+                object the model produced (id, name, arguments - verbatim)
+                and the result text that went back to it both land in the
+                trail, so the page shows what the AI asked for and what it
+                got, not a summary of it. A call turned away before it ran
+                is recorded too, under the generic `tool_call` stage.
+                """
                 name = str(call.get("name", ""))
+                raw_call = {
+                    "id": str(call.get("id", "")),
+                    "name": name,
+                    "arguments": call.get("arguments", ""),
+                }
+                call_payload: dict[str, Any] = {"call": raw_call}
+                if round_text:
+                    # The round's accompanying text is otherwise lost - the
+                    # next round replaces it on screen - so it rides here.
+                    call_payload["round_text"] = round_text
+                # The repeat gate sees every tool the same way: same name and
+                # same arguments, once too often inside the window, is a loop
+                # whatever the tool was. The refusal is the call's tool result,
+                # and the gate records nothing for a call it turned away.
+                refusal = guard.gate(name, str(call.get("arguments") or ""), now=time.monotonic())
+                if refusal is not None:
+                    audit(
+                        "tool_call",
+                        "failed",
+                        {**call_payload, "output": refusal, "reason": "重复命令已拦截"},
+                    )
+                    return refusal
                 try:
                     parsed = json.loads(call.get("arguments") or "{}")
                 except json.JSONDecodeError:
@@ -341,17 +412,14 @@ class RunService:
                 if name == "knowledge":
                     command = parsed.get("command")
                     if not isinstance(command, str) or not command.strip():
-                        return "knowledge: 空命令。" + USAGE
-                    normalized = " ".join(command.split())
-                    # The third identical call is a loop, not a query. Blocked
-                    # at the gate with the words that redirect the model.
-                    if executed_commands.count(normalized) >= 2:
-                        return (
-                            "knowledge: 同一命令已重复调用两次，已阻止执行。"
-                            "请基于已获得的信息作答，或换一个命令。"
+                        message = "knowledge: 空命令。" + USAGE
+                        audit(
+                            "knowledge_tool",
+                            "failed",
+                            {**call_payload, "output": message, "reason": "空命令"},
                         )
-                    executed_commands.append(normalized)
-                    audit("knowledge_tool", "running", {"command": command})
+                        return message
+                    audit("knowledge_tool", "running", {**call_payload, "command": command})
                     output = await knowledge_tool.execute(
                         command,
                         project_id=conversation["project_id"],
@@ -359,26 +427,33 @@ class RunService:
                     audit(
                         "knowledge_tool",
                         "completed",
-                        {"command": command, "output_chars": len(output)},
+                        {
+                            "command": command,
+                            "output": output,
+                            "output_chars": len(output),
+                        },
                     )
                     return output
                 if name == "skill":
                     command = parsed.get("command")
                     if not isinstance(command, str) or not command.strip():
-                        return "skill: 空命令。" + SKILL_USAGE
-                    normalized = " ".join(command.split())
-                    if skill_commands.count(normalized) >= 2:
-                        return (
-                            "skill: 同一命令已重复调用两次，已阻止执行。"
-                            "请基于已获得的信息继续，或换一个命令。"
+                        message = "skill: 空命令。" + SKILL_USAGE
+                        audit(
+                            "skill_tool",
+                            "failed",
+                            {**call_payload, "output": message, "reason": "空命令"},
                         )
-                    skill_commands.append(normalized)
-                    audit("skill_tool", "running", {"command": command})
+                        return message
+                    audit("skill_tool", "running", {**call_payload, "command": command})
                     output = await skill_tool.execute(command)
                     audit(
                         "skill_tool",
                         "completed",
-                        {"command": command, "output_chars": len(output)},
+                        {
+                            "command": command,
+                            "output": output,
+                            "output_chars": len(output),
+                        },
                     )
                     return output
                 if name in ("save_memory", "forget_memory"):
@@ -393,22 +468,42 @@ class RunService:
                         project_id=conversation["project_id"],
                     )
                     if not actions:
-                        return "没有执行任何记忆操作：参数无效或无法定位目标记忆。"
-                    audit("memory_write", "running", {})
-                    audit("memory_write", "completed", {"count": len(actions), "items": actions})
-                    action = actions[0]
-                    memory = action.get("memory")
-                    key = memory.get("memory_key", "") if isinstance(memory, dict) else ""
-                    verbs = {
-                        "created": f"已保存记忆：{key}",
-                        "superseded": f"已更新记忆：{key}",
-                        "confirmed": f"记忆未变化，已确认：{key}",
-                        "forgotten": f"已忘记 {action.get('count', 1)} 条记忆：{key}",
-                    }
-                    return verbs.get(str(action.get("action")), "已处理。")
-                return f"knowledge: unknown tool: {name}。"
+                        message = "没有执行任何记忆操作：参数无效或无法定位目标记忆。"
+                        audit(
+                            "tool_call",
+                            "failed",
+                            {**call_payload, "output": message, "reason": "没有执行任何记忆操作"},
+                        )
+                        return message
+                    audit("memory_write", "running", call_payload)
+                    result = _memory_result_text(actions)
+                    audit(
+                        "memory_write",
+                        "completed",
+                        {"count": len(actions), "items": actions, "output": result},
+                    )
+                    return result
+                message = f"knowledge: unknown tool: {name}。"
+                audit(
+                    "tool_call",
+                    "failed",
+                    {**call_payload, "output": message, "reason": "未知工具"},
+                )
+                return message
 
-            for _ in range(MAX_TOOL_ROUNDS):
+            def _memory_result_text(actions: list[dict[str, Any]]) -> str:
+                action = actions[0]
+                memory = action.get("memory")
+                key = memory.get("memory_key", "") if isinstance(memory, dict) else ""
+                verbs = {
+                    "created": f"已保存记忆：{key}",
+                    "superseded": f"已更新记忆：{key}",
+                    "confirmed": f"记忆未变化，已确认：{key}",
+                    "forgotten": f"已忘记 {action.get('count', 1)} 条记忆：{key}",
+                }
+                return verbs.get(str(action.get("action")), "已处理。")
+
+            for _ in range(limits.max_rounds):
                 tool_calls: list[dict[str, Any]] = []
                 async for event in self.services.provider.stream_chat(
                     profile,
@@ -500,7 +595,9 @@ class RunService:
                         {
                             "role": "tool",
                             "tool_call_id": str(call.get("id", "")),
-                            "content": await answer_tool_call(call),
+                            "content": await answer_tool_call(
+                                call, round_text="".join(response_parts)
+                            ),
                         }
                     )
                 response_parts = []
@@ -532,7 +629,7 @@ class RunService:
                 # The round budget ran out while the model was still asking
                 # for tools. Finish with whatever the last round wrote rather
                 # than dropping the run, and say why in the audit.
-                audit("tool_rounds_exhausted", "completed", {"rounds": MAX_TOOL_ROUNDS})
+                audit("tool_rounds_exhausted", "completed", {"rounds": limits.max_rounds})
 
             raw = "".join(response_parts).strip()
             response = raw if raw else "模型未返回可显示的文本。"

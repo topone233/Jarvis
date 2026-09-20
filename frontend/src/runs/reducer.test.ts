@@ -106,7 +106,7 @@ describe('reduce', () => {
       {
         stage: 'memory_write',
         state: 'completed',
-        sequence: 6,
+        sequence: 5,
         payload: {},
         startedAt: RAN_AT,
         endedAt: RAN_AT,
@@ -126,7 +126,7 @@ describe('reduce', () => {
       {
         stage: 'model_stream',
         state: 'completed',
-        sequence: 2,
+        sequence: 1,
         payload: {},
         startedAt: RAN_AT,
         endedAt: DONE_AT,
@@ -167,6 +167,53 @@ describe('reduce', () => {
     expect(state.audits.map((row) => [row.stage, row.state])).toEqual([
       ['context_compaction', 'completed'],
       ['context_retrieval', 'running'],
+    ])
+  })
+
+  it('keeps every occurrence of a stage that runs more than once', () => {
+    // Each knowledge round is its own tool call; collapsing them would hide
+    // every step but the last, which is exactly what an audit must not do.
+    const state = run([
+      audit('knowledge_tool', 'running', 3, RAN_AT, {
+        command: 'list',
+        call: { name: 'knowledge' },
+      }),
+      audit('knowledge_tool', 'completed', 4, DONE_AT, { command: 'list', output: '…' }),
+      audit('knowledge_tool', 'running', 5, RAN_AT, { command: 'grep 登录' }),
+      audit('knowledge_tool', 'completed', 6, DONE_AT, { command: 'grep 登录', output: '…' }),
+    ])
+    expect(state.audits.map((row) => [row.sequence, row.stage, row.state])).toEqual([
+      [3, 'knowledge_tool', 'completed'],
+      [5, 'knowledge_tool', 'completed'],
+    ])
+    expect(state.audits[0].payload).toEqual({
+      command: 'list',
+      call: { name: 'knowledge' },
+      output: '…',
+    })
+    expect(state.audits[1].payload).toEqual({ command: 'grep 登录', output: '…' })
+  })
+
+  it('gives an ending record with no open row its own row', () => {
+    // A `/name` skill step is announced completed, without a run-up - it
+    // still has to show, or a whole action would be missing from the trail.
+    const state = run([audit('skill_tool', 'completed', 2, DONE_AT, { trigger: 'user_request' })])
+    expect(state.audits.map((row) => [row.stage, row.state, row.sequence])).toEqual([
+      ['skill_tool', 'completed', 2],
+    ])
+    expect(state.audits[0].startedAt).toBeNull()
+  })
+
+  it('opens a new row when a stage starts again while one is open', () => {
+    // A stage interrupted between records - a crash left a `running` open -
+    // must not have its next occurrence merge into the corpse.
+    const state = run([
+      audit('knowledge_tool', 'running', 1, RAN_AT, { command: 'list' }),
+      audit('knowledge_tool', 'running', 2, DONE_AT, { command: 'read x' }),
+    ])
+    expect(state.audits.map((row) => [row.sequence, row.state])).toEqual([
+      [1, 'running'],
+      [2, 'running'],
     ])
   })
 

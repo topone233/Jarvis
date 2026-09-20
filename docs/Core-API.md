@@ -92,7 +92,7 @@ default). It returns text/event-stream. Events use a JSON data payload:
 | Event | Meaning |
 | --- | --- |
 | run.started | Returns run and placeholder assistant-message IDs. |
-| audit | Internal stage progress: compact, context retrieval, model stream, memory write. |
+| audit | Internal stage progress: compact, context retrieval, model stream, memory write, each knowledge/skill tool call. Every tool call records the AI's raw call object (id, name, arguments) and the full result text that went back to it, so the trail is auditable after a reload; calls refused before they ran (repeat gate, unknown tool, invalid arguments) are recorded too, as a failed `tool_call` stage. |
 | context.ready | Estimated context budget and structured knowledge citations. |
 | message.delta | Assistant text produced since the last delta this client received. |
 | reasoning.delta | Optional compatible-provider reasoning text, same rule. |
@@ -160,13 +160,15 @@ calling. When the user-editable `memory_prompt` directive is present, the
 request registers two tools - `save_memory` (kind/key/content/confidence) and
 `forget_memory` (key/content, both copied from the injected memory list) - and
 the assistant message may carry content and `tool_calls` side by side. No
-`tool_choice` is set, the model decides when a turn deserves a call, and no
-tool result is ever sent back: a call is an instruction to record, not a
-question to answer. The producer carries the calls out once the reply is
-complete and audits them as a `memory_write` stage - which exists **only when
-the calls produced actions**. A plain answer has no memory step at all, no
+`tool_choice` is set, the model decides when a turn deserves a call. The tool
+loop answers every call in the round that carries it and feeds the outcome
+back as a tool message, so a call is carried out, not just noted; the write
+itself is audited as a `memory_write` stage - which exists **only when the
+calls produced actions**. A plain answer has no memory step at all and no
 extra model call, and text that streams is shown whole; a call whose arguments
-do not parse leaves no trace. A cleared `memory_prompt` registers no tools,
+do not parse or that produces no action leaves no memory step, but it is not
+invisible: it is recorded as a failed `tool_call` audit row with the raw call,
+like every other refused call. A cleared `memory_prompt` registers no tools,
 which is what "the model does not manage memory" means on the wire.
 
 Injection is selective. Candidates are the 16 most recent active memories;

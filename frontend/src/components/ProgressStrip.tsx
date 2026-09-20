@@ -8,11 +8,14 @@
  * from disk and shows the same numbers, because both come from the same two
  * timestamps rather than from anything the browser counted.
  *
- * A row with something to show expands into the details of what the stage
- * actually did - which memories went in, what a compaction folded, which model
- * answered. Running stages are open; finished ones fold away, with one
- * exception: the memory step only exists when it did something, so its result
- * stays readable.
+ * A stage can occur several times in one run - each tool round is its own call
+ * - and every occurrence is its own row. A row with something to show expands
+ * into the details of what the stage actually did: which memories went in,
+ * what a compaction folded, which model answered - and for a tool call, the
+ * AI's original call JSON and the result text that went back to it, long text
+ * folded until asked for. Running stages are open; finished ones fold away,
+ * with one exception: the memory step only exists when it did something, so
+ * its result stays readable.
  */
 
 import { useState } from 'react'
@@ -31,15 +34,20 @@ const STAGE_LABELS: Record<string, string> = {
   memory_write: '写入记忆',
   knowledge_tool: '查阅知识库',
   skill_tool: '调用技能',
+  tool_call: '工具调用',
   tool_rounds_exhausted: '工具轮次已达上限',
 }
+
+/** Above this many characters a raw block clamps until the user expands it. */
+const CODE_CLAMP_CHARS = 480
 
 export function ProgressStrip({ audits }: { audits: AuditRow[] }) {
   const running = audits.some((row) => row.state === 'running')
   const now = useNow(running)
   // The user's own choice of open rows, kept apart from the default so a
   // stage finishing does not slam shut something that was opened on purpose.
-  const [pinned, setPinned] = useState<Record<string, boolean>>({})
+  // Keyed by the row's opening sequence: one row per occurrence now.
+  const [pinned, setPinned] = useState<Record<number, boolean>>({})
 
   if (audits.length === 0) {
     return null
@@ -52,16 +60,16 @@ export function ProgressStrip({ audits }: { audits: AuditRow[] }) {
       {audits.map((row) => {
         const details = detailLines(row)
         const expandable = details.length > 0
-        const open = expandable && (pinned[row.stage] ?? defaultOpen(row))
+        const open = expandable && (pinned[row.sequence] ?? defaultOpen(row))
         return (
-          <div key={row.stage} className="progress-item">
+          <div key={row.sequence} className="progress-item">
             <button
               type="button"
               className={`progress-row is-${row.state}${expandable ? ' is-expandable' : ''}`}
               aria-expanded={expandable ? open : undefined}
               onClick={
                 expandable
-                  ? () => setPinned((current) => ({ ...current, [row.stage]: !open }))
+                  ? () => setPinned((current) => ({ ...current, [row.sequence]: !open }))
                   : undefined
               }
             >
@@ -82,17 +90,44 @@ export function ProgressStrip({ audits }: { audits: AuditRow[] }) {
             </button>
             {open && (
               <div className="progress-detail-body">
-                {details.map((line, index) => (
-                  <div key={index} className="progress-detail-line">
-                    {line}
-                  </div>
-                ))}
+                {details.map((line, index) =>
+                  line.kind === 'code' ? (
+                    <CodeDetail key={index} label={line.label} text={line.text} />
+                  ) : (
+                    <div key={index} className="progress-detail-line">
+                      {line.text}
+                    </div>
+                  ),
+                )}
               </div>
             )}
           </div>
         )
       })}
       {total !== null && <div className="progress-total">共 {toSeconds(total)} 秒</div>}
+    </div>
+  )
+}
+
+/**
+ * One block of raw audit content - a tool call's original JSON or its result
+ * text. Long text clamps to a few lines and expands on demand; short text
+ * just shows.
+ */
+function CodeDetail({ label, text }: { label: string; text: string }) {
+  const clamped = text.length > CODE_CLAMP_CHARS
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="progress-detail-code">
+      <div className="progress-detail-code-head">
+        <span>{label}</span>
+        {clamped && (
+          <button type="button" onClick={() => setOpen((current) => !current)}>
+            {open ? '收起' : '展开全部'}
+          </button>
+        )}
+      </div>
+      <pre className={clamped && !open ? 'is-clamped' : ''}>{text}</pre>
     </div>
   )
 }

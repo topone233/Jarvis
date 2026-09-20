@@ -24,6 +24,7 @@ export type TurnPhase = 'connecting' | 'streaming' | 'completed' | 'cancelled' |
 export interface AuditRow {
   stage: string
   state: string
+  /** The opening record's sequence: the row's identity across its records. */
   sequence: number
   payload: Record<string, unknown>
   /** When the stage began, from its `running` record. Null if it never ran. */
@@ -175,18 +176,35 @@ function applyEvent(state: TurnState, event: RunEvent): TurnState {
 }
 
 /**
+ * One row per occurrence, not per stage: a stage can run several times in a
+ * single run - each knowledge round is its own tool call - and collapsing them
+ * into one row would hide every step but the last, which is exactly the part a
+ * reload can least afford to lose. A `running` record always opens a row; an
+ * ending record closes the stage's most recent open row, or opens its own when
+ * it has none (a `/skill` step is announced completed, without a run-up).
+ *
  * Audits keep arriving after the answer is complete - the memory write is
  * reported once the text is already on screen - so they are never gated on the
  * phase. Only text stops at a terminal event.
  */
 function upsertAudit(state: TurnState, record: RunEventRecord): TurnState {
-  const index = state.audits.findIndex((existing) => existing.stage === record.stage)
+  let index = -1
+  if (record.state !== 'running') {
+    for (let i = state.audits.length - 1; i >= 0; i -= 1) {
+      if (state.audits[i].stage === record.stage && state.audits[i].state === 'running') {
+        index = i
+        break
+      }
+    }
+  }
   const previous = index === -1 ? null : state.audits[index]
   const running = record.state === 'running'
   const row: AuditRow = {
     stage: record.stage,
     state: record.state,
-    sequence: record.sequence,
+    // The row's identity is the record that opened it - stable across the
+    // records that close it, and unique across occurrences of the stage.
+    sequence: previous?.sequence ?? record.sequence,
     // Merged rather than replaced: the model's name is announced in the
     // `running` record and its token usage in the `completed` one, and only
     // the union of the two is the whole truth about the stage. The newer

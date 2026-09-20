@@ -139,6 +139,51 @@ def test_a_quick_prompt_outside_its_shape_is_refused(client: TestClient) -> None
     assert client.put("/api/settings", json={"quick_prompts": thirteen}).status_code == 422
 
 
+def test_tool_limits_start_at_the_built_in_defaults(client: TestClient) -> None:
+    entry = client.get("/api/settings").json()["tool_limits"]
+
+    assert entry["max_rounds"] == {"value": 100, "default": 100, "is_default": True}
+    assert entry["repeat_window_seconds"] == {"value": 30, "default": 30, "is_default": True}
+    assert entry["repeat_limit"] == {"value": 10, "default": 10, "is_default": True}
+
+
+def test_saved_tool_limits_replace_the_values_in_force(client: TestClient) -> None:
+    client.put(
+        "/api/settings",
+        json={"tool_max_rounds": 50, "tool_repeat_window_seconds": 60, "tool_repeat_limit": 3},
+    )
+
+    entry = client.get("/api/settings").json()["tool_limits"]
+
+    assert entry["max_rounds"] == {"value": 50, "default": 100, "is_default": False}
+    assert entry["repeat_window_seconds"] == {"value": 60, "default": 30, "is_default": False}
+    assert entry["repeat_limit"] == {"value": 3, "default": 10, "is_default": False}
+
+
+def test_null_puts_a_tool_limit_back_to_the_default(client: TestClient) -> None:
+    client.put("/api/settings", json={"tool_max_rounds": 5})
+    client.put("/api/settings", json={"tool_max_rounds": None})
+
+    entry = client.get("/api/settings").json()["tool_limits"]
+
+    assert entry["max_rounds"] == {"value": 100, "default": 100, "is_default": True}
+    # The other two were never touched by either request.
+    assert entry["repeat_limit"]["is_default"] is True
+
+
+def test_a_tool_limit_outside_its_range_is_refused(client: TestClient) -> None:
+    for key, bad in (
+        ("tool_max_rounds", 0),
+        ("tool_max_rounds", 1001),
+        ("tool_repeat_window_seconds", 0),
+        ("tool_repeat_window_seconds", 3601),
+        ("tool_repeat_limit", 0),
+        ("tool_repeat_limit", 1001),
+    ):
+        response = client.put("/api/settings", json={key: bad})
+        assert response.status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_the_saved_system_prompt_is_the_one_the_model_is_given(
     core: CoreServices, profile: dict[str, Any]

@@ -11,6 +11,7 @@ copy of whatever the code happened to say on the day it was first saved.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.prompts import (
@@ -59,11 +60,59 @@ QUICK_PROMPTS = "quick_prompts"
 
 COMPACT_PERCENT_DEFAULT = 72
 
+#: How many tool rounds one run may spend before it is finished whether it
+#: likes it or not. Generous on purpose - a list-type question over a
+#: sectioned document legitimately wants ls, inspect, and several reads - but
+#: bounded, because an unbounded loop is one confused model away from an open
+#: tab that never ends.
+TOOL_MAX_ROUNDS = "tool_max_rounds"
+TOOL_MAX_ROUNDS_DEFAULT = 100
+TOOL_MAX_ROUNDS_CEILING = 1000
+
+#: The repeat gate: the same call - same tool, same arguments - may execute
+#: this many times inside this many seconds before the next one is turned away
+#: at the gate with a redirect as its tool result. What stops a stuck loop
+#: burning the round budget above on one identical question.
+TOOL_REPEAT_WINDOW_SECONDS = "tool_repeat_window_seconds"
+TOOL_REPEAT_WINDOW_SECONDS_DEFAULT = 30
+TOOL_REPEAT_WINDOW_CEILING = 3600
+TOOL_REPEAT_LIMIT = "tool_repeat_limit"
+TOOL_REPEAT_LIMIT_DEFAULT = 10
+TOOL_REPEAT_LIMIT_CEILING = 1000
+
 
 def read_prompt(store: Store, key: str) -> str:
     """The text in force: what the user saved, or the one the code ships."""
     stored = store.get_setting(key)
     return PROMPT_DEFAULTS[key] if stored is None else stored
+
+
+@dataclass(frozen=True)
+class ToolLimits:
+    """The tool-call budget one run is given, read once at its start.
+
+    Changing the settings mid-run therefore does nothing to the run already
+    going; the next one picks the new values up.
+    """
+
+    max_rounds: int = TOOL_MAX_ROUNDS_DEFAULT
+    repeat_window_seconds: int = TOOL_REPEAT_WINDOW_SECONDS_DEFAULT
+    repeat_limit: int = TOOL_REPEAT_LIMIT_DEFAULT
+
+
+def read_tool_limits(store: Store) -> ToolLimits:
+    """The three tool-call settings in force. No row means the code default."""
+    stored = store.list_settings()
+    rounds = stored.get(TOOL_MAX_ROUNDS)
+    window = stored.get(TOOL_REPEAT_WINDOW_SECONDS)
+    limit = stored.get(TOOL_REPEAT_LIMIT)
+    return ToolLimits(
+        max_rounds=rounds if isinstance(rounds, int) else TOOL_MAX_ROUNDS_DEFAULT,
+        repeat_window_seconds=(
+            window if isinstance(window, int) else TOOL_REPEAT_WINDOW_SECONDS_DEFAULT
+        ),
+        repeat_limit=limit if isinstance(limit, int) else TOOL_REPEAT_LIMIT_DEFAULT,
+    )
 
 
 def overview(store: Store) -> dict[str, Any]:
@@ -85,5 +134,22 @@ def overview(store: Store) -> dict[str, Any]:
         "quick_prompts": {
             "items": stored.get(QUICK_PROMPTS, QUICK_PROMPTS_DEFAULT),
             "is_default": QUICK_PROMPTS not in stored,
+        },
+        "tool_limits": {
+            "max_rounds": {
+                "value": stored.get(TOOL_MAX_ROUNDS, TOOL_MAX_ROUNDS_DEFAULT),
+                "default": TOOL_MAX_ROUNDS_DEFAULT,
+                "is_default": TOOL_MAX_ROUNDS not in stored,
+            },
+            "repeat_window_seconds": {
+                "value": stored.get(TOOL_REPEAT_WINDOW_SECONDS, TOOL_REPEAT_WINDOW_SECONDS_DEFAULT),
+                "default": TOOL_REPEAT_WINDOW_SECONDS_DEFAULT,
+                "is_default": TOOL_REPEAT_WINDOW_SECONDS not in stored,
+            },
+            "repeat_limit": {
+                "value": stored.get(TOOL_REPEAT_LIMIT, TOOL_REPEAT_LIMIT_DEFAULT),
+                "default": TOOL_REPEAT_LIMIT_DEFAULT,
+                "is_default": TOOL_REPEAT_LIMIT not in stored,
+            },
         },
     }

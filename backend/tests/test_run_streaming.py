@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.provider import ProviderEvent
-from app.runs import RunChoice, RunService
+from app.runs import RepeatGuard, RunChoice, RunService
 from app.runtime import CoreServices
 from app.schemas import ThinkingLevel
 from app.skills import SKILL_FILE
@@ -332,10 +332,13 @@ async def test_no_skill_tool_when_every_skill_is_disabled(
     assert "可用技能" not in system["content"]
 
 
-async def test_a_repeated_skill_command_is_blocked_on_the_third_try(
+async def test_a_repeated_skill_command_is_blocked_once_the_limit_is_hit(
     core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
 ) -> None:
+    """The repeat gate is user-configurable; here it is tightened to two."""
     _install_skill(core, tmp_path)
+    core.store.set_setting("tool_repeat_limit", 2)
+    core.store.set_setting("tool_max_rounds", 10)
     repeated = {
         "chunks": ["…"],
         "tail_events": [
@@ -370,6 +373,82 @@ async def _import_one_case(core: CoreServices) -> None:
     )
 
 
+def test_the_repeat_gate_takes_limit_calls_then_refuses() -> None:
+    guard = RepeatGuard(3, 30)
+    assert guard.gate("knowledge", '{"command":"list"}', now=0) is None
+    assert guard.gate("knowledge", '{"command":"list"}', now=1) is None
+    assert guard.gate("knowledge", '{"command":"list"}', now=2) is None
+    refusal = guard.gate("knowledge", '{"command":"list"}', now=3)
+    assert refusal is not None and "已阻止执行" in refusal
+
+
+def test_the_repeat_gate_sees_through_spelling() -> None:
+    """Whitespace and key order are not identity: the parsed call is."""
+    guard = RepeatGuard(1, 30)
+    assert guard.gate("knowledge", '{"command": "list"}', now=0) is None
+    refusal = guard.gate("knowledge", '{ "command":"list" }', now=1)
+    assert refusal is not None
+
+
+def test_the_repeat_gate_window_slides() -> None:
+    guard = RepeatGuard(1, 30)
+    assert guard.gate("knowledge", '{"command":"list"}', now=0) is None
+    # Still inside the window: the second identical call is refused...
+    assert guard.gate("knowledge", '{"command":"list"}', now=29) is not None
+    # ...but once the earlier one has slid out of it, the call is welcome again.
+    assert guard.gate("knowledge", '{"command":"list"}', now=31) is None
+
+
+def test_the_repeat_gate_treats_different_calls_apart() -> None:
+    guard = RepeatGuard(1, 30)
+    assert guard.gate("knowledge", '{"command":"list"}', now=0) is None
+    assert guard.gate("knowledge", '{"command":"grep 登录"}', now=1) is None
+    assert guard.gate("skill", '{"command":"list"}', now=2) is None
+
+
+def test_the_repeat_gate_keeps_garbled_arguments_verbatim() -> None:
+    """Arguments that do not parse have no meaning to normalize away."""
+    guard = RepeatGuard(1, 30)
+    assert guard.gate("save_memory", "这不是 JSON", now=0) is None
+    assert guard.gate("save_memory", "这不是 JSON", now=1) is not None
+    assert guard.gate("save_memory", "另一段乱码", now=2) is None
+
+
+async def test_the_default_gate_takes_ten_identical_calls_then_refuses(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """Out of the box: ten executions inside the window, the eleventh refused.
+
+    No setting is stored, so this pins the shipped defaults - and the round
+    budget they leave the loop with, which is why there are a hundred tool
+    messages: every refused call is still answered, and the run carries on.
+    """
+    await _import_one_case(core)
+    repeated = {
+        "chunks": ["…"],
+        "tail_events": [
+            _knowledge_call("list", call_id="call_x"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+    }
+    provider = paced(
+        [],
+        tail_events=[
+            _knowledge_call("list", call_id="call_1"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[repeated],
+    )
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    assert len(tool_messages) == 100
+    assert all("共 1 份文档" in m["content"] for m in tool_messages[:10])
+    assert all("已阻止执行" in m["content"] for m in tool_messages[10:])
+
+
 async def test_a_knowledge_call_rounds_to_a_final_answer(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:
@@ -396,11 +475,20 @@ async def test_a_knowledge_call_rounds_to_a_final_answer(
         "知识库里有一份 cases.md。"
     )
     stages = [
-        (event["stage"], event["state"])
+        event
         for event in core.store.list_run_events(run["id"])
         if event["stage"] == "knowledge_tool"
     ]
-    assert stages == [("knowledge_tool", "running"), ("knowledge_tool", "completed")]
+    assert [(event["state"]) for event in stages] == ["running", "completed"]
+    # The audit is the whole truth: the AI's raw tool call - id, name,
+    # arguments - and the full result text that went back to it.
+    assert stages[0]["payload"]["call"] == {
+        "id": "call_1",
+        "name": "knowledge",
+        "arguments": json.dumps({"command": "list"}),
+    }
+    assert stages[0]["payload"]["round_text"] == "我看一下知识库。"
+    assert "cases.md" in stages[1]["payload"]["output"]
     # The wire carried the round protocol: an assistant message with its call,
     # then the tool message the next round reads.
     roles = [m["role"] for m in provider.last_messages or []]
@@ -410,16 +498,18 @@ async def test_a_knowledge_call_rounds_to_a_final_answer(
     assert "cases.md" in tool_message["content"]
 
 
-async def test_a_repeated_command_is_blocked_on_the_third_try(
+async def test_a_repeated_command_is_blocked_once_the_limit_is_hit(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:
-    """Twice is diligence, three times is a loop.
+    """Twice is diligence; past the limit is a loop.
 
-    The same command runs twice; the third identical call gets a refusal as
-    its tool result, in words that redirect the model instead of an error it
-    would retry around.
+    The same command runs twice - the limit the test stores - and every
+    identical call after that gets a refusal as its tool result, in words
+    that redirect the model instead of an error it would retry around.
     """
     await _import_one_case(core)
+    core.store.set_setting("tool_repeat_limit", 2)
+    core.store.set_setting("tool_max_rounds", 10)
     repeated = {
         "chunks": ["…"],
         "tail_events": [
@@ -446,17 +536,28 @@ async def test_a_repeated_command_is_blocked_on_the_third_try(
     assert "共 1 份文档" in tool_messages[0]["content"]
     assert "共 1 份文档" in tool_messages[1]["content"]
     assert all("已阻止执行" in m["content"] for m in tool_messages[2:])
+    # A refused call is audited too, not silently dropped: each refusal is a
+    # failed `tool_call` row carrying the raw call and the refusal text.
+    refusals = [
+        event for event in core.store.list_run_events(run["id"]) if event["stage"] == "tool_call"
+    ]
+    assert len(refusals) == 8
+    assert all(event["state"] == "failed" for event in refusals)
+    assert all(event["payload"]["call"]["name"] == "knowledge" for event in refusals)
+    assert all("已阻止执行" in event["payload"]["output"] for event in refusals)
 
 
 async def test_rounds_exhausting_finishes_the_run_and_says_so(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:
-    """Ten rounds of nothing but calls still ends in a completed run.
+    """A round budget of nothing but calls still ends in a completed run.
 
     The run is never left open: the budget closes it, the audit records why,
-    and the message says honestly that nothing displayable came out.
+    and the message says honestly that nothing displayable came out. The
+    budget itself is a setting; the test stores two to keep the loop short.
     """
     await _import_one_case(core)
+    core.store.set_setting("tool_max_rounds", 2)
     provider = paced(
         [],
         tail_events=[
@@ -483,6 +584,19 @@ async def test_rounds_exhausting_finishes_the_run_and_says_so(
     assert core.store.get_message(run["assistant_message_id"])["content"] == (
         "模型未返回可显示的文本。"
     )
+    # Two rounds, two calls, four records: every occurrence of the stage is
+    # its own pair in the trail, none collapsed into the last.
+    stages = [
+        (event["state"], event["payload"].get("command"))
+        for event in core.store.list_run_events(run["id"])
+        if event["stage"] == "knowledge_tool"
+    ]
+    assert stages == [
+        ("running", "list"),
+        ("completed", "list"),
+        ("running", "grep 登录"),
+        ("completed", "grep 登录"),
+    ]
 
 
 async def test_a_memory_tool_call_rides_the_reply_and_is_carried_out(
@@ -536,13 +650,15 @@ async def test_a_memory_tool_call_rides_the_reply_and_is_carried_out(
     assert "已保存记忆" in tool_messages[0]["content"]
 
 
-async def test_a_garbled_call_leaves_no_step_and_no_memory(
+async def test_a_garbled_call_leaves_no_memory_and_is_audited_as_refused(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:
-    """Arguments that do not parse are a call that never happened.
+    """Arguments that do not parse are a call that never took effect.
 
     The answer is unaffected - there is no held-back tail to restore - and no
     memory step exists, which keeps a plain answer free of a 写入记忆 row.
+    But the call itself is not silent: it shows as a failed `tool_call` row
+    with the raw arguments, so the audit has no blind spots.
     """
     provider = paced(
         ["看到这段。"],
@@ -560,6 +676,16 @@ async def test_a_garbled_call_leaves_no_step_and_no_memory(
     assert core.store.get_message(run["assistant_message_id"])["content"] == "好的。"
     assert core.store.list_memories() == []
     assert all(event["stage"] != "memory_write" for event in core.store.list_run_events(run["id"]))
+    refused = [
+        event for event in core.store.list_run_events(run["id"]) if event["stage"] == "tool_call"
+    ]
+    assert len(refused) == 1
+    assert refused[0]["state"] == "failed"
+    assert refused[0]["payload"]["call"] == {
+        "id": "call_1",
+        "name": "save_memory",
+        "arguments": "这不是 JSON",
+    }
 
 
 async def test_regenerating_points_the_message_at_its_new_run(

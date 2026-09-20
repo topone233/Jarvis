@@ -213,6 +213,60 @@
   text-align: left;
 }
 
+/* A tool call's raw material - the AI's original JSON and the result text that
+   went back to it - in a quiet mono block. No border: the background alone
+   marks it as content, per the visual pass. The head names what the block is;
+   long text clamps until 展开全部, then scrolls instead of stretching the
+   answer into a wall of characters. */
+.progress-detail-code {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.progress-detail-code-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.progress-detail-code-head button {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.progress-detail-code-head button:hover {
+  color: var(--text);
+}
+
+.progress-detail-code pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+  text-align: left;
+}
+
+.progress-detail-code pre.is-clamped {
+  max-height: 132px;
+  overflow: hidden;
+}
+
 /* The stage that is running right now wears a band of light that drifts across
    it. It is the only thing on the row that moves, so it reads as "this one",
    not as "the whole strip is busy".
@@ -594,13 +648,12 @@
 }
 
 /* The toolbar surfaces on hover and stays out of the code's way otherwise: a
-   pill docked to the right edge, centred on the block. A floating pill rather
-   than a header bar, so the block keeps its quiet look. */
+   pill pinned to the top-right corner. A floating pill rather than a header
+   bar, so the block keeps its quiet look. */
 .code-toolbar {
   position: absolute;
-  top: 50%;
+  top: 8px;
   right: 8px;
-  transform: translateY(-50%);
   display: flex;
   align-items: center;
   gap: 2px;

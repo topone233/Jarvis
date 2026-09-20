@@ -110,27 +110,33 @@ export function Outline({ containerRef }: { containerRef: RefObject<HTMLDivEleme
     return null
   }
 
+  // The tip is a sibling of the nav, not a child: as a child it would become
+  // the nav's `:last-child`, which the centreing auto-margins key on, and the
+  // whole rail would jump the moment a tooltip appeared - unhovering it again,
+  // and flickering for as long as the cursor sits on a line.
   return (
-    <nav className="outline" aria-label="对话目录">
-      {entries.map((entry, index) => (
-        <button
-          key={index}
-          type="button"
-          className={`outline-item is-l${entry.level}${index === active ? ' is-active' : ''}`}
-          onClick={() => jump(entry)}
-          onMouseEnter={(event) => showTip(event.currentTarget, entry)}
-          onMouseLeave={() => setTip(null)}
-          onFocus={(event) => showTip(event.currentTarget, entry)}
-          onBlur={() => setTip(null)}
-        >
-          <span className="outline-line" />
-        </button>
-      ))}
+    <>
+      <nav className="outline" aria-label="对话目录">
+        {entries.map((entry, index) => (
+          <button
+            key={index}
+            type="button"
+            className={`outline-item is-l${entry.level}${index === active ? ' is-active' : ''}`}
+            onClick={() => jump(entry)}
+            onMouseEnter={(event) => showTip(event.currentTarget, entry)}
+            onMouseLeave={() => setTip(null)}
+            onFocus={(event) => showTip(event.currentTarget, entry)}
+            onBlur={() => setTip(null)}
+          >
+            <span className="outline-line" />
+          </button>
+        ))}
+      </nav>
       {tip !== null && (
         <span className="outline-tip" style={{ top: tip.y, left: tip.x }}>
           {tip.label}
         </span>
       )}
-    </nav>
+    </>
   )
 }

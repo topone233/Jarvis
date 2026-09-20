@@ -123,9 +123,10 @@ def test_project_conversation_and_streaming_run(client: TestClient, core: CoreSe
     # terminal event instead of as deltas; the client renders the same answer
     # either way, which is what makes reconnecting safe.
     assert "event: message.completed" in response.text
-    # The tool protocol is the model's business, never the user's: neither the
-    # deltas nor the finished answer name it, and no result goes back.
-    assert "save_memory" not in response.text
+    # The answer itself never names the tool protocol - the raw call now rides
+    # the audit events on purpose (the progress strip shows it), so the old
+    # whole-stream assertion no longer holds. The terminal content stays clean.
+    assert '"content":"好的，记住了。"' in response.text
     messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
     assert messages[-1]["content"] == "好的，记住了。"
     memories = client.get("/api/memories").json()

@@ -4,7 +4,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.settings import COMPACT_PERCENT_DEFAULT
+from app.settings import (
+    COMPACT_PERCENT_DEFAULT,
+    TOOL_MAX_ROUNDS_CEILING,
+    TOOL_REPEAT_LIMIT_CEILING,
+    TOOL_REPEAT_WINDOW_CEILING,
+)
 
 # The four positions of the composer's thinking dial, in the order the slider
 # draws them. Only "off" is the profile's own business - asking a provider not
@@ -98,6 +103,13 @@ class SettingsUpdate(BaseModel):
     # rather than collapsing back into the built-in pair; null is what
     # 恢复默认 sends, and it deletes the row.
     quick_prompts: list[QuickPrompt] | None = Field(default=None, max_length=12)
+    # The tool-call budget, in three numbers. Absent = untouched, null = back
+    # to the code default - the same bargain the prompts make.
+    tool_max_rounds: int | None = Field(default=None, ge=1, le=TOOL_MAX_ROUNDS_CEILING)
+    tool_repeat_window_seconds: int | None = Field(
+        default=None, ge=1, le=TOOL_REPEAT_WINDOW_CEILING
+    )
+    tool_repeat_limit: int | None = Field(default=None, ge=1, le=TOOL_REPEAT_LIMIT_CEILING)
 
 
 class ProjectCreate(BaseModel):

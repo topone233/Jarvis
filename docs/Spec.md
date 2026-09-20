@@ -168,7 +168,7 @@ Slash 命令：`/compact` （到阈值自动压缩、主动用/命令压缩、�
     - **这两个选择都不记**：不写库、不写 localStorage，刷新回到配置自己的模型 + 思考关。这是决定不是漏做，别当 bug 修掉。代价是 `assistant_runs` 里只有配置，没有「这一轮实际用的哪个模型名」。
   - 用户消息：蓝色圆润长条形气泡，靠右显示，鼠标悬停时显示：复制按钮
   - ai消息：
-    - 工具执行进度：工具条展示执行数量、类型、完成度和运行状态，如果有思考、工具执行等展示详情，可折叠展开，默认展开当前正在执行的，已执行完毕的自动折叠收起。这里展示的是后端真正在做的事，必须由收到的 SSE 事件驱动，不能写死一份阶段清单：模型有思考就显示思考并展开 `reasoning.delta`，没有思考这一项就不出现；某个阶段没发生就不占位。后端的 `audit` 事件（context_compaction / context_retrieval / model_stream / memory_write，带 running / completed / cancelled / failed / skipped 状态）和 `reasoning.delta` 就是全部素材，加上 `GET /api/runs/{run_id}/events` 可以在刷新后补齐错过的审计轨迹。
+    - 工具执行进度：工具条展示执行数量、类型、完成度和运行状态，如果有思考、工具执行等展示详情，可折叠展开，默认展开当前正在执行的，已执行完毕的自动折叠收起。这里展示的是后端真正在做的事，必须由收到的 SSE 事件驱动，不能写死一份阶段清单：模型有思考就显示思考并展开 `reasoning.delta`，没有思考这一项就不出现；某个阶段没发生就不占位。后端的 `audit` 事件（context_compaction / context_retrieval / model_stream / memory_write / knowledge_tool / skill_tool / tool_call，带 running / completed / cancelled / failed / skipped 状态）和 `reasoning.delta` 就是全部素材，加上 `GET /api/runs/{run_id}/events` 可以在刷新后补齐错过的审计轨迹。同一阶段的多次发生（多轮工具调用）各自成行，不合并；每个工具调用展示 AI 返回的原始 tool call JSON（含 id、name、arguments）和完整执行结果，超长默认折叠、可展开查看全部；被拒绝的调用（重复命令、空命令、未知工具、无效参数）也各有一条失败记录，不静默。
     - 回复内容：Markdown渲染，支持代码块：Mermaid、SVG、HTML预览鼠标悬停右上角可查看源码、复制、执行（播放按钮）。
     - 回复区域的下方：左侧：点赞、点踩，右侧：复制、重新生成按钮。
 

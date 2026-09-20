@@ -193,7 +193,21 @@ export interface AppSettings {
     items: QuickPrompt[]
     is_default: boolean
   }
+  tool_limits: {
+    max_rounds: ToolLimitSetting
+    repeat_window_seconds: ToolLimitSetting
+    repeat_limit: ToolLimitSetting
+  }
 }
+
+/** One number a tool-call setting holds: what is in force, what the code ships. */
+export interface ToolLimitSetting {
+  value: number
+  default: number
+  is_default: boolean
+}
+
+export type ToolLimitKey = keyof AppSettings['tool_limits']
 
 export type PromptKey = keyof AppSettings['prompts']
 
@@ -201,7 +215,12 @@ export type PromptKey = keyof AppSettings['prompts']
 export type PromptPatch = Partial<Record<PromptKey, string | null>>
 
 /** Anything the settings PUT accepts: prompt texts and the quick-prompt list. */
-export type SettingsPatch = PromptPatch & { quick_prompts?: QuickPrompt[] | null }
+export type SettingsPatch = PromptPatch & {
+  quick_prompts?: QuickPrompt[] | null
+  tool_max_rounds?: number | null
+  tool_repeat_window_seconds?: number | null
+  tool_repeat_limit?: number | null
+}
 
 /** One row of the audit trail (`run_events`). Also what `audit` SSE events carry. */
 export interface RunEventRecord {
