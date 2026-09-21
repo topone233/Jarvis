@@ -31,8 +31,8 @@ Adaptive RAG：用一个 query classifier 按查询复杂度把每个 query 路�
 | Embedding | 任意 OpenAI 兼容 `/embeddings`，全局检索模型配置（设置 → 检索模型），与 LLM 配置分离 | ✅ 可配置化 | `app/provider.py` 的 `embed`、`app/store.py` 的 `get_retrieval_spec` |
 | 语义相似层 | **sqlite-vec**（vec0 虚表按维度建表、cosine 距离 KNN） | ✅ | `app/store.py` 的 `search_knowledge_vec`、`app/database.py` 的 `ensure_vec_table` |
 | Reranker | Cohere 兼容 `/rerank`，混合检索取前 20 交给 rerank 模型重排后取前 limit；未配置或调用失败时降级为混合排序 | ✅ 可配置化 | `app/provider.py` 的 `rerank`、`app/knowledge.py` 的 `search` |
-| 文档理解 | **v0**：轻量提取器（mammoth / openpyxl / python-pptx / pdfminer.six） | ⚠️ Docling 的替换位 | `app/knowledge.py` 的 `_EXTRACTORS` |
-| Context Retrieval | 每轮自动检索，FTS 0.45 + 余弦 0.75 混合，取前 5，注入 `<knowledge>`，引用随 `context.ready` 给前端 | ✅ | `app/context.py` 的 `build()` |
+| 文档理解 | **v0**：轻量提取器（mammoth / openpyxl / python-pptx / pymupdf4llm） | ⚠️ Docling 的替换位 | `app/knowledge.py` 的 `_EXTRACTORS` |
+| Context Retrieval | 每轮自动检索，FTS 0.45×词覆盖率（多词查询要求命中≥2词）+ 余弦 0.75 混合，取前 8 条编号引用注入「知识资料」，引用随 `context.ready` 给前端 | ✅ | `app/context.py` 的 `build()`、`app/knowledge.py` 的 `search` |
 | 检索来源协调 | 单层混合检索 | ⚠️ 多层路由的挂载点 | `KnowledgeService.search` |
 | 管理界面 | 知识库页：导入 / 列表 / 删除 / 回收站 / 试检索；设置 → 检索模型：嵌入 / rerank 各一张卡片（地址 / 模型名 / API Key / 测试 / 清除） | ✅ | `frontend/src/pages/KnowledgePage.tsx`、`frontend/src/pages/settings/RetrievalPanel.tsx` |
 | Query Classifier / PageIndex / Daemon+RPC | 未建 | 🚧 见路线 | — |
@@ -45,7 +45,7 @@ Adaptive RAG：用一个 query classifier 按查询复杂度把每个 query 路�
 | docx | mammoth 转 markdown，内嵌图片剥成纯文字 | 标题/列表/表格结构保留 |
 | xlsx | openpyxl（read_only + data_only），每张表 `## 表格：<名>` + 竖线行 | 只取单元格现值，不算公式 |
 | pptx | python-pptx，每页 `## 幻灯片 N` + 文本框/表格/备注 | |
-| pdf | pdfminer.six，每页 `## 第 N 页` | 仅文字版；扫描版提取为空即跳过 |
+| pdf | pymupdf4llm：按字号识别真实标题（Word 导出的标题行还原成 `#` 层级），段落重排；跨页重复的页眉/页脚与「第 N 页」式页码行剔除（`_strip_page_furniture`） | 仅文字版；扫描版提取为空即跳过 |
 
 旧版二进制格式 .doc/.xls/.ppt 直接拒绝并提示另存。导入的数据流：
 
@@ -54,7 +54,7 @@ Adaptive RAG：用一个 query classifier 按查询复杂度把每个 query 路�
     → FTS5 索引 → [可选] 全部块向量 → 原文件字节存数据目录 objects/
 ```
 
-带嵌入配置的导入同时把向量写进 vec0 虚表（按维度一张表，`knowledge_chunks_vec_{dim}`，cosine 距离、模型与项目作为 metadata 过滤列）；检索时对查询向量做 KNN，余弦距离换算回相似度后沿用原来的 0.75 权重，FTS 0.45 权重不变。配置了 rerank 模型时，混合排序取前 20 条候选（`RERANK_CANDIDATES`）发给 rerank 接口，返回的 `relevance_score` 直接作为结果的 `score`，`source` 标为 `reranked`；rerank 调用失败只是降级回混合排序，检索不会失败。
+带嵌入配置的导入同时把向量写进 vec0 虚表（按维度一张表，`knowledge_chunks_vec_{dim}`，cosine 距离、模型与项目作为 metadata 过滤列）；检索时对查询向量做 KNN，余弦距离换算回相似度后沿用 0.75 权重。FTS 的 0.45 权重按「该命中实际覆盖的查询词比例」缩放（查询词经停用 bigram 过滤后最多 12 个；≥2 词的查询要求命中至少 2 词，纯单 bigram 巧合命中的 chunk 直接出局——bm25 会把"性能的"撞上查询"功能的"产生的罕见 bigram 排到最前，按位置给满分权重正是早期引用漂移的来源）。配置了 rerank 模型时，混合排序取前 20 条候选（`RERANK_CANDIDATES`）发给 rerank 接口，返回的 `relevance_score` 直接作为结果的 `score`，`source` 标为 `reranked`；rerank 调用失败只是降级回混合排序，检索不会失败。
 
 嵌入与 rerank 是**全局单一配置**：存设置 KV（`retrieval_embedding` / `retrieval_rerank`），API Key 存系统凭据管理器（固定标识 `retrieval-embedding` / `retrieval-rerank`），与模型配置（LLM）完全分离。记忆相关性排序与知识库共用嵌入配置；模型配置表单不再有「嵌入模型」字段（旧库迁移时把默认配置的值搬进检索配置）。
 

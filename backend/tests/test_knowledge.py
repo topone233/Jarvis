@@ -10,6 +10,7 @@ import pytest
 from app import knowledge as knowledge_module
 from app.knowledge import ImportItem
 from app.runtime import CoreServices
+from app.sections import parse_sections
 from app.utils import segment_for_index
 
 
@@ -235,11 +236,18 @@ def _pdf(pages: list[str], *, font: str = "Helvetica") -> bytes:
     if font == "Helvetica":
         font_object = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
     else:
-        # A non-embedded CID font: pdfminer reads it through its bundled
-        # CMaps, so a Chinese fixture needs no font file at all.
+        # A non-embedded CID font: read through the reader's bundled CMaps,
+        # so a Chinese fixture needs no font file. MuPDF refuses a CID font
+        # without a FontDescriptor, so a minimal one rides along.
+        descriptor_id = add(
+            b"<< /Type /FontDescriptor /FontName /STSong-Light /Flags 4 "
+            b"/FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 "
+            b"/CapHeight 700 /StemV 80 >>"
+        )
         font_object = (
             b"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H "
             b"/DescendantFonts [<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light "
+            b"/FontDescriptor " + str(descriptor_id).encode() + b" 0 R "
             b"/CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> >>] >>"
         )
     font_id = add(font_object)
@@ -372,12 +380,17 @@ async def test_pdf_import_extracts_pages(core: CoreServices) -> None:
 
     results = await core.knowledge.search("retrieval", project_id=None)
     assert results
-    assert "第 2 页" in results[0]["content"]
+    # Pages flow into one body with no `## 第 N 页` headings - the fake page
+    # structure was what broke the section model on every PDF import.
+    content = results[0]["content"]
+    assert "Jarvis knowledge base" in content
+    assert "retrieval page two" in content
+    assert "第" not in content
 
 
 @pytest.mark.asyncio
 async def test_pdf_import_reads_chinese_through_a_cid_font(core: CoreServices) -> None:
-    """pdfminer's bundled CMaps must carry Chinese text without a font file."""
+    """A non-embedded CID font must carry Chinese text without a font file."""
     imported = await core.knowledge.import_items(
         [ImportItem(filename="中文.pdf", content=_pdf(["知识库存放本地文档"], font="STSong"))],
         project_id=None,
@@ -386,6 +399,71 @@ async def test_pdf_import_reads_chinese_through_a_cid_font(core: CoreServices) -
 
     results = await core.knowledge.search("知识库", project_id=None)
     assert results
+    assert "知识库存放本地文档" in results[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_pdf_headings_come_from_font_sizes_not_page_breaks(core: CoreServices) -> None:
+    """A Word-style export's larger title lines become real headings, so the
+    section model trees the document by its own structure."""
+    import pymupdf
+
+    buffer = io.BytesIO()
+    with pymupdf.open() as source:
+        page = source.new_page()
+        page.insert_text((72, 96), "Login Module Design", fontsize=20)
+        page.insert_text((72, 140), "Login Endpoint", fontsize=14)
+        page.insert_text((72, 160), "The login endpoint validates a captcha.", fontsize=11)
+        page.insert_text((72, 190), "Token Endpoint", fontsize=14)
+        page.insert_text((72, 210), "The token endpoint signs a session.", fontsize=11)
+        source.save(buffer)
+    imported = await core.knowledge.import_items(
+        [ImportItem(filename="login.pdf", content=buffer.getvalue())], project_id=None
+    )
+    assert imported[-1]["status"] == "ready"
+    document = imported[-1]["document"]
+
+    # Two heading tiers become a chapter with two sections - the tree the
+    # tool navigates, instead of one `## 第 N 页` per page.
+    sections = parse_sections(document["content"], "全文")
+    assert [section.title for section in sections] == [
+        "Login Module Design",
+        "Login Endpoint",
+        "Token Endpoint",
+    ]
+    assert [section.id for section in sections] == ["1", "1.1", "1.2"]
+
+
+@pytest.mark.asyncio
+async def test_pdf_strips_repeated_page_furniture(core: CoreServices) -> None:
+    """A Word export stamps 页眉 and a per-page 页码 on every page; into the
+    knowledge base they would ride every chunk. Repetition across pages and
+    the page-number pattern both die; the real content survives."""
+    import pymupdf
+
+    buffer = io.BytesIO()
+    with pymupdf.open() as source:
+        for index in range(1, 4):
+            page = source.new_page()
+            page.insert_text((72, 40), "Jarvis 项目内部设计文档", fontsize=9, fontname="china-s")
+            page.insert_text((72, 780), f"第 {index} 页 共 3 页", fontsize=9, fontname="china-s")
+            page.insert_text(
+                (72, 120 + 20 * index),
+                f"登录接口的验收标准第{index}条：验证码校验。",
+                fontsize=11,
+                fontname="china-s",
+            )
+        source.save(buffer)
+    imported = await core.knowledge.import_items(
+        [ImportItem(filename="导出.pdf", content=buffer.getvalue())], project_id=None
+    )
+    assert imported[-1]["status"] == "ready"
+    content = imported[-1]["document"]["content"]
+
+    assert "项目内部设计文档" not in content
+    assert "共 3 页" not in content
+    assert "验收标准第1条" in content
+    assert "验收标准第3条" in content
 
 
 @pytest.mark.asyncio
@@ -547,6 +625,46 @@ async def test_a_zero_vector_is_no_similarity_not_a_crash(
     # The semantic weight (0.75) contributed nothing; what is left is the
     # keyword side of the mix.
     assert results[0]["score"] <= 0.45
+
+
+@pytest.mark.asyncio
+async def test_a_single_term_collision_no_longer_becomes_a_citation(core: CoreServices) -> None:
+    """性能的… carries the 能的 bigram a 功能的… query asks for. bm25 happily
+    ranked that coincidence first and the position-only weight turned it
+    into a 0.45 citation; a multi-term query now demands two matches, and
+    a query made only of stopword chars asks for nothing at all."""
+    await core.knowledge.import_items(
+        [ImportItem(filename="性能对比.md", content="性能的性能对比数据。".encode())],
+        project_id=None,
+    )
+    assert not await core.knowledge.search("功能的测试", project_id=None)
+    assert not await core.knowledge.search("的了吗", project_id=None)
+
+
+@pytest.mark.asyncio
+async def test_keyword_score_weights_how_much_of_the_query_matched(core: CoreServices) -> None:
+    """Full coverage keeps the 0.45 ceiling; the half-matched chunk gets its
+    coverage fraction (times its bm25 rank decay, rank 2 here); the chunk
+    whose only tie was the dropped 能的 collision is not cited at all. Chunk
+    content opens with its breadcrumb, so the text assertions look inside."""
+    await core.knowledge.import_items(
+        [ImportItem(filename="性能对比.md", content="性能的性能对比数据。".encode())],
+        project_id=None,
+    )
+    await core.knowledge.import_items(
+        [ImportItem(filename="功能说明.md", content="功能模块覆盖测试。".encode())],
+        project_id=None,
+    )
+    await core.knowledge.import_items(
+        [ImportItem(filename="登录用例.md", content="登录功能的测试用例：弱口令。".encode())],
+        project_id=None,
+    )
+    results = await core.knowledge.search("功能的测试", project_id=None)
+    assert [result["title"] for result in results] == ["登录用例", "功能说明"]
+    assert "登录功能的测试用例" in results[0]["content"]
+    assert "功能模块覆盖测试" in results[1]["content"]
+    assert results[0]["score"] == 0.45
+    assert results[1]["score"] == 0.15
 
 
 @pytest.mark.asyncio

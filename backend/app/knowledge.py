@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 import mimetypes
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -92,6 +94,22 @@ _IMG_TAG_RE = re.compile(r"<img\b[^>]*>")
 # Data-URI image markdown mammoth's writer emits; the base64 body would
 # otherwise be indexed as noise tokens.
 _DATA_URI_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(data:[^)]*\)")
+# Any image embed a PDF conversion leaves behind. pymupdf4llm does not write
+# image files, so its embeds would point at paths that do not exist.
+_IMAGE_EMBED_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+# Chars that never carry a meaning worth matching on their own. A query term
+# made only of these is the cross-word bigram a bigram index inevitably
+# queries (能的 out of 功能的) - coincidence noise that bm25's IDF then
+# rewards, because a rare collision outranks a real word. Dropping such terms
+# at query time costs nothing: the index keeps every bigram for recall.
+_FTS_STOPCHARS = frozenset(
+    "的了之乎吗呢吧啊呀哦嘛么和与或及对于从向被给让使在是不没别还就都也很太挺更"
+    "最但而且并若如因所由每各该此这那个些会可能应该需要哪何什怎们地得到"
+)
+
+#: How many query terms one FTS match may spend.
+FTS_MAX_TERMS = 12
 
 # Stated explicitly because Windows resolves mimetypes through the registry,
 # which shadows the builtin map and often answers text/plain for OOXML types.
@@ -192,18 +210,71 @@ def _pptx_to_text(content: bytes) -> str:
     return "\n\n".join(sections)
 
 
+#: How many of a page's first/last nonempty lines count as furniture
+#: candidates - the strip a Word export stamps as 页眉/页脚.
+_PAGE_EDGE_LINES = 3
+
+#: A line that names nothing but a page number is printer furniture even when
+#: every page numbers it differently (第 1 页 共 3 页): the pattern cannot be
+#: body text, so it dies at a page edge without needing cross-page agreement.
+_PAGE_NUMBER_RE = re.compile(
+    r"^(?:第\s*\d+\s*页(?:\s*共\s*\d+\s*页)?|\d+\s*/\s*\d+|page\s+\d+\s*(?:of|/)\s*\d+)$",
+    re.IGNORECASE,
+)
+
+
+def _strip_page_furniture(pages: list[str]) -> list[str]:
+    """Drop the lines a page layout stamps onto most pages.
+
+    Word exports repeat 页眉/页脚 on every page; landing in one chunk each,
+    they polluted embeddings, keyword matches and rerank reads alike. A line
+    only counts as furniture when it sits within the first or last few
+    nonempty lines of a page AND a majority of pages agree on it - body text
+    may repeat, but not at the page edge on most pages. A single-page
+    document keeps everything: there is no repetition to observe.
+    """
+    if len(pages) < 2:
+        return pages
+    counts: Counter[str] = Counter()
+    edges: list[set[str]] = []
+    for page in pages:
+        lines = [line.strip() for line in page.splitlines() if line.strip()]
+        edge = set(lines[:_PAGE_EDGE_LINES] + lines[-_PAGE_EDGE_LINES:])
+        edges.append(edge)
+        counts.update(edge)
+    required = max(2, math.ceil(len(pages) * 0.6))
+    furniture = {line for line, count in counts.items() if count >= required}
+    furniture |= {line for edge in edges for line in edge if _PAGE_NUMBER_RE.fullmatch(line)}
+    if not furniture:
+        return pages
+    stripped: list[str] = []
+    for page in pages:
+        kept = [line for line in page.splitlines() if line.strip() not in furniture]
+        stripped.append("\n".join(kept).strip("\n"))
+    return stripped
+
+
 def _pdf_to_text(content: bytes) -> str:
-    from pdfminer.high_level import extract_text
+    import pymupdf
+    import pymupdf4llm
 
     # Scanned PDFs hold pictures, not text; they come back empty and are
     # skipped with their own message. There is no OCR in this pipeline.
-    raw = extract_text(io.BytesIO(content))
-    sections = []
-    for index, page in enumerate(raw.split("\f"), start=1):
-        page = page.strip()
-        if page:
-            sections.append(f"## 第 {index} 页\n{page}")
-    return "\n\n".join(sections)
+    with pymupdf.open(stream=content, filetype="pdf") as document:
+        if not any(page.get_text("text").strip() for page in document):
+            return ""
+        # to_markdown reads font sizes, so a Word export's larger title lines
+        # become real `#` headings the section model can tree into chapters -
+        # not one fake `## 第 N 页` per page - and reflows paragraphs. Per-page
+        # chunks come back so the 页眉/页脚 a Word export stamps on every page
+        # can be stripped before the pages join (pymupdf4llm does not do it).
+        pages = _strip_page_furniture(
+            [chunk["text"] for chunk in pymupdf4llm.to_markdown(document, page_chunks=True)]
+        )
+    # write_images never writes files, but image blocks can still come through
+    # as markdown embeds pointing nowhere. The words are what a knowledge
+    # base is for - same rule the docx path applies to data-URI pictures.
+    return _IMAGE_EMBED_RE.sub("", "\n".join(pages)).strip()
 
 
 _EXTRACTORS = {
@@ -452,13 +523,30 @@ class KnowledgeService:
         embedding_spec = self.store.get_retrieval_spec("embedding")
         rerank_spec = self.store.get_retrieval_spec("rerank")
         candidate_limit = self.RERANK_CANDIDATES if rerank_spec else limit
-        fts_query = self._fts_query(query)
-        fts_results = self.store.search_knowledge_fts(fts_query, project_id) if fts_query else []
+        fts_terms = self._fts_terms(query)
+        fts_results = (
+            self.store.search_knowledge_fts(
+                " OR ".join(f'"{term}"' for term in fts_terms), project_id
+            )
+            if fts_terms
+            else []
+        )
         scored: dict[str, tuple[float, dict[str, Any]]] = {}
         fts_ids: set[str] = set()
+        # FTS rank alone says nothing: bm25 hands its top slot to a chunk that
+        # matches one rare coincidence bigram (能的 out of 性能的) even when the
+        # query has nothing to do with it, and the old position-only weight
+        # turned that junk into a 0.45 citation. A hit's score is weighted by
+        # how much of the query it actually matched, and when the query offers
+        # more than one term a hit must match at least two - a real hit nearly
+        # always does, and the single-collision junk drops out entirely.
+        total_terms = len(fts_terms)
         for index, item in enumerate(fts_results):
+            matched = sum(1 for term in fts_terms if term.casefold() in item["content"].casefold())
+            if total_terms >= 2 and matched < 2:
+                continue
             fts_ids.add(item["id"])
-            scored[item["id"]] = (0.45 / (index + 1), item)
+            scored[item["id"]] = (0.45 * matched / total_terms / (index + 1), item)
         if embedding_spec:
             try:
                 if query_vector is None:
@@ -536,6 +624,18 @@ class KnowledgeService:
         return results
 
     @staticmethod
-    def _fts_query(query: str) -> str:
-        terms = re.findall(r"[\w\u4e00-\u9fff]+", segment_for_index(query))
-        return " OR ".join(f'"{term}"' for term in terms[:12])
+    def _fts_terms(query: str) -> list[str]:
+        """The query's FTS terms: bigram-segmented words, deduplicated
+        case-insensitively, capped - and minus the terms made only of
+        stopword chars, which can only ever match by coincidence."""
+        terms: list[str] = []
+        seen: set[str] = set()
+        for term in re.findall(r"[\w\u4e00-\u9fff]+", segment_for_index(query)):
+            folded = term.casefold()
+            if folded in seen or all(char in _FTS_STOPCHARS for char in term):
+                continue
+            seen.add(folded)
+            terms.append(term)
+            if len(terms) == FTS_MAX_TERMS:
+                break
+        return terms

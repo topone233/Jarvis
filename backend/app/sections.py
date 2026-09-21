@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 
 #: ATX headings only. Every extractor that feeds the knowledge base (mammoth,
-#: pdfminer, python-pptx, this module's own importers) emits `#`-style lines,
+#: pymupdf4llm, python-pptx, this module's own importers) emits `#`-style lines,
 #: and setext underlines are far too collision-prone to treat as structure.
 _HEADING_RE = re.compile(r"^(#{1,6})(?:\s+(.*))?$")
 
@@ -48,7 +48,7 @@ def parse_sections(content: str, fallback_title: str = "全文") -> list[Section
     reading a broken document deserves.
 
     Levels are normalized against the shallowest heading the document actually
-    uses. A PDF extraction that marks every page `##` gets top-level sections
+    uses. A document that marks everything `##` gets top-level sections
     1, 2, 3 - not 0.1, 0.2 - and a document that jumps h2 → h4 nests normally.
     A heading shallower than that minimum is clamped to the top level rather
     than given a negative rank; the document is broken either way, and this
