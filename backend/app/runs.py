@@ -6,14 +6,16 @@ import json
 import time
 from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from app.bash_tool import BASH_STOPPED_TEXT, BASH_TOOLS
 from app.errors import ProviderError, ValidationError
 from app.images import parse_images, write_images
 from app.knowledge_tool import KNOWLEDGE_TOOLS, USAGE, KnowledgeToolService
-from app.runtime import CoreServices, RunBroadcast
+from app.runtime import CoreServices, RunBroadcast, RunRegistry
 from app.schemas import ThinkingLevel
-from app.settings import read_tool_limits
+from app.settings import read_bash_settings, read_tool_limits
 from app.skills import SKILL_TOOLS, SkillToolService
 from app.skills import USAGE as SKILL_USAGE
 from app.store import INTERRUPTED_ERROR
@@ -36,6 +38,32 @@ CHECKPOINT_CHARACTERS = 400
 # few seconds is what lets a client tell them apart, and what keeps something
 # in between (a proxy with an idle timeout) from closing the socket.
 HEARTBEAT_SECONDS = 10.0
+
+
+# A bash command waits this poll interval at a time inside its grace window,
+# checking the stop button between waits - the window itself is the
+# `bash_grace_seconds` setting.
+BASH_GRACE_POLL_SECONDS = 0.2
+
+
+async def grace_window(registry: RunRegistry, run_id: str, seconds: float) -> bool:
+    """Hold a bash call before it executes; True when a stop arrived in time.
+
+    Every bash command gets the same window, whatever it says: reading the
+    text for danger is a filter that is wrong exactly once and then useless,
+    while a window that is always there is a promise that holds. The raw call
+    is already on the audit trail and the screen when this starts, so the
+    window is the user's time to read the command and reach the stop button -
+    and a stop here means the command never ran at all.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        if registry.is_cancelled(run_id):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(BASH_GRACE_POLL_SECONDS, remaining))
 
 
 def encode_sse(event: str, payload: dict[str, Any]) -> str:
@@ -352,10 +380,22 @@ class RunService:
                 self.services.store.list_knowledge_documents(conversation["project_id"])
             )
             skill_tool = SkillToolService(self.services.skills)
+            # Bash settings read once per run, like the round budget: a
+            # mid-run change waits for the next answer. The stored working
+            # directory is the run's cwd; nothing stored means the data
+            # directory.
+            bash_settings = read_bash_settings(store)
+            bash_tool = self.services.bash_tool
+            bash_cwd = (
+                Path(bash_settings.working_dir)
+                if bash_settings.working_dir
+                else self.services.database.data_directory
+            )
             tools = [
                 *bundle.tools,
                 *(KNOWLEDGE_TOOLS if has_documents else []),
                 *(SKILL_TOOLS if self.services.skills.has_enabled() else []),
+                *(BASH_TOOLS if bash_settings.enabled else []),
             ]
             messages = list(bundle.messages)
             # The empty assistant row this run writes into rode along in the
@@ -454,6 +494,60 @@ class RunService:
                             "output": output,
                             "output_chars": len(output),
                         },
+                    )
+                    return output
+                if name == "bash":
+                    command = parsed.get("command")
+                    if not isinstance(command, str) or not command.strip():
+                        message = "bash: 空命令。"
+                        audit(
+                            "bash_tool",
+                            "failed",
+                            {**call_payload, "output": message, "reason": "空命令"},
+                        )
+                        return message
+                    # The raw call is on the trail and the screen before
+                    # anything runs; the grace window is the user's time to
+                    # read it and stop it. A stop here means the command
+                    # never ran at all.
+                    audit(
+                        "bash_tool",
+                        "running",
+                        {
+                            **call_payload,
+                            "command": command,
+                            "cwd": str(bash_cwd),
+                            "grace_seconds": bash_settings.grace_seconds,
+                        },
+                    )
+                    if await grace_window(registry, run_id, bash_settings.grace_seconds):
+                        audit(
+                            "bash_tool",
+                            "cancelled",
+                            {**call_payload, "command": command, "reason": "执行前被用户停止"},
+                        )
+                        return "bash: 用户在执行前停止了这条命令。"
+                    output = await bash_tool.execute(
+                        command,
+                        cwd=bash_cwd,
+                        should_cancel=lambda: registry.is_cancelled(run_id),
+                    )
+                    if output == BASH_STOPPED_TEXT:
+                        audit(
+                            "bash_tool",
+                            "cancelled",
+                            {
+                                **call_payload,
+                                "command": command,
+                                "output": output,
+                                "reason": "执行中被用户停止",
+                            },
+                        )
+                        return output
+                    audit(
+                        "bash_tool",
+                        "completed",
+                        {"command": command, "output": output, "output_chars": len(output)},
                     )
                     return output
                 if name in ("save_memory", "forget_memory"):

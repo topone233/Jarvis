@@ -1,12 +1,7 @@
 /** Knowledge base calls: import, list, search, delete - named after what they do. */
 
 import { api } from './client'
-import type {
-  Citation,
-  KnowledgeContent,
-  KnowledgeDocument,
-  KnowledgeImportResult,
-} from './types'
+import type { Citation, KnowledgeContent, KnowledgeDocument, KnowledgeImportResult } from './types'
 
 export function listKnowledgeDocuments(): Promise<KnowledgeDocument[]> {
   return api<KnowledgeDocument[]>('/api/knowledge/documents')

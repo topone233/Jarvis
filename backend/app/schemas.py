@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.settings import (
+    BASH_GRACE_SECONDS_CEILING,
     COMPACT_PERCENT_DEFAULT,
     TOOL_MAX_ROUNDS_CEILING,
     TOOL_REPEAT_LIMIT_CEILING,
@@ -110,6 +111,13 @@ class SettingsUpdate(BaseModel):
         default=None, ge=1, le=TOOL_REPEAT_WINDOW_CEILING
     )
     tool_repeat_limit: int | None = Field(default=None, ge=1, le=TOOL_REPEAT_LIMIT_CEILING)
+    # The bash tool: on/off, where its commands start, and the grace window
+    # before each execution. Same bargain - absent is untouched, null is the
+    # code default. The working directory's own rules (absolute, exists) are
+    # the endpoint's business, because they need the filesystem.
+    bash_enabled: bool | None = None
+    bash_working_dir: str | None = Field(default=None, max_length=500)
+    bash_grace_seconds: int | None = Field(default=None, ge=0, le=BASH_GRACE_SECONDS_CEILING)
 
 
 class ProjectCreate(BaseModel):

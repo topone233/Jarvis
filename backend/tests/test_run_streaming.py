@@ -308,11 +308,13 @@ async def test_the_model_loads_a_skill_through_the_tool(
     assert core.store.get_message(run["assistant_message_id"])["content"] == "按技能执行完成。"
     tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
     assert "把句子倒序输出" in tool_messages[0]["content"]
-    # Memory tools always ride; the skill tool is there because one is enabled.
+    # Memory tools always ride; the skill tool is there because one is enabled,
+    # and bash because it is on by default.
     assert [tool["function"]["name"] for tool in provider.last_tools or []] == [
         "save_memory",
         "forget_memory",
         "skill",
+        "bash",
     ]
     assert any(event["stage"] == "skill_tool" for event in core.store.list_run_events(run["id"]))
 
@@ -638,10 +640,12 @@ async def test_a_memory_tool_call_rides_the_reply_and_is_carried_out(
     ]
     assert stages == [("memory_write", "running"), ("memory_write", "completed")]
     # The request carried the memory tools: the model could not have called
-    # what the run never registered.
+    # what the run never registered. Bash rides too - it is on by default -
+    # and no knowledge or skill tool, since this conversation has neither.
     assert [tool["function"]["name"] for tool in provider.last_tools or []] == [
         "save_memory",
         "forget_memory",
+        "bash",
     ]
     # And the wire protocol held: the memory call was answered with a tool
     # message in place, so the model could continue.
@@ -879,3 +883,150 @@ def test_reattaching_to_a_finished_run_replays_its_outcome(
     # was produced.
     assert list(events) == ["run.started", "audit", "message.completed"]
     assert events["message.completed"]["content"] == answer["content"]
+
+
+def _bash_call(command: str, call_id: str = "call_1") -> ProviderEvent:
+    return ProviderEvent(
+        "tool_calls",
+        {"calls": [{"id": call_id, "name": "bash", "arguments": json.dumps({"command": command})}]},
+    )
+
+
+async def _wait_for_stage(
+    core: CoreServices, run_id: str, stage: str, timeout: float = 5.0
+) -> dict[str, Any]:
+    """Block until the run's trail carries a running record of one stage."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for event in core.store.list_run_events(run_id):
+            if event["stage"] == stage and event["state"] == "running":
+                return event
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"等不到 {stage} 的 running 记录。")
+
+
+async def test_the_bash_tool_executes_and_audits_the_call(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """The command runs for real, its output answers the model, and the raw
+    call plus that output both land on the trail."""
+    core.store.set_setting("bash_grace_seconds", 0)
+    provider = paced(
+        ["我来执行。"],
+        tail_events=[
+            _bash_call("echo ok-from-bash"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["完成。"]}],
+    )
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    assert core.store.get_message(run["assistant_message_id"])["content"] == "完成。"
+    assert "bash" in [tool["function"]["name"] for tool in provider.last_tools or []]
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    assert "ok-from-bash" in tool_messages[0]["content"]
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
+    assert [(step["state"], step["payload"]["command"]) for step in steps] == [
+        ("running", "echo ok-from-bash"),
+        ("completed", "echo ok-from-bash"),
+    ]
+    assert steps[0]["payload"]["call"]["name"] == "bash"
+    assert steps[0]["payload"]["call"]["arguments"] == '{"command": "echo ok-from-bash"}'
+    assert steps[0]["payload"]["grace_seconds"] == 0
+
+
+async def test_no_bash_tool_when_it_is_switched_off(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    core.store.set_setting("bash_enabled", False)
+    provider = paced(["好的。"])
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    assert "bash" not in [tool["function"]["name"] for tool in provider.last_tools or []]
+
+
+async def test_a_bash_command_runs_in_the_configured_working_directory(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    """The stored working directory is the run's cwd, and the audit says so."""
+    work = tmp_path / "work"
+    work.mkdir()
+    core.store.set_setting("bash_working_dir", str(work))
+    core.store.set_setting("bash_grace_seconds", 0)
+    provider = paced(
+        [],
+        tail_events=[
+            _bash_call("touch marker.txt"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["完成。"]}],
+    )
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    assert (work / "marker.txt").is_file()
+    running = await _wait_for_stage(core, run["id"], "bash_tool")
+    assert running["payload"]["cwd"] == str(work)
+
+
+async def test_a_bash_command_stopped_inside_the_grace_window_never_runs(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    """The window is the user's time to read the command and stop it; a stop
+    in time means the command did not execute at all."""
+    work = tmp_path / "work"
+    work.mkdir()
+    core.store.set_setting("bash_working_dir", str(work))
+    core.store.set_setting("bash_grace_seconds", 1)
+    provider = paced(
+        [],
+        tail_events=[
+            _bash_call("echo done > marker.txt"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["不会到达。"]}],
+    )
+    service, run = _begin(core, profile)
+    provider.release.set()
+    await _wait_for_stage(core, run["id"], "bash_tool")
+    service.cancel(run["id"])
+    assert (await _settle(core, run["id"]))["status"] == "cancelled"
+
+    assert not (work / "marker.txt").exists()
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
+    assert steps[-1]["state"] == "cancelled"
+    assert steps[-1]["payload"]["reason"] == "执行前被用户停止"
+
+
+async def test_a_running_bash_command_is_killed_when_the_run_stops(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    """A stop that lands while the command is running kills the child instead
+    of leaving it working behind a cancelled run."""
+    work = tmp_path / "work"
+    work.mkdir()
+    core.store.set_setting("bash_working_dir", str(work))
+    core.store.set_setting("bash_grace_seconds", 0)
+    provider = paced(
+        [],
+        tail_events=[
+            _bash_call("sleep 2 && echo done > marker.txt"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["不会到达。"]}],
+    )
+    service, run = _begin(core, profile)
+    provider.release.set()
+    await _wait_for_stage(core, run["id"], "bash_tool")
+    service.cancel(run["id"])
+    assert (await _settle(core, run["id"]))["status"] == "cancelled"
+
+    assert not (work / "marker.txt").exists()
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
+    assert steps[-1]["state"] == "cancelled"
+    assert steps[-1]["payload"]["reason"] == "执行中被用户停止"

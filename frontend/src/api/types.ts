@@ -198,6 +198,12 @@ export interface AppSettings {
     repeat_window_seconds: ToolLimitSetting
     repeat_limit: ToolLimitSetting
   }
+  bash_tool: {
+    enabled: { value: boolean; is_default: boolean }
+    /** Empty means no row: commands start in the data directory. */
+    working_dir: { value: string; is_default: boolean }
+    grace_seconds: ToolLimitSetting
+  }
 }
 
 /** One number a tool-call setting holds: what is in force, what the code ships. */
@@ -207,7 +213,11 @@ export interface ToolLimitSetting {
   is_default: boolean
 }
 
-export type ToolLimitKey = keyof AppSettings['tool_limits']
+/** The tool-calls tab's number inputs, by draft key. A literal union rather
+ *  than a keyof on purpose: the bash grace window drafts alongside the three
+ *  budget numbers but lives under `bash_tool` in the overview. */
+export type ToolLimitKey =
+  'max_rounds' | 'repeat_window_seconds' | 'repeat_limit' | 'bash_grace_seconds'
 
 export type PromptKey = keyof AppSettings['prompts']
 
@@ -220,6 +230,11 @@ export type SettingsPatch = PromptPatch & {
   tool_max_rounds?: number | null
   tool_repeat_window_seconds?: number | null
   tool_repeat_limit?: number | null
+  /** The switch's deal: on sends null (deleting the row IS the default-on
+   *  state), off sends false. */
+  bash_enabled?: boolean | null
+  bash_working_dir?: string | null
+  bash_grace_seconds?: number | null
 }
 
 /** One row of the audit trail (`run_events`). Also what `audit` SSE events carry. */

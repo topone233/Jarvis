@@ -156,6 +156,46 @@ describe('detailLines', () => {
     ])
   })
 
+  it('leads a running bash row with its grace window and directory', () => {
+    const lines = detailLines(
+      row('bash_tool', 'running', {
+        command: 'rm -rf build',
+        call: { id: 'call_2', name: 'bash', arguments: '{"command":"rm -rf build"}' },
+        cwd: 'C:/work',
+        grace_seconds: 5,
+      }),
+    )
+    expect(lines).toEqual([
+      text('命令将在 5 秒后执行，期间可随时停止。'),
+      text('工作目录：C:/work'),
+      code(
+        'AI 原始调用',
+        '{\n  "id": "call_2",\n  "name": "bash",\n  "arguments": "{\\"command\\":\\"rm -rf build\\"}"\n}',
+      ),
+    ])
+  })
+
+  it('drops the grace note once the bash command has run', () => {
+    const lines = detailLines(
+      row('bash_tool', 'completed', {
+        command: 'ls -la',
+        call: { id: 'call_3', name: 'bash', arguments: '{"command":"ls -la"}' },
+        cwd: 'C:/work',
+        grace_seconds: 5,
+        output: 'total 0',
+        output_chars: 7,
+      }),
+    )
+    expect(lines).toEqual([
+      text('工作目录：C:/work'),
+      code(
+        'AI 原始调用',
+        '{\n  "id": "call_3",\n  "name": "bash",\n  "arguments": "{\\"command\\":\\"ls -la\\"}"\n}',
+      ),
+      code('执行结果', 'total 0'),
+    ])
+  })
+
   it('says why a run closed on the round budget', () => {
     expect(detailLines(row('tool_rounds_exhausted', 'completed', { rounds: 10 }))).toEqual([
       text('连续多轮调用工具后仍未给出回答，已按轮次上限收尾。'),
@@ -192,6 +232,9 @@ describe('summaryOf', () => {
     // Several rows share one stage label now; the command is the difference.
     expect(summaryOf(row('knowledge_tool', 'completed', { command: 'grep 登录' }))).toBe(
       'grep 登录',
+    )
+    expect(summaryOf(row('bash_tool', 'completed', { command: 'rm -rf build' }))).toBe(
+      'rm -rf build',
     )
     expect(summaryOf(row('tool_call', 'failed', { reason: '重复命令已拦截' }))).toBe(
       '失败 · 重复命令已拦截',

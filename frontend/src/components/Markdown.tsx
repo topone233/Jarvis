@@ -6,12 +6,7 @@
  * render would rebuild the parse on every frame of a stream.
  */
 
-import {
-  memo,
-  type ComponentPropsWithoutRef,
-  createContext,
-  useContext,
-} from 'react'
+import { memo, type ComponentPropsWithoutRef, createContext, useContext } from 'react'
 import ReactMarkdown, { type ExtraProps, type Options } from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'

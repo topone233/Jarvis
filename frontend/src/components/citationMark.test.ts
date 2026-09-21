@@ -19,9 +19,7 @@ describe('tokenizeCitationMarks', () => {
   })
 
   it('ignores bare brackets and three-digit runs', () => {
-    expect(tokenizeCitationMarks('[x] 和 [100]')).toEqual([
-      { kind: 'text', value: '[x] 和 [100]' },
-    ])
+    expect(tokenizeCitationMarks('[x] 和 [100]')).toEqual([{ kind: 'text', value: '[x] 和 [100]' }])
   })
 
   it('returns one text token when nothing matches', () => {

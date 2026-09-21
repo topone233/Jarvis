@@ -34,6 +34,7 @@ const STAGE_LABELS: Record<string, string> = {
   memory_write: '写入记忆',
   knowledge_tool: '查阅知识库',
   skill_tool: '调用技能',
+  bash_tool: '执行命令',
   tool_call: '工具调用',
   tool_rounds_exhausted: '工具轮次已达上限',
 }

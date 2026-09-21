@@ -168,8 +168,21 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         # The field names are the settings keys, so one loop covers the three
         # prompts and the quick-prompt list alike. A key left out of the
         # request is untouched; a key sent as null goes back to the default.
+        directory = payload.bash_working_dir
+        if directory is not None and directory.strip():
+            # Checked here rather than in the schema because it needs the
+            # filesystem: a typo'd path is exactly what a save should catch,
+            # while a directory deleted later surfaces as the command's own
+            # failure text when it next runs.
+            path = Path(directory.strip())
+            if not path.is_absolute() or not path.is_dir():
+                raise ValidationError(
+                    f"bash 工作目录必须是一个已存在的绝对路径：{directory.strip()}"
+                )
         for key, value in payload.model_dump(exclude_unset=True).items():
-            if value is None:
+            # An empty working directory names nothing - it clears the row,
+            # which is what typing over the box and saving means.
+            if value is None or (key == settings.BASH_WORKING_DIR and not str(value).strip()):
                 core.store.delete_setting(key)
             else:
                 core.store.set_setting(key, value)

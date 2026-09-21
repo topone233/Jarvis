@@ -14,13 +14,7 @@ import type { Citation, KnowledgeContent } from '../api/types'
 import { Markdown } from './Markdown'
 import { CloseIcon } from './icons'
 
-export function CitationPanel({
-  citation,
-  onClose,
-}: {
-  citation: Citation
-  onClose(): void
-}) {
+export function CitationPanel({ citation, onClose }: { citation: Citation; onClose(): void }) {
   // A new citation resets the panel to the excerpt; the full document is a
   // deliberate step the user takes again for the next citation.
   const key = citation.chunk_id
@@ -51,13 +45,7 @@ export function CitationPanel({
   )
 }
 
-function ExcerptView({
-  citation,
-  onOpenDocument,
-}: {
-  citation: Citation
-  onOpenDocument(): void
-}) {
+function ExcerptView({ citation, onOpenDocument }: { citation: Citation; onOpenDocument(): void }) {
   return (
     <div className="citation-panel-body">
       {citation.section_title !== null && citation.section_title !== undefined && (
@@ -129,7 +117,11 @@ function DocumentView({ citation }: { citation: Citation }) {
       <DocumentToc document={document} citedId={citedId} onJump={scrollTo} />
       <div className="citation-panel-body" ref={bodyRef}>
         {document.sections.map((section) => (
-          <div key={section.id} data-section-id={section.id} data-cited={section.id === citedId ? '1' : undefined}>
+          <div
+            key={section.id}
+            data-section-id={section.id}
+            data-cited={section.id === citedId ? '1' : undefined}
+          >
             {section.id === citedId && <div className="citation-panel-marker">引用来源</div>}
             <Markdown text={document.content.slice(section.start, section.end)} />
           </div>

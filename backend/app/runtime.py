@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.bash_tool import BashToolService
 from app.config import BootstrapStore
 from app.context import ContextManager
 from app.database import Database
@@ -126,6 +127,7 @@ class CoreServices:
     context: ContextManager
     memory: MemoryService
     skills: SkillService
+    bash_tool: BashToolService
     run_registry: RunRegistry
 
     @classmethod
@@ -139,6 +141,7 @@ class CoreServices:
         skills = SkillService(store, data_directory)
         context = ContextManager(store, provider, knowledge, skills)
         memory = MemoryService(store)
+        bash_tool = BashToolService()
         return cls(
             database=database,
             store=store,
@@ -147,6 +150,7 @@ class CoreServices:
             context=context,
             memory=memory,
             skills=skills,
+            bash_tool=bash_tool,
             run_registry=RunRegistry(),
         )
 

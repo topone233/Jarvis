@@ -49,6 +49,8 @@ export function detailLines(row: AuditRow): DetailLine[] {
       return toolLines(payload, 'knowledge')
     case 'skill_tool':
       return toolLines(payload, 'skill')
+    case 'bash_tool':
+      return bashLines(row, payload)
     case 'tool_call':
       return toolLines(payload, null)
     case 'tool_rounds_exhausted':
@@ -75,7 +77,7 @@ export function summaryOf(row: AuditRow): string {
     parts.push(`${payload.count} 条`)
   }
   if (
-    (row.stage === 'knowledge_tool' || row.stage === 'skill_tool') &&
+    (row.stage === 'knowledge_tool' || row.stage === 'skill_tool' || row.stage === 'bash_tool') &&
     typeof payload.command === 'string' &&
     payload.command !== ''
   ) {
@@ -187,6 +189,33 @@ function memoryLines(payload: Record<string, unknown>): DetailLine[] {
 }
 
 /**
+ * A bash call's rows carry one thing the other tools do not: a window of
+ * seconds between showing the command and running it, which is the user's
+ * time to stop it. While the row is running that window is the headline -
+ * first thing read, before the call JSON - and the directory it will run in
+ * rides along, since the settings' working directory is not visible anywhere
+ * else on the answer.
+ */
+function bashLines(row: AuditRow, payload: Record<string, unknown>): DetailLine[] {
+  const lines: DetailLine[] = []
+  if (
+    row.state === 'running' &&
+    typeof payload.grace_seconds === 'number' &&
+    payload.grace_seconds > 0
+  ) {
+    lines.push({
+      kind: 'text',
+      text: `命令将在 ${payload.grace_seconds} 秒后执行，期间可随时停止。`,
+    })
+  }
+  if (typeof payload.cwd === 'string' && payload.cwd !== '') {
+    lines.push({ kind: 'text', text: `工作目录：${payload.cwd}` })
+  }
+  lines.push(...toolLines(payload, 'bash'))
+  return lines
+}
+
+/**
  * One row per call since calls stopped collapsing: the AI's raw tool-call
  * object (id, name, arguments - verbatim) and the result text that went back
  * to it are the auditable whole of what happened. Payloads recorded before
@@ -194,7 +223,7 @@ function memoryLines(payload: Record<string, unknown>): DetailLine[] {
  */
 function toolLines(
   payload: Record<string, unknown>,
-  prefix: 'knowledge' | 'skill' | null,
+  prefix: 'knowledge' | 'skill' | 'bash' | null,
 ): DetailLine[] {
   const lines: DetailLine[] = []
   const call = callBlock(payload)

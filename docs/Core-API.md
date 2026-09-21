@@ -92,7 +92,7 @@ default). It returns text/event-stream. Events use a JSON data payload:
 | Event | Meaning |
 | --- | --- |
 | run.started | Returns run and placeholder assistant-message IDs. |
-| audit | Internal stage progress: compact, context retrieval, model stream, memory write, each knowledge/skill tool call. Every tool call records the AI's raw call object (id, name, arguments) and the full result text that went back to it, so the trail is auditable after a reload; calls refused before they ran (repeat gate, unknown tool, invalid arguments) are recorded too, as a failed `tool_call` stage. |
+| audit | Internal stage progress: compact, context retrieval, model stream, memory write, each knowledge/skill/bash tool call. Every tool call records the AI's raw call object (id, name, arguments) and the full result text that went back to it, so the trail is auditable after a reload; calls refused before they ran (repeat gate, unknown tool, invalid arguments, a bash command stopped inside its grace window) are recorded too. |
 | context.ready | Estimated context budget and structured knowledge citations. |
 | message.delta | Assistant text produced since the last delta this client received. |
 | reasoning.delta | Optional compatible-provider reasoning text, same rule. |
@@ -244,6 +244,34 @@ last disabled skill removes the row again.
   A name already installed is refused; so is the reserved name `compact`.
 - PUT /api/skills/{name}/enabled with `{enabled}` - flips the switch.
 - DELETE /api/skills/{name} - removes the folder and any disable entry.
+
+## Bash
+
+The `bash` tool is the model's shell on this machine: one tool, one
+`{command}` parameter, executed by Git Bash in the working directory the
+settings name (the data directory when none is stored). Git Bash rather than
+PowerShell because the model's command vocabulary is POSIX, and because bash
+reaches PowerShell anyway via `powershell -Command`. The shell is located by
+known Git install paths first - a PATH search that lands on System32's WSL
+`bash.exe` is refused, since that would run commands in Linux.
+
+Execution is real and unconfined, like skills. What makes an irreversible
+command survivable is the **grace window**: every `bash` call waits
+`bash_grace_seconds` (default 5) between the raw call appearing on the audit
+trail and the command running, polling the stop button the whole time - a
+stop in time means the command never ran, audited as `bash_tool` cancelled
+with `执行前被用户停止`. A stop landing while the command runs kills the
+child process (`执行中被用户停止`). There is no dangerous-command detection:
+a window that is always there is a promise, a filter that guesses is not.
+Bounds are the skills script's: 120 seconds, 20,000 characters, exit code
+appended, stderr merged into stdout, UTF-8 throughout. The repeat gate covers
+bash like every other tool.
+
+Settings ride the settings KV (`bash_enabled`, `bash_working_dir`,
+`bash_grace_seconds`) inside the usual no-row-is-the-default model; the
+working directory is validated at save time as an existing absolute path, and
+a blank value clears the row. All three are edited on the 工具调用 settings
+tab, alongside the round budget.
 
 ## Trash
 

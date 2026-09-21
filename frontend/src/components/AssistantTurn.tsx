@@ -78,7 +78,11 @@ export function AssistantTurn({
       )}
 
       {turn.content !== '' && (
-        <MarkdownWithCitations text={turn.content} citations={turn.citations} onOpen={onOpenCitation} />
+        <MarkdownWithCitations
+          text={turn.content}
+          citations={turn.citations}
+          onOpen={onOpenCitation}
+        />
       )}
       {busy && !turn.detached && <span className="cursor" />}
 

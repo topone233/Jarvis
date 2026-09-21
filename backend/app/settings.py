@@ -80,6 +80,16 @@ TOOL_REPEAT_LIMIT = "tool_repeat_limit"
 TOOL_REPEAT_LIMIT_DEFAULT = 10
 TOOL_REPEAT_LIMIT_CEILING = 1000
 
+#: The bash tool. On by default - the user asked it in - with the working
+#: directory commands start in (empty/absent = the data directory) and the
+#: grace window every command waits through before executing, which is what
+#: leaves the user time to stop an irreversible one.
+BASH_ENABLED = "bash_enabled"
+BASH_WORKING_DIR = "bash_working_dir"
+BASH_GRACE_SECONDS = "bash_grace_seconds"
+BASH_GRACE_SECONDS_DEFAULT = 5
+BASH_GRACE_SECONDS_CEILING = 60
+
 
 def read_prompt(store: Store, key: str) -> str:
     """The text in force: what the user saved, or the one the code ships."""
@@ -112,6 +122,37 @@ def read_tool_limits(store: Store) -> ToolLimits:
             window if isinstance(window, int) else TOOL_REPEAT_WINDOW_SECONDS_DEFAULT
         ),
         repeat_limit=limit if isinstance(limit, int) else TOOL_REPEAT_LIMIT_DEFAULT,
+    )
+
+
+@dataclass(frozen=True)
+class BashSettings:
+    """The bash tool's configuration, read once at the start of a run.
+
+    A stored empty working directory is treated as absent: it names nothing,
+    and the one thing a blank box could mean is "back to the default".
+    """
+
+    enabled: bool = True
+    working_dir: str | None = None
+    grace_seconds: int = BASH_GRACE_SECONDS_DEFAULT
+
+
+def read_bash_settings(store: Store) -> BashSettings:
+    stored = store.list_settings()
+    enabled = stored.get(BASH_ENABLED)
+    working = stored.get(BASH_WORKING_DIR)
+    grace = stored.get(BASH_GRACE_SECONDS)
+    return BashSettings(
+        enabled=enabled if isinstance(enabled, bool) else True,
+        working_dir=(working.strip() if isinstance(working, str) and working.strip() else None),
+        # `isinstance(True, int)` holds, so the bool guard is what keeps a
+        # stray boolean from becoming a grace period of 1.
+        grace_seconds=(
+            grace
+            if isinstance(grace, int) and not isinstance(grace, bool)
+            else BASH_GRACE_SECONDS_DEFAULT
+        ),
     )
 
 
@@ -150,6 +191,21 @@ def overview(store: Store) -> dict[str, Any]:
                 "value": stored.get(TOOL_REPEAT_LIMIT, TOOL_REPEAT_LIMIT_DEFAULT),
                 "default": TOOL_REPEAT_LIMIT_DEFAULT,
                 "is_default": TOOL_REPEAT_LIMIT not in stored,
+            },
+        },
+        "bash_tool": {
+            "enabled": {
+                "value": stored.get(BASH_ENABLED, True),
+                "is_default": BASH_ENABLED not in stored,
+            },
+            "working_dir": {
+                "value": stored.get(BASH_WORKING_DIR, ""),
+                "is_default": BASH_WORKING_DIR not in stored,
+            },
+            "grace_seconds": {
+                "value": stored.get(BASH_GRACE_SECONDS, BASH_GRACE_SECONDS_DEFAULT),
+                "default": BASH_GRACE_SECONDS_DEFAULT,
+                "is_default": BASH_GRACE_SECONDS not in stored,
             },
         },
     }
