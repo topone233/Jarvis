@@ -18,6 +18,7 @@ from app.sections import (
     parse_sections,
     section_label,
 )
+from app.settings import read_retrieval_thresholds
 from app.store import Store
 from app.tokens import estimate_tokens
 from app.utils import safe_filename, segment_for_index
@@ -214,13 +215,46 @@ def _pptx_to_text(content: bytes) -> str:
 #: candidates - the strip a Word export stamps as 页眉/页脚.
 _PAGE_EDGE_LINES = 3
 
+#: Punctuation a layout may wrap a page number in, besides whitespace.
+_FOLIO_PADS = r"\s\-—–·•・.,，。、()（）「」『』\["
+
 #: A line that names nothing but a page number is printer furniture even when
 #: every page numbers it differently (第 1 页 共 3 页): the pattern cannot be
 #: body text, so it dies at a page edge without needing cross-page agreement.
+#: The pads cover folios a layout wraps in dashes, dots or brackets
+#: (— 3 —, · 12 ·, 「第 3 页」).
 _PAGE_NUMBER_RE = re.compile(
-    r"^(?:第\s*\d+\s*页(?:\s*共\s*\d+\s*页)?|\d+\s*/\s*\d+|page\s+\d+\s*(?:of|/)\s*\d+)$",
+    rf"^[{_FOLIO_PADS}]*(?:第\s*\d+\s*页(?:\s*[,，]?\s*共\s*\d+\s*页)?"
+    rf"|\d+\s*/\s*\d+|page\s+\d+\s*(?:of|/)\s*\d+)[{_FOLIO_PADS}]*$",
     re.IGNORECASE,
 )
+
+#: The bare-folio form: nothing on the line but one short number and the same
+#: punctuation decorations. A standalone number in the first or last lines of
+#: a page is a folio the patterns above do not name; four digits still admit
+#: a year, which is a risk taken at the page edge only.
+_BARE_FOLIO_RE = re.compile(rf"^[{_FOLIO_PADS}]*\d{{1,4}}[{_FOLIO_PADS}]*$")
+
+
+#: A page-number construct anywhere in a line - 第 3 页, 3/7, Page 3 of 7 -
+#: makes the line folio-shaped: the one kind of line whose digits routinely
+#: change from page to page, and so the only kind counted with digits folded.
+#: A body line that happens to vary in digits (验收标准第1条) is not
+#: folio-shaped and keeps needing exact agreement.
+_FOLIO_TOKEN_RE = re.compile(
+    r"第\s*\d+\s*页|\d+\s*/\s*\d+|page\s+\d+\s*(?:of|/)\s*\d+|^\s*\d{1,4}\s*$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_digits(line: str) -> str:
+    """The line with every digit run folded to ``#``.
+
+    Repetition judged on this is what catches furniture whose content varies
+    per page - a header carrying its own page number, mostly - where exact
+    matching never agrees.
+    """
+    return re.sub(r"\d+", "#", line)
 
 
 def _strip_page_furniture(pages: list[str]) -> list[str]:
@@ -230,26 +264,42 @@ def _strip_page_furniture(pages: list[str]) -> list[str]:
     they polluted embeddings, keyword matches and rerank reads alike. A line
     only counts as furniture when it sits within the first or last few
     nonempty lines of a page AND a majority of pages agree on it - body text
-    may repeat, but not at the page edge on most pages. A single-page
-    document keeps everything: there is no repetition to observe.
+    may repeat, but not at the page edge on most pages. Agreement comes in
+    two shapes: the line repeated verbatim, or the line is folio-shaped
+    (carries a page-number construct) and repeats with its digits folded, so
+    「产品手册 · 第 3 页」 and 「· 第 4 页 ·」 count as one line. On top of
+    the agreement rule, any edge line that is nothing but a page number dies
+    without needing it. A single-page document keeps everything: there is no
+    repetition to observe.
     """
     if len(pages) < 2:
         return pages
-    counts: Counter[str] = Counter()
-    edges: list[set[str]] = []
+    exact: Counter[str] = Counter()
+    folio: Counter[str] = Counter()
     for page in pages:
         lines = [line.strip() for line in page.splitlines() if line.strip()]
-        edge = set(lines[:_PAGE_EDGE_LINES] + lines[-_PAGE_EDGE_LINES:])
-        edges.append(edge)
-        counts.update(edge)
+        edge = lines[:_PAGE_EDGE_LINES] + lines[-_PAGE_EDGE_LINES:]
+        # Once per page, not once per occurrence: a short page's first and
+        # last edge lines are the same line, and counting them twice would
+        # make every short page agree with itself.
+        exact.update(set(edge))
+        folio.update({_normalize_digits(line) for line in edge if _FOLIO_TOKEN_RE.search(line)})
     required = max(2, math.ceil(len(pages) * 0.6))
-    furniture = {line for line, count in counts.items() if count >= required}
-    furniture |= {line for edge in edges for line in edge if _PAGE_NUMBER_RE.fullmatch(line)}
-    if not furniture:
-        return pages
+    furniture = {line for line, count in exact.items() if count >= required}
+    furniture |= {form for form, count in folio.items() if count >= required}
+
+    def is_furniture(line: str) -> bool:
+        if line in furniture:
+            return True
+        if _FOLIO_TOKEN_RE.search(line) and _normalize_digits(line) in furniture:
+            return True
+        return bool(_PAGE_NUMBER_RE.fullmatch(line) or _BARE_FOLIO_RE.fullmatch(line))
+
     stripped: list[str] = []
     for page in pages:
-        kept = [line for line in page.splitlines() if line.strip() not in furniture]
+        kept = [
+            line for line in page.splitlines() if not (line.strip() and is_furniture(line.strip()))
+        ]
         stripped.append("\n".join(kept).strip("\n"))
     return stripped
 
@@ -258,19 +308,33 @@ def _pdf_to_text(content: bytes) -> str:
     import pymupdf
     import pymupdf4llm
 
+    # MuPDF's C layer reports every font/CID quirk it meets straight to
+    # stderr - one line per page on some Chinese PDFs, enough to flood a
+    # console - and collects the same texts into an in-process store nobody
+    # drains. Neither carries anything this pipeline can act on (extraction
+    # either works or the document is skipped), so they are silenced and the
+    # store drained. The flags are global process state, idempotent to set.
+    pymupdf.TOOLS.mupdf_display_errors(False)
+    pymupdf.TOOLS.mupdf_display_warnings(False)
+
     # Scanned PDFs hold pictures, not text; they come back empty and are
     # skipped with their own message. There is no OCR in this pipeline.
-    with pymupdf.open(stream=content, filetype="pdf") as document:
-        if not any(page.get_text("text").strip() for page in document):
-            return ""
-        # to_markdown reads font sizes, so a Word export's larger title lines
-        # become real `#` headings the section model can tree into chapters -
-        # not one fake `## 第 N 页` per page - and reflows paragraphs. Per-page
-        # chunks come back so the 页眉/页脚 a Word export stamps on every page
-        # can be stripped before the pages join (pymupdf4llm does not do it).
-        pages = _strip_page_furniture(
-            [chunk["text"] for chunk in pymupdf4llm.to_markdown(document, page_chunks=True)]
-        )
+    try:
+        with pymupdf.open(stream=content, filetype="pdf") as document:
+            if not any(page.get_text("text").strip() for page in document):
+                return ""
+            # to_markdown reads font sizes, so a Word export's larger title
+            # lines become real `#` headings the section model can tree into
+            # chapters - not one fake `## 第 N 页` per page - and reflows
+            # paragraphs. Per-page chunks come back so the 页眉/页脚 a Word
+            # export stamps on every page can be stripped before the pages
+            # join (pymupdf4llm does not do it).
+            pages = _strip_page_furniture(
+                [chunk["text"] for chunk in pymupdf4llm.to_markdown(document, page_chunks=True)]
+            )
+    finally:
+        # The reset argument is the default; the call exists to empty it.
+        pymupdf.TOOLS.mupdf_warnings()
     # write_images never writes files, but image blocks can still come through
     # as markdown embeds pointing nowhere. The words are what a knowledge
     # base is for - same rule the docx path applies to data-URI pictures.
@@ -518,10 +582,14 @@ class KnowledgeService:
         first - instead of paying for a second identical embedding call. With
         a rerank model configured, the mixed ranking only nominates
         RERANK_CANDIDATES; the reranker picks the final `limit` and its
-        relevance score becomes the hit's score.
+        relevance score becomes the hit's score. Semantic hits clear the
+        semantic floor and reranked hits the rerank floor
+        (`settings.RetrievalThresholds`) - fewer hits than `limit` is the
+        point, never a slot to fill.
         """
         embedding_spec = self.store.get_retrieval_spec("embedding")
         rerank_spec = self.store.get_retrieval_spec("rerank")
+        thresholds = read_retrieval_thresholds(self.store)
         candidate_limit = self.RERANK_CANDIDATES if rerank_spec else limit
         fts_terms = self._fts_terms(query)
         fts_results = (
@@ -565,6 +633,14 @@ class KnowledgeService:
                     # _cosine gives a zero vector, not a crash.
                     distance = item["distance"]
                     score = 0.0 if distance is None else max(1.0 - distance, 0.0)
+                    # The floor is what keeps a Chinese embedding model's
+                    # pseudo-similarity out: unrelated texts still land well
+                    # above zero, so without it every chunk becomes a hit and
+                    # the top-k fills with junk. Applied on the raw
+                    # similarity, before the ranking weight, so the setting's
+                    # meaning does not move with the weight's value.
+                    if score < thresholds.semantic_floor:
+                        continue
                     score *= 0.75
                     existing = scored.get(item["id"])
                     scored[item["id"]] = (score + (existing[0] if existing else 0), item)
@@ -582,7 +658,15 @@ class KnowledgeService:
                     [item["content"] for _, item in candidates],
                     limit,
                 )
-                candidates = [(relevance, candidates[index][1]) for index, relevance in ranking]
+                # The reranker hands back exactly top_n results however weak
+                # they are, so its score gets the same floor the raw
+                # similarity had - "reranked" must not become a way around
+                # the threshold, and all-filtered means no citations at all.
+                candidates = [
+                    (relevance, candidates[index][1])
+                    for index, relevance in ranking
+                    if relevance >= thresholds.rerank_floor
+                ]
                 reranked = True
             except ProviderError:
                 # A dead reranker must not take retrieval down with it: the

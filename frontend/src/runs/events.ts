@@ -15,6 +15,8 @@ export type RunEvent =
   | { type: 'audit'; record: RunEventRecord }
   | { type: 'message.delta'; messageId: string; delta: string }
   | { type: 'reasoning.delta'; messageId: string; delta: string }
+  /** A tool round ended: the next round's text replaces this one's. */
+  | { type: 'round.reset'; messageId: string }
   | { type: 'message.completed'; messageId: string; content: string; metadata: MessageMetadata }
   | { type: 'run.cancelled'; messageId: string; content: string }
   | { type: 'run.failed'; error: string }
@@ -52,6 +54,8 @@ export function decodeFrame(frame: SseFrame): RunEvent {
         messageId: text(payload.message_id),
         delta: text(payload.delta),
       }
+    case 'round.reset':
+      return { type: 'round.reset', messageId: text(payload.message_id) }
     case 'message.completed':
       return {
         type: 'message.completed',

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.settings import (
     BASH_GRACE_SECONDS_CEILING,
     COMPACT_PERCENT_DEFAULT,
+    RETRIEVAL_FLOOR_CEILING,
     TOOL_MAX_ROUNDS_CEILING,
     TOOL_REPEAT_LIMIT_CEILING,
     TOOL_REPEAT_WINDOW_CEILING,
@@ -111,13 +112,26 @@ class SettingsUpdate(BaseModel):
         default=None, ge=1, le=TOOL_REPEAT_WINDOW_CEILING
     )
     tool_repeat_limit: int | None = Field(default=None, ge=1, le=TOOL_REPEAT_LIMIT_CEILING)
-    # The bash tool: on/off, where its commands start, and the grace window
-    # before each execution. Same bargain - absent is untouched, null is the
+    # The bash tool: on/off, where its commands start, and how a command gets
+    # to run - "ask" holds it until the user approves in the popup, "grace"
+    # keeps the fixed buffer. Same bargain - absent is untouched, null is the
     # code default. The working directory's own rules (absolute, exists) are
     # the endpoint's business, because they need the filesystem.
     bash_enabled: bool | None = None
     bash_working_dir: str | None = Field(default=None, max_length=500)
     bash_grace_seconds: int | None = Field(default=None, ge=0, le=BASH_GRACE_SECONDS_CEILING)
+    bash_approval_mode: str | None = Field(default=None, pattern="^(ask|grace)$")
+
+
+class UserInputSubmission(BaseModel):
+    """The user's answer to a run that paused waiting for it.
+
+    A bash approval carries "approve" or "deny" (validated again against the
+    pending kind, since the schema cannot know it); a question's answer is
+    any non-empty text - the picked option, or what the user typed.
+    """
+
+    value: str = Field(min_length=1, max_length=2_000)
 
 
 class ProjectCreate(BaseModel):
@@ -224,6 +238,18 @@ class RetrievalModelSpec(BaseModel):
         return value.strip().rstrip("/")
 
 
+class RetrievalThresholdsUpdate(BaseModel):
+    """One retrieval floor's new value, or null to restore the default.
+
+    The standing settings deal: a number writes it, null deletes the row
+    (restore default), a key left out of the request leaves what is stored.
+    """
+
+    memory_floor: float | None = Field(default=None, ge=0.0, le=RETRIEVAL_FLOOR_CEILING)
+    semantic_floor: float | None = Field(default=None, ge=0.0, le=RETRIEVAL_FLOOR_CEILING)
+    rerank_floor: float | None = Field(default=None, ge=0.0, le=RETRIEVAL_FLOOR_CEILING)
+
+
 class RetrievalSettingsUpdate(BaseModel):
     """Both retrieval configs at once, with per-kind absent/null semantics.
 
@@ -234,6 +260,7 @@ class RetrievalSettingsUpdate(BaseModel):
 
     embedding: RetrievalModelSpec | None = None
     rerank: RetrievalModelSpec | None = None
+    thresholds: RetrievalThresholdsUpdate | None = None
 
 
 class RetrievalTestRequest(BaseModel):

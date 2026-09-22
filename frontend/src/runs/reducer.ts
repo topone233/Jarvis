@@ -12,6 +12,10 @@
  * 2. Terminal events carry the full text and replace whatever accumulated, so
  *    arriving twice, or arriving after some deltas, converges to the same result.
  *
+ * Between those, a `round.reset` says a tool round ended: the next round's
+ * text replaces this one's, while reasoning keeps accumulating - the server
+ * never shrinks it mid-run.
+ *
  * Together those mean "I was here the whole time" and "I just reloaded" render
  * through one path, which is the point of the whole run-lifecycle design.
  */
@@ -133,6 +137,15 @@ function applyEvent(state: TurnState, event: RunEvent): TurnState {
         reasoning: state.awaitingReasoning ? event.delta : state.reasoning + event.delta,
         awaitingReasoning: false,
       }
+
+    case 'round.reset':
+      // A tool round ended and the next round's text replaces this one's.
+      // Reasoning is not touched - the server accumulates it across rounds on
+      // purpose, so what a round thought stays on the page.
+      if (!forThisMessage(state, event.messageId) || isTerminal(state.phase)) {
+        return state
+      }
+      return { ...state, content: '', awaitingContent: true }
 
     case 'message.completed':
       if (!forThisMessage(state, event.messageId)) {

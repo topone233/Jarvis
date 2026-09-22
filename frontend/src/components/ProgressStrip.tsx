@@ -35,6 +35,7 @@ const STAGE_LABELS: Record<string, string> = {
   knowledge_tool: '查阅知识库',
   skill_tool: '调用技能',
   bash_tool: '执行命令',
+  ask_user: '询问用户',
   tool_call: '工具调用',
   tool_rounds_exhausted: '工具轮次已达上限',
 }

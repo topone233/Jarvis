@@ -8,6 +8,7 @@ decoding, the bounds, and the answers, none of which a fake would exercise.
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -144,3 +145,33 @@ async def test_the_grace_window_sees_a_cancel_that_arrives_midway(core: CoreServ
     await asyncio.sleep(0.05)
     registry.cancel("run-3")
     assert await asyncio.wait_for(task, 2) is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the selector loop is a Windows affair")
+def test_a_command_runs_on_the_selector_loop(tmp_path: Path) -> None:
+    """The regression behind `执行异常：` once coming out blank.
+
+    uvicorn's --reload server runs Windows' selector event loop, which cannot
+    spawn subprocesses: its async API raises a bare NotImplementedError. The
+    tool drives the subprocess from a worker thread precisely so that it also
+    works here - under a selector loop chosen on purpose.
+    """
+    previous = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        output = asyncio.run(_one("echo 你好 selector", tmp_path))
+    finally:
+        asyncio.set_event_loop_policy(previous)
+    assert "你好 selector" in output
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the selector loop is a Windows affair")
+def test_a_cancel_is_seen_on_the_selector_loop(tmp_path: Path) -> None:
+    """The thread path must keep the cancel contract, not only the happy path."""
+    previous = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        output = asyncio.run(_one("sleep 5", tmp_path, should_cancel=lambda: True))
+    finally:
+        asyncio.set_event_loop_policy(previous)
+    assert output == BASH_STOPPED_TEXT

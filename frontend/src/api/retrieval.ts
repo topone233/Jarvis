@@ -110,3 +110,71 @@ export function testRerank(draft: RetrievalDraft): Promise<RetrievalTestResult> 
     body: JSON.stringify(testPayload(draft)),
   })
 }
+
+/**
+ * The retrieval floors' labels and caps, mirrored from the API's schema
+ * (`RetrievalThresholdsUpdate`). Like the tool-calls tab, the draft is the
+ * raw text of the inputs - a half-typed value is a draft state, and 保存
+ * parses with the first problem becoming an inline sentence.
+ */
+export const RETRIEVAL_THRESHOLDS = {
+  memory_floor: { label: '记忆相关下限', min: 0, max: 0.99 },
+  semantic_floor: { label: '知识语义下限', min: 0, max: 0.99 },
+  rerank_floor: { label: '重排相关下限', min: 0, max: 0.99 },
+} as const
+
+export type ThresholdKey = keyof typeof RETRIEVAL_THRESHOLDS
+
+/** One input's draft: what the box shows, which may be half-typed. */
+export type ThresholdDraft = Record<ThresholdKey, string>
+
+export function thresholdsDraftFrom(settings: RetrievalSettings): ThresholdDraft {
+  return {
+    memory_floor: String(settings.thresholds.memory_floor.value),
+    semantic_floor: String(settings.thresholds.semantic_floor.value),
+    rerank_floor: String(settings.thresholds.rerank_floor.value),
+  }
+}
+
+/** The first problem in the draft, or null when it would save. */
+export function thresholdsError(draft: ThresholdDraft): string | null {
+  for (const key of Object.keys(RETRIEVAL_THRESHOLDS) as ThresholdKey[]) {
+    const text = draft[key].trim()
+    if (text === '') {
+      return '还有一个值没有填。'
+    }
+    const value = Number(text)
+    if (
+      !Number.isFinite(value) ||
+      value < RETRIEVAL_THRESHOLDS[key].min ||
+      value > RETRIEVAL_THRESHOLDS[key].max
+    ) {
+      return `${RETRIEVAL_THRESHOLDS[key].label}要在 0 到 0.99 之间。`
+    }
+  }
+  return null
+}
+
+/**
+ * The draft as a PUT body - only what differs from what the server has, so
+ * saving the default value back does not plant a row that makes the panel
+ * say 已改过.
+ */
+export function thresholdsPayload(
+  draft: ThresholdDraft,
+  settings: RetrievalSettings,
+): RetrievalSettingsPatch {
+  const thresholds: NonNullable<RetrievalSettingsPatch['thresholds']> = {}
+  for (const key of Object.keys(RETRIEVAL_THRESHOLDS) as ThresholdKey[]) {
+    const value = Number(draft[key].trim())
+    if (value !== settings.thresholds[key].value) {
+      thresholds[key] = value
+    }
+  }
+  return { thresholds }
+}
+
+/** 恢复默认's body: nulls, which delete the rows. */
+export const THRESHOLDS_DEFAULT_PATCH: RetrievalSettingsPatch = {
+  thresholds: { memory_floor: null, semantic_floor: null, rerank_floor: null },
+}

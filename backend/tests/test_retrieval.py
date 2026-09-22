@@ -34,7 +34,43 @@ RERANK = {"base_url": "http://rr.local/v1", "model": "rr-1"}
 def test_settings_start_empty(client: TestClient) -> None:
     response = client.get("/api/retrieval-settings")
     assert response.status_code == 200
-    assert response.json() == {"embedding": None, "rerank": None}
+    body = response.json()
+    assert body["embedding"] is None
+    assert body["rerank"] is None
+    assert body["thresholds"] == {
+        "memory_floor": {"value": 0.55, "default": 0.55, "is_default": True},
+        "semantic_floor": {"value": 0.5, "default": 0.5, "is_default": True},
+        "rerank_floor": {"value": 0.25, "default": 0.25, "is_default": True},
+    }
+
+
+def test_thresholds_write_restore_and_leave_untouched(client: TestClient) -> None:
+    """The standing settings deal, per key: a number writes, null restores the
+    default by deleting the row, a key left out leaves what is stored."""
+    first = client.put(
+        "/api/retrieval-settings",
+        json={"thresholds": {"memory_floor": 0.7, "semantic_floor": None}},
+    )
+    assert first.status_code == 200
+    body = first.json()["thresholds"]
+    assert body["memory_floor"] == {"value": 0.7, "default": 0.55, "is_default": False}
+    # null deleted a row that was not there either; the default stands.
+    assert body["semantic_floor"] == {"value": 0.5, "default": 0.5, "is_default": True}
+
+    second = client.put("/api/retrieval-settings", json={"thresholds": {"rerank_floor": 0.1}})
+    assert second.json()["thresholds"]["memory_floor"]["value"] == 0.7
+
+    restored = client.put("/api/retrieval-settings", json={"thresholds": {"memory_floor": None}})
+    assert restored.json()["thresholds"]["memory_floor"] == {
+        "value": 0.55,
+        "default": 0.55,
+        "is_default": True,
+    }
+
+
+def test_a_threshold_past_the_ceiling_is_refused(client: TestClient) -> None:
+    response = client.put("/api/retrieval-settings", json={"thresholds": {"memory_floor": 1.5}})
+    assert response.status_code == 422
 
 
 def test_put_saves_both_kinds_normalizes_and_reports_keys(client: TestClient) -> None:
@@ -247,7 +283,7 @@ async def test_rerank_decides_the_final_order_and_score(
         spec: dict[str, str], query: str, documents: list[str], top_n: int
     ) -> list[tuple[int, float]]:
         del spec, query, top_n
-        ranks = {"第一个": 0.1, "第二个": 0.5, "第三个": 0.9}
+        ranks = {"第一个": 0.3, "第二个": 0.5, "第三个": 0.9}
 
         def score_of(document: str) -> float:
             for marker, value in ranks.items():
@@ -265,8 +301,46 @@ async def test_rerank_decides_the_final_order_and_score(
     results = await core.knowledge.search("文档的内容", project_id=None)
 
     assert [result["title"] for result in results] == ["丙", "乙", "甲"]
-    assert [result["score"] for result in results] == [0.9, 0.5, 0.1]
+    assert [result["score"] for result in results] == [0.9, 0.5, 0.3]
     assert all(result["source"] == "reranked" for result in results)
+
+
+@pytest.mark.asyncio
+async def test_a_rerank_hit_below_the_floor_is_no_citation(
+    core: CoreServices, use_embedding: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reranker hands back exactly top_n results however weak they are; the
+    floor is what stops "reranked" from becoming a way around the threshold,
+    and all-filtered means no citations at all."""
+    use_embedding()
+    core.store.set_retrieval_spec("rerank", RERANK, has_api_key=False)
+    await core.knowledge.import_items(
+        [
+            ImportItem(filename="甲.txt", content="第一个文档的内容".encode()),
+            ImportItem(filename="乙.txt", content="第二个文档的内容".encode()),
+        ],
+        project_id=None,
+    )
+
+    async def scores_by_name(
+        spec: dict[str, str], query: str, documents: list[str], top_n: int
+    ) -> list[tuple[int, float]]:
+        del spec, query, top_n
+
+        def score_of(document: str) -> float:
+            return 0.9 if "第一个" in document else 0.05
+
+        return sorted(
+            ((index, score_of(document)) for index, document in enumerate(documents)),
+            key=lambda item: -item[1],
+        )
+
+    monkeypatch.setattr(core.knowledge.provider, "rerank", scores_by_name)
+
+    results = await core.knowledge.search("文档的内容", project_id=None)
+
+    assert [result["title"] for result in results] == ["甲"]
+    assert results[0]["score"] == 0.9
 
 
 @pytest.mark.asyncio
@@ -313,3 +387,26 @@ async def test_a_rerank_failure_degrades_to_the_unreranked_results(
 
     assert results
     assert results[0]["source"] != "reranked"
+
+
+@pytest.mark.asyncio
+async def test_a_semantic_hit_below_the_floor_is_no_citation(
+    core: CoreServices, use_embedding: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Chinese embedding model hands unrelated texts a non-trivial baseline
+    similarity; the semantic floor is what keeps that pseudo-similarity from
+    becoming a citation. A query with no keyword overlap and an orthogonal
+    vector answers nothing instead of a junk hit."""
+    use_embedding()
+    await core.knowledge.import_items(
+        [ImportItem(filename="知识.txt", content="知识库存储本地文档。".encode())],
+        project_id=None,
+    )
+
+    async def orthogonal(spec: dict[str, str], texts: list[str]) -> list[list[float]]:
+        del spec, texts
+        return [[0.0, 1.0]]
+
+    monkeypatch.setattr(core.knowledge.provider, "embed", orthogonal)
+
+    assert await core.knowledge.search("今天天气怎么样", project_id=None) == []

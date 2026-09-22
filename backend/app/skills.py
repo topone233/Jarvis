@@ -21,6 +21,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -187,26 +188,31 @@ def _script_env() -> dict[str, str]:
     return env
 
 
-async def _run_process(argv: list[str], *, cwd: Path) -> str:
+def _run_script_sync(argv: list[str], *, cwd: Path, env: dict[str, str]) -> str:
     """One script, captured output, bounded time - the run's whole contract.
 
     stderr rides with stdout: a traceback is exactly the text the model needs.
+    The script is driven synchronously because `_run_process` puts it on a
+    worker thread: uvicorn's --reload server runs Windows' selector loop,
+    which cannot spawn subprocesses at all (its async API raises a bare
+    NotImplementedError, whose empty message is how `执行异常：` once came
+    out blank). A thread is the one launcher that is loop-agnostic.
     """
     try:
-        process = await asyncio.create_subprocess_exec(
-            *argv,
+        process = subprocess.Popen(
+            argv,
             cwd=cwd,
-            env=_script_env(),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
     except OSError as error:
         return f"skill: 脚本启动失败：{error}"
     try:
-        stdout, _ = await asyncio.wait_for(process.communicate(), SCRIPT_TIMEOUT_SECONDS)
-    except TimeoutError:
+        stdout, _ = process.communicate(timeout=SCRIPT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
         process.kill()
-        await process.communicate()
+        process.communicate()
         return f"skill: 脚本运行超过 {SCRIPT_TIMEOUT_SECONDS} 秒，已强制结束。"
     output = stdout.decode("utf-8", errors="replace").rstrip() if stdout else ""
     if len(output) > SCRIPT_OUTPUT_MAX_CHARS:
@@ -217,6 +223,10 @@ async def _run_process(argv: list[str], *, cwd: Path) -> str:
     if process.returncode not in (0, None):
         output += f"\n（退出码 {process.returncode}）"
     return output or "skill: 脚本没有输出。"
+
+
+async def _run_process(argv: list[str], *, cwd: Path) -> str:
+    return await asyncio.to_thread(_run_script_sync, argv, cwd=cwd, env=_script_env())
 
 
 class SkillService:

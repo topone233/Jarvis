@@ -260,6 +260,51 @@ describe('reduce', () => {
     expect(state.content).toBe('')
   })
 
+  it('replaces the content when a tool round ends', () => {
+    // The server resets its stream between rounds and the next round's text
+    // replaces this one's; appending would glue round two onto round one.
+    const state = run([
+      delta('第一轮的回答'),
+      { type: 'round.reset', messageId: MESSAGE_ID },
+      delta('第二轮的回答'),
+    ])
+    expect(state.content).toBe('第二轮的回答')
+  })
+
+  it('keeps the reasoning across a round reset', () => {
+    // The server accumulates reasoning across rounds on purpose - what a
+    // round thought stays on the page while the answer text turns over.
+    const state = run([
+      { type: 'reasoning.delta', messageId: MESSAGE_ID, delta: '第一轮的想法。' },
+      delta('第一轮的回答'),
+      { type: 'round.reset', messageId: MESSAGE_ID },
+      { type: 'reasoning.delta', messageId: MESSAGE_ID, delta: '第二轮的想法。' },
+      delta('第二轮的回答'),
+    ])
+    expect(state.reasoning).toBe('第一轮的想法。第二轮的想法。')
+    expect(state.content).toBe('第二轮的回答')
+    expect(state.phase).toBe('streaming')
+  })
+
+  it('ignores a round reset that arrives after a terminal event', () => {
+    const state = run([
+      delta('完整回答'),
+      { type: 'message.completed', messageId: MESSAGE_ID, content: '完整回答', metadata: {} },
+      { type: 'round.reset', messageId: MESSAGE_ID },
+      delta('迟到的碎片'),
+    ])
+    expect(state.content).toBe('完整回答')
+  })
+
+  it('ignores a round reset addressed to a different message', () => {
+    const state = run([
+      delta('第一轮'),
+      { type: 'round.reset', messageId: 'msg_other' },
+      delta('第二段'),
+    ])
+    expect(state.content).toBe('第一轮第二段')
+  })
+
   it('records the run status without touching the phase', () => {
     const state = apply(run([]), { type: 'snapshot', status: 'interrupted' })
     expect(state.status).toBe('interrupted')

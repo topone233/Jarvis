@@ -18,6 +18,7 @@ from app.settings import (
     MEMORY_PROMPT,
     SYSTEM_PROMPT,
     read_prompt,
+    read_retrieval_thresholds,
 )
 from app.skills import SkillService
 from app.store import Store
@@ -25,9 +26,9 @@ from app.tokens import IMAGE_TOKEN_ESTIMATE, estimate_tokens
 from app.utils import json_dump, json_load
 
 #: A memory joins the injected list only when its similarity to the current
-#: query clears the floor, and at most this many do. Tuned by hand and kept as
-#: code on purpose: they shape one prompt section, not user-facing behavior.
-MEMORY_RELEVANCE_FLOOR = 0.25
+#: query clears the floor, and at most this many do. The floor is a setting
+#: (`settings.RetrievalThresholds`) because the right value is the embedding
+#: model's business; the cap shapes one prompt section and stays code.
 MEMORY_RELEVANCE_LIMIT = 6
 
 #: How much of a retrieved chunk rides in the system instruction. Raised from
@@ -228,7 +229,13 @@ class ContextManager:
             system, raw_messages, input_budget
         )
         memories, mode = self._select_memories(
-            candidates, conversation_id, artifact, visible_ids, user_query, query_vector
+            candidates,
+            conversation_id,
+            artifact,
+            visible_ids,
+            user_query,
+            query_vector,
+            read_retrieval_thresholds(self.store).memory_floor,
         )
         if [memory["id"] for memory in memories] != [memory["id"] for memory in candidates]:
             system = self._assemble_system_instruction(
@@ -283,6 +290,7 @@ class ContextManager:
         visible_ids: set[str],
         user_query: str,
         query_vector: list[float] | None,
+        memory_floor: float,
     ) -> tuple[list[dict[str, Any]], str]:
         """What this turn's 记忆 section holds, and how it was chosen.
 
@@ -295,7 +303,7 @@ class ContextManager:
         deduped = self._drop_present_memories(candidates, conversation_id, artifact, visible_ids)
         if query_vector is None:
             return deduped, "fallback"
-        return self._rank_memories(deduped, query_vector), "relevance"
+        return self._rank_memories(deduped, query_vector, memory_floor), "relevance"
 
     def _drop_present_memories(
         self,
@@ -364,7 +372,7 @@ class ContextManager:
 
     @staticmethod
     def _rank_memories(
-        memories: list[dict[str, Any]], query_vector: list[float]
+        memories: list[dict[str, Any]], query_vector: list[float], floor: float
     ) -> list[dict[str, Any]]:
         """The memories that clear the relevance floor, best first, capped.
 
@@ -375,7 +383,7 @@ class ContextManager:
         for index, memory in enumerate(memories):
             vector = json_load(memory.get("embedding_json"), None)
             score = _cosine(query_vector, vector) if vector else 0.0
-            if score >= MEMORY_RELEVANCE_FLOOR:
+            if score >= floor:
                 scored.append((-score, index, memory))
         scored.sort(key=lambda item: (item[0], item[1]))
         return [memory for _, _, memory in scored[:MEMORY_RELEVANCE_LIMIT]]

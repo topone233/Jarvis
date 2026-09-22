@@ -84,17 +84,59 @@ class RunBroadcast:
             waiter.set()
 
 
+@dataclass
+class PendingUserInput:
+    """A run paused for something only the user can decide.
+
+    One slot per run - the producer is a single coroutine, so at most one
+    thing can be waiting at a time: a bash command awaiting approval, or the
+    model's question awaiting an answer. `kind` says which, `payload` carries
+    what the popup shows (the command, or the question and its options), and
+    the future is what the producer awaits; the API resolves it with the
+    user's answer. A second answer finds the future done and is refused, so
+    two windows clicking cannot double-resolve.
+    """
+
+    kind: str
+    payload: dict[str, Any]
+    future: asyncio.Future[str]
+
+
 class RunRegistry:
     def __init__(self) -> None:
         self._cancelled: set[str] = set()
         self._broadcasts: dict[str, RunBroadcast] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._pending_input: dict[str, PendingUserInput] = {}
 
     def cancel(self, run_id: str) -> None:
         self._cancelled.add(run_id)
 
     def is_cancelled(self, run_id: str) -> bool:
         return run_id in self._cancelled
+
+    def request_user_input(self, run_id: str, kind: str, payload: dict[str, Any]) -> PendingUserInput:
+        pending = PendingUserInput(
+            kind=kind,
+            payload=payload,
+            future=asyncio.get_running_loop().create_future(),
+        )
+        self._pending_input[run_id] = pending
+        return pending
+
+    def pending_user_input(self, run_id: str) -> PendingUserInput | None:
+        return self._pending_input.get(run_id)
+
+    def resolve_user_input(self, run_id: str, value: str) -> bool:
+        """Deliver the user's answer; False when nothing is waiting for one."""
+        pending = self._pending_input.get(run_id)
+        if pending is None or pending.future.done():
+            return False
+        pending.future.set_result(value)
+        return True
+
+    def pop_user_input(self, run_id: str) -> None:
+        self._pending_input.pop(run_id, None)
 
     def open(self, run_id: str, assistant_message_id: str) -> RunBroadcast:
         broadcast = RunBroadcast(assistant_message_id)
@@ -115,6 +157,7 @@ class RunRegistry:
     def close(self, run_id: str) -> None:
         self._broadcasts.pop(run_id, None)
         self._tasks.pop(run_id, None)
+        self._pending_input.pop(run_id, None)
         self._cancelled.discard(run_id)
 
 

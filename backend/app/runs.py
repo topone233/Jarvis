@@ -3,17 +3,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import time
-from collections.abc import AsyncGenerator, Iterator
+import traceback
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.ask_user_tool import ASK_USER_TOOLS, validate_ask_user
 from app.bash_tool import BASH_STOPPED_TEXT, BASH_TOOLS
 from app.errors import ProviderError, ValidationError
 from app.images import parse_images, write_images
 from app.knowledge_tool import KNOWLEDGE_TOOLS, USAGE, KnowledgeToolService
-from app.runtime import CoreServices, RunBroadcast, RunRegistry
+from app.runtime import CoreServices, PendingUserInput, RunBroadcast, RunRegistry
 from app.schemas import ThinkingLevel
 from app.settings import read_bash_settings, read_tool_limits
 from app.skills import SKILL_TOOLS, SkillToolService
@@ -21,6 +24,8 @@ from app.skills import USAGE as SKILL_USAGE
 from app.store import INTERRUPTED_ERROR
 from app.tokens import estimate_tokens
 from app.utils import json_dump, new_id
+
+logger = logging.getLogger(__name__)
 
 # How far a streaming run may fall behind the database. This window is what a
 # crash or a power cut can cost, so it trades durability against writing on
@@ -64,6 +69,25 @@ async def grace_window(registry: RunRegistry, run_id: str, seconds: float) -> bo
         if remaining <= 0:
             return False
         await asyncio.sleep(min(BASH_GRACE_POLL_SECONDS, remaining))
+
+
+async def wait_user_input(
+    registry: RunRegistry, run_id: str, pending: PendingUserInput
+) -> str | None:
+    """Hold the run for the user's answer; None when the run was stopped.
+
+    The answer rides a future resolved by the API, so there is nothing to
+    poll for but the stop button, and the poll is only there because the
+    future waking the producer directly would race a cancel that arrives in
+    the same moment. A stop wins over a late answer: the run is ending, and
+    the pop-up the user never pressed is about to disappear with it.
+    """
+    while True:
+        if registry.is_cancelled(run_id):
+            return None
+        if pending.future.done():
+            return pending.future.result()
+        await asyncio.sleep(BASH_GRACE_POLL_SECONDS)
 
 
 def encode_sse(event: str, payload: dict[str, Any]) -> str:
@@ -250,12 +274,33 @@ class RunService:
         store = self.services.store
         registry = self.services.run_registry
         sequence = 0
+        # The stages whose most recent audit row is still open. A run that
+        # ends by any path must not leave one open: the screen times a
+        # running row against `now`, so a row without a closing record would
+        # count seconds forever - live and, replayed from the store, after
+        # every reload too.
+        open_stages: list[str] = []
 
         def audit(stage: str, state: str, payload: dict[str, Any]) -> None:
             nonlocal sequence
             sequence += 1
+            if state == "running":
+                if stage not in open_stages:
+                    open_stages.append(stage)
+            elif stage in open_stages:
+                open_stages.remove(stage)
             event = store.create_run_event(run_id, sequence, stage, state, payload)
             broadcast.emit("audit", event)
+
+        def close_open_stages(reason: str) -> None:
+            """Shut every stage still open, as its own failed record.
+
+            Called only from the endings a run did not plan (a tool or the
+            provider raising past every handler); the planned endings close
+            their own rows on the way out, and an empty list costs nothing.
+            """
+            for stage in list(open_stages):
+                audit(stage, "failed", {"reason": reason})
 
         try:
             run = store.get_run(run_id)
@@ -396,6 +441,7 @@ class RunService:
                 *(KNOWLEDGE_TOOLS if has_documents else []),
                 *(SKILL_TOOLS if self.services.skills.has_enabled() else []),
                 *(BASH_TOOLS if bash_settings.enabled else []),
+                *ASK_USER_TOOLS,
             ]
             messages = list(bundle.messages)
             # The empty assistant row this run writes into rode along in the
@@ -431,6 +477,47 @@ class RunService:
                     # The round's accompanying text is otherwise lost - the
                     # next round replaces it on screen - so it rides here.
                     call_payload["round_text"] = round_text
+
+                async def run_tool(
+                    stage: str, execute: Callable[..., Awaitable[str]], *args: Any, **kwargs: Any
+                ) -> tuple[str, bool]:
+                    """Run one tool; (output, False), or (text, True) on a crash.
+
+                    A tool raising must not fail the whole run: the failure
+                    closes the stage's open row (the screen times a running
+                    row against `now`, so an unclosed one counts seconds
+                    forever) and goes back to the model as the tool result,
+                    like every other tool failure is. The bool is what keeps
+                    the caller from celebrating a crash with a completed
+                    record after the failed one.
+                    """
+                    try:
+                        return await execute(*args, **kwargs), False
+                    except Exception as error:
+                        # The type name rides in the text because some
+                        # exceptions - a bare NotImplementedError is the one
+                        # that burned us - stringify to nothing, and a bare
+                        # colon tells nobody anything. The traceback goes to
+                        # the log and onto the audit row, so the crash is
+                        # diagnosable from the console, from the live page,
+                        # and from a reload of the same page.
+                        detail = f"{type(error).__name__}"
+                        if str(error):
+                            detail = f"{detail}: {error}"
+                        failure = f"{name}: 执行异常：{detail}"
+                        logger.exception("工具 %s 执行异常", name)
+                        audit(
+                            stage,
+                            "failed",
+                            {
+                                **call_payload,
+                                "output": failure,
+                                "reason": "执行异常",
+                                "traceback": traceback.format_exc(),
+                            },
+                        )
+                        return failure, True
+
                 # The repeat gate sees every tool the same way: same name and
                 # same arguments, once too often inside the window, is a loop
                 # whatever the tool was. The refusal is the call's tool result,
@@ -460,10 +547,14 @@ class RunService:
                         )
                         return message
                     audit("knowledge_tool", "running", {**call_payload, "command": command})
-                    output = await knowledge_tool.execute(
+                    output, failed = await run_tool(
+                        "knowledge_tool",
+                        knowledge_tool.execute,
                         command,
                         project_id=conversation["project_id"],
                     )
+                    if failed:
+                        return output
                     audit(
                         "knowledge_tool",
                         "completed",
@@ -485,7 +576,9 @@ class RunService:
                         )
                         return message
                     audit("skill_tool", "running", {**call_payload, "command": command})
-                    output = await skill_tool.execute(command)
+                    output, failed = await run_tool("skill_tool", skill_tool.execute, command)
+                    if failed:
+                        return output
                     audit(
                         "skill_tool",
                         "completed",
@@ -507,31 +600,72 @@ class RunService:
                         )
                         return message
                     # The raw call is on the trail and the screen before
-                    # anything runs; the grace window is the user's time to
-                    # read it and stop it. A stop here means the command
-                    # never ran at all.
-                    audit(
-                        "bash_tool",
-                        "running",
-                        {
-                            **call_payload,
-                            "command": command,
-                            "cwd": str(bash_cwd),
-                            "grace_seconds": bash_settings.grace_seconds,
-                        },
-                    )
-                    if await grace_window(registry, run_id, bash_settings.grace_seconds):
+                    # anything runs. What stands between the model and the
+                    # command is the user's: the ask mode holds here until
+                    # they approve or refuse it, the grace mode gives them a
+                    # fixed window to reach the stop button. A stop - or a
+                    # refusal - means the command never ran at all.
+                    if bash_settings.approval_mode == "ask":
                         audit(
                             "bash_tool",
-                            "cancelled",
-                            {**call_payload, "command": command, "reason": "执行前被用户停止"},
+                            "running",
+                            {**call_payload, "command": command, "cwd": str(bash_cwd),
+                             "approval": "ask"},
                         )
-                        return "bash: 用户在执行前停止了这条命令。"
-                    output = await bash_tool.execute(
+                        broadcast.emit(
+                            "user_input.requested",
+                            {"kind": "bash", "command": command, "cwd": str(bash_cwd)},
+                        )
+                        pending = registry.request_user_input(
+                            run_id, "bash", {"command": command, "cwd": str(bash_cwd)}
+                        )
+                        decision = await wait_user_input(registry, run_id, pending)
+                        registry.pop_user_input(run_id)
+                        if decision is None:
+                            audit(
+                                "bash_tool",
+                                "cancelled",
+                                {**call_payload, "command": command,
+                                 "reason": "执行前被用户停止"},
+                            )
+                            return "bash: 用户在执行前停止了这条命令。"
+                        if decision == "deny":
+                            audit(
+                                "bash_tool",
+                                "cancelled",
+                                {**call_payload, "command": command,
+                                 "output": "bash: 用户拒绝了这条命令。",
+                                 "reason": "用户拒绝执行"},
+                            )
+                            return "bash: 用户拒绝了这条命令。"
+                    else:
+                        audit(
+                            "bash_tool",
+                            "running",
+                            {
+                                **call_payload,
+                                "command": command,
+                                "cwd": str(bash_cwd),
+                                "grace_seconds": bash_settings.grace_seconds,
+                            },
+                        )
+                        if await grace_window(registry, run_id, bash_settings.grace_seconds):
+                            audit(
+                                "bash_tool",
+                                "cancelled",
+                                {**call_payload, "command": command,
+                                 "reason": "执行前被用户停止"},
+                            )
+                            return "bash: 用户在执行前停止了这条命令。"
+                    output, failed = await run_tool(
+                        "bash_tool",
+                        bash_tool.execute,
                         command,
                         cwd=bash_cwd,
                         should_cancel=lambda: registry.is_cancelled(run_id),
                     )
+                    if failed:
+                        return output
                     if output == BASH_STOPPED_TEXT:
                         audit(
                             "bash_tool",
@@ -550,6 +684,49 @@ class RunService:
                         {"command": command, "output": output, "output_chars": len(output)},
                     )
                     return output
+                if name == "ask_user":
+                    question, options, invalid = validate_ask_user(parsed)
+                    if invalid is not None:
+                        audit(
+                            "ask_user",
+                            "failed",
+                            {**call_payload, "output": invalid, "reason": "参数无效"},
+                        )
+                        return invalid
+                    # The run stops here until the user answers the popup -
+                    # which may be never, and that is the point: the model
+                    # asked for a decision only they can make. A stop ends
+                    # the whole run, so a None here only needs the closing
+                    # audit row; the outer loop's own cancel check finishes
+                    # the run right after.
+                    audit(
+                        "ask_user",
+                        "running",
+                        {**call_payload, "question": question, "options": options},
+                    )
+                    broadcast.emit(
+                        "user_input.requested",
+                        {"kind": "question", "question": question, "options": options},
+                    )
+                    pending = registry.request_user_input(
+                        run_id, "question", {"question": question, "options": options}
+                    )
+                    answer = await wait_user_input(registry, run_id, pending)
+                    registry.pop_user_input(run_id)
+                    if answer is None:
+                        audit(
+                            "ask_user",
+                            "cancelled",
+                            {**call_payload, "question": question, "reason": "运行被用户停止"},
+                        )
+                        return "ask_user: 用户停止了运行，没有回答。"
+                    audit(
+                        "ask_user",
+                        "completed",
+                        {**call_payload, "question": question, "options": options,
+                         "answer": answer},
+                    )
+                    return f"用户的回答：{answer}"
                 if name in ("save_memory", "forget_memory"):
                     # Multi-round protocol: an assistant message's tool calls
                     # must be answered, so memory writes happen right here
@@ -694,17 +871,34 @@ class RunService:
                             ),
                         }
                     )
+                # The next round's text replaces this round's on the wire, but
+                # the thinking does not: reasoning accumulates across rounds -
+                # a paragraph break marks the seam - because the inter-round
+                # words being shown live does not make the thought behind them
+                # disposable.
                 response_parts = []
-                reasoning_parts = []
+                if reasoning_parts:
+                    reasoning_parts.append("\n\n")
                 flushed = 0
                 flushed_at = time.monotonic()
-                broadcast.show_text(content="", reasoning="")
+                broadcast.show_text(content="", reasoning="".join(reasoning_parts))
+                # The shrinking content is a boundary a subscriber cannot
+                # infer from snapshots alone: the reset tells it to replace
+                # rather than append, and follow() re-homes its own cursor.
+                broadcast.emit("round.reset", {"message_id": assistant_id})
                 # Between rounds the stream is not running, so its own cancel
                 # check cannot fire; the stop button has to work here too.
                 if registry.is_cancelled(run_id):
                     partial = "".join(response_parts)
                     store.update_message(
-                        assistant_id, partial, {"run_id": run_id, "cancelled": True}
+                        assistant_id,
+                        partial,
+                        {
+                            "run_id": run_id,
+                            "citations": bundle.citations,
+                            "reasoning": "".join(reasoning_parts),
+                            "cancelled": True,
+                        },
                     )
                     store.update_run(
                         run_id,
@@ -770,6 +964,10 @@ class RunService:
                     completed=True,
                 )
                 audit("model_stream", "failed", {"error": str(error)})
+                # Before the terminal event, not after: a subscriber that has
+                # seen `closed` stops reading, so closers landing later would
+                # reach only the next reload.
+                close_open_stages("运行提前结束")
             broadcast.finish("run.failed", {"run_id": run_id, "error": str(error)})
         except Exception as error:
             # Anything unexpected still has to close the run: a subscriber left
@@ -779,6 +977,7 @@ class RunService:
                 store.update_run(run_id, status="failed", error_message=str(error), completed=True)
             with contextlib.suppress(Exception):
                 audit("model_stream", "failed", {"error": str(error)})
+                close_open_stages("运行提前结束")
             broadcast.finish("run.failed", {"run_id": run_id, "error": str(error)})
         finally:
             if not broadcast.closed:
@@ -786,6 +985,7 @@ class RunService:
                 # run has to end here: a subscriber left waiting on an open
                 # broadcast would never be told the answer stopped coming.
                 with contextlib.suppress(Exception):
+                    close_open_stages("运行提前结束")
                     store.update_run(
                         run_id,
                         status="interrupted",
@@ -818,6 +1018,12 @@ class RunService:
             while events_sent < len(broadcast.events):
                 name, payload = broadcast.events[events_sent]
                 events_sent += 1
+                # A round boundary empties the published content; the cursor
+                # goes back with it, so the next round's text is sent whole
+                # and the client - told by the same event - replaces rather
+                # than appends. Reasoning never shrinks, so its cursor stays.
+                if name == "round.reset":
+                    content_sent = 0
                 yield encode_sse(name, payload)
             if len(broadcast.content) > content_sent:
                 yield encode_sse(
@@ -915,6 +1121,26 @@ class RunService:
             return run
         self.services.run_registry.cancel(run_id)
         return self.services.store.update_run(run_id, status="cancelling")
+
+    def submit_user_input(self, run_id: str, value: str) -> dict[str, Any]:
+        """Deliver the user's answer to a run paused waiting for one.
+
+        A run that is not waiting - never asked, already answered, already
+        ended - is refused rather than silently dropped: the user pressed a
+        button and deserves to know nothing heard it. The value is checked
+        against what is actually being waited for, so a bash approval cannot
+        carry free text and a question cannot be answered with "approve".
+        """
+        pending = self.services.run_registry.pending_user_input(run_id)
+        if pending is None:
+            raise ValidationError("该运行没有在等待输入。")
+        if pending.future.done():
+            raise ValidationError("这个请求已经被处理过了。")
+        if pending.kind == "bash" and value not in ("approve", "deny"):
+            raise ValidationError("bash 审批只接受批准或拒绝。")
+        if not self.services.run_registry.resolve_user_input(run_id, value):
+            raise ValidationError("该运行没有在等待输入。")
+        return self.services.store.get_run(run_id)
 
     @staticmethod
     def _derive_title(content: str) -> str:

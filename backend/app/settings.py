@@ -81,14 +81,35 @@ TOOL_REPEAT_LIMIT_DEFAULT = 10
 TOOL_REPEAT_LIMIT_CEILING = 1000
 
 #: The bash tool. On by default - the user asked it in - with the working
-#: directory commands start in (empty/absent = the data directory) and the
-#: grace window every command waits through before executing, which is what
+#: directory commands start in, and how a command gets to run:
+#: "ask" holds the run until the user approves or denies it in the popup
+#: (the default - the user asked for approval over a countdown), "grace"
+#: keeps the old fixed buffer every command waits through, which is what
 #: leaves the user time to stop an irreversible one.
 BASH_ENABLED = "bash_enabled"
 BASH_WORKING_DIR = "bash_working_dir"
 BASH_GRACE_SECONDS = "bash_grace_seconds"
 BASH_GRACE_SECONDS_DEFAULT = 5
 BASH_GRACE_SECONDS_CEILING = 60
+BASH_APPROVAL_MODE = "bash_approval_mode"
+BASH_APPROVAL_MODES = ("ask", "grace")
+BASH_APPROVAL_MODE_DEFAULT = "ask"
+
+#: Retrieval relevance floors. A hit below its floor is not a hit: embeddings
+#: from Chinese models (bge-large especially) hand unrelated texts a
+#: non-trivial baseline similarity, and without a floor that pseudo-similarity
+#: turns junk into injected memories and citations. The right value depends on
+#: which embedding/rerank model is configured, so they are settings rather
+#: than constants - the knowledge page's try-search shows the scores to
+#: calibrate against.
+RETRIEVAL_MEMORY_FLOOR = "retrieval_memory_floor"
+RETRIEVAL_MEMORY_FLOOR_DEFAULT = 0.55
+RETRIEVAL_SEMANTIC_FLOOR = "retrieval_semantic_floor"
+RETRIEVAL_SEMANTIC_FLOOR_DEFAULT = 0.50
+RETRIEVAL_RERANK_FLOOR = "retrieval_rerank_floor"
+RETRIEVAL_RERANK_FLOOR_DEFAULT = 0.25
+#: All three are cosine/relevance scores on 0..1, so one shared ceiling.
+RETRIEVAL_FLOOR_CEILING = 0.99
 
 
 def read_prompt(store: Store, key: str) -> str:
@@ -136,6 +157,7 @@ class BashSettings:
     enabled: bool = True
     working_dir: str | None = None
     grace_seconds: int = BASH_GRACE_SECONDS_DEFAULT
+    approval_mode: str = BASH_APPROVAL_MODE_DEFAULT
 
 
 def read_bash_settings(store: Store) -> BashSettings:
@@ -143,6 +165,7 @@ def read_bash_settings(store: Store) -> BashSettings:
     enabled = stored.get(BASH_ENABLED)
     working = stored.get(BASH_WORKING_DIR)
     grace = stored.get(BASH_GRACE_SECONDS)
+    mode = stored.get(BASH_APPROVAL_MODE)
     return BashSettings(
         enabled=enabled if isinstance(enabled, bool) else True,
         working_dir=(working.strip() if isinstance(working, str) and working.strip() else None),
@@ -153,6 +176,44 @@ def read_bash_settings(store: Store) -> BashSettings:
             if isinstance(grace, int) and not isinstance(grace, bool)
             else BASH_GRACE_SECONDS_DEFAULT
         ),
+        approval_mode=(
+            mode
+            if isinstance(mode, str) and mode in BASH_APPROVAL_MODES
+            else BASH_APPROVAL_MODE_DEFAULT
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class RetrievalThresholds:
+    """The three relevance floors a retrieval pass applies.
+
+    Read per call rather than per process: a settings change reaches the very
+    next search. Values are raw cosine similarities (memory, semantic) or a
+    rerank relevance score, all on 0..1.
+    """
+
+    memory_floor: float = RETRIEVAL_MEMORY_FLOOR_DEFAULT
+    semantic_floor: float = RETRIEVAL_SEMANTIC_FLOOR_DEFAULT
+    rerank_floor: float = RETRIEVAL_RERANK_FLOOR_DEFAULT
+
+
+def read_retrieval_thresholds(store: Store) -> RetrievalThresholds:
+    """The three floors in force. No row means the code default."""
+    stored = store.list_settings()
+    memory = stored.get(RETRIEVAL_MEMORY_FLOOR)
+    semantic = stored.get(RETRIEVAL_SEMANTIC_FLOOR)
+    rerank = stored.get(RETRIEVAL_RERANK_FLOOR)
+    return RetrievalThresholds(
+        memory_floor=memory
+        if isinstance(memory, (int | float))
+        else RETRIEVAL_MEMORY_FLOOR_DEFAULT,
+        semantic_floor=(
+            semantic if isinstance(semantic, (int | float)) else RETRIEVAL_SEMANTIC_FLOOR_DEFAULT
+        ),
+        rerank_floor=rerank
+        if isinstance(rerank, (int | float))
+        else RETRIEVAL_RERANK_FLOOR_DEFAULT,
     )
 
 
@@ -206,6 +267,11 @@ def overview(store: Store) -> dict[str, Any]:
                 "value": stored.get(BASH_GRACE_SECONDS, BASH_GRACE_SECONDS_DEFAULT),
                 "default": BASH_GRACE_SECONDS_DEFAULT,
                 "is_default": BASH_GRACE_SECONDS not in stored,
+            },
+            "approval_mode": {
+                "value": stored.get(BASH_APPROVAL_MODE, BASH_APPROVAL_MODE_DEFAULT),
+                "default": BASH_APPROVAL_MODE_DEFAULT,
+                "is_default": BASH_APPROVAL_MODE not in stored,
             },
         },
     }

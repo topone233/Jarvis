@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -91,45 +92,74 @@ def _bash_env(root: Path) -> dict[str, str]:
     return env
 
 
-async def _wait_output(
-    process: asyncio.subprocess.Process,
-    *,
+def _run_sync(
+    bash_path: str,
+    command: str,
+    cwd: Path,
+    env: dict[str, str],
     should_cancel: Callable[[], bool] | None,
-) -> tuple[str | None, bool]:
-    """Wait the child out; (output, False) when it finished on its own.
+) -> str:
+    """One command, run to completion - the whole wait, kill and collect.
 
-    Output None means the child was killed before finishing: True as the
-    second element says the caller's cancel asked for it (and the caller
-    answers with BASH_STOPPED_TEXT), while a timeout raises instead, so the
-    two endings cannot be confused.
+    The subprocess is driven synchronously and `execute` puts it on a worker
+    thread, so the tool works under every event loop: uvicorn's --reload
+    server runs Windows' selector loop, which cannot spawn subprocesses at
+    all (its async API raises a bare NotImplementedError, whose empty message
+    is how `执行异常：` once came out blank). A thread is the one launcher
+    that is loop-agnostic.
 
-    The reading happens in a task of its own and the loop only watches it:
-    cancelling a half-finished `communicate()` loses what it has already
-    read, so polling it directly would drop output line by line. Killing the
-    process is what ends the read - `communicate` unblocks on its own then.
+    communicate() is retried in short slices so a cancel is noticed within
+    CANCEL_POLL_SECONDS. A slice that ends in TimeoutExpired keeps what it
+    already read - CPython accumulates the partial output on the Popen object
+    and the docs promise a retry loses none of it - so the final call returns
+    the whole output.
     """
-    reader = asyncio.create_task(process.communicate())
-    deadline = time.monotonic() + BASH_TIMEOUT_SECONDS
     try:
-        while True:
-            done, _ = await asyncio.wait({reader}, timeout=CANCEL_POLL_SECONDS)
-            if done:
-                stdout, _ = reader.result()
-                text = (
-                    stdout.decode("utf-8", errors="replace").replace("\r\n", "\n") if stdout else ""
-                )
-                return text, False
-            if should_cancel is not None and should_cancel():
-                process.kill()
-                await reader
-                return None, True
-            if time.monotonic() >= deadline:
-                process.kill()
-                await reader
-                raise TimeoutError
-    finally:
-        if not reader.done():
-            reader.cancel()
+        process = subprocess.Popen(
+            [bash_path, "-s"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=cwd,
+            env=env,
+        )
+    except OSError as error:
+        return f"bash: 无法启动（工作目录 {cwd}）：{error}"
+    # The command rides on stdin, not the command line: a script longer than
+    # Windows' 32k argv limit, or one carrying newlines and quotes, then costs
+    # nothing special. Delivered exactly once and closed, so `bash -s` knows
+    # the script has ended.
+    assert process.stdin is not None
+    process.stdin.write(command.encode("utf-8"))
+    process.stdin.close()
+    deadline = time.monotonic() + BASH_TIMEOUT_SECONDS
+    while True:
+        if should_cancel is not None and should_cancel():
+            process.kill()
+            process.communicate()
+            return BASH_STOPPED_TEXT
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            process.kill()
+            process.communicate()
+            # Only this error travels the thread boundary as a signal; the
+            # caller answers with the timeout text, like it always has.
+            raise TimeoutError
+        try:
+            stdout, _ = process.communicate(timeout=min(CANCEL_POLL_SECONDS, remaining))
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    output = stdout.decode("utf-8", errors="replace").replace("\r\n", "\n") if stdout else ""
+    output = output.rstrip()
+    if len(output) > BASH_OUTPUT_MAX_CHARS:
+        output = (
+            output[:BASH_OUTPUT_MAX_CHARS]
+            + f"\n…（输出超过 {BASH_OUTPUT_MAX_CHARS} 字符，已截断。）"
+        )
+    if process.returncode not in (0, None):
+        output += f"\n（退出码 {process.returncode}）"
+    return output or "bash: 命令执行完成，没有输出。"
 
 
 BASH_TOOLS: list[dict[str, Any]] = [
@@ -140,8 +170,8 @@ BASH_TOOLS: list[dict[str, Any]] = [
             "description": (
                 "在这台 Windows 电脑上用 Git Bash 执行一条 shell 命令。真实执行，不是模拟："
                 "可以读写文件、运行脚本、安装依赖，改动无法撤销。命令可用管道、重定向和 &&；"
-                "Windows 路径建议写成正斜杠（C:/Users/...）。每次执行前有几秒缓冲期，"
-                "用户可能会在此期间停止命令；输出最多返回约 2 万字符，超过 120 秒会被强制结束。"
+                "Windows 路径建议写成正斜杠（C:/Users/...）。执行前需要用户批准或留有缓冲期，"
+                "输出最多返回约 2 万字符，超过 120 秒会被强制结束。"
             ),
             "parameters": {
                 "type": "object",
@@ -181,40 +211,13 @@ class BashToolService:
             return "bash: 没有找到 Git Bash，请安装 Git for Windows 后重试。"
         bash_path = Path(bash)
         try:
-            process = await asyncio.create_subprocess_exec(
+            return await asyncio.to_thread(
+                _run_sync,
                 str(bash_path),
-                "-s",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=cwd,
-                env=_bash_env(_git_root(bash_path)),
+                command,
+                cwd,
+                _bash_env(_git_root(bash_path)),
+                should_cancel,
             )
-        except OSError as error:
-            return f"bash: 无法启动（工作目录 {cwd}）：{error}"
-        # The command rides on stdin, not the command line: a script longer
-        # than Windows' 32k argv limit, or one carrying newlines and quotes,
-        # then costs nothing special. Delivered exactly once, ahead of the
-        # wait loop, so a retried wait can never resend it; closed so `bash -s`
-        # knows the script has ended.
-        assert process.stdin is not None
-        process.stdin.write(command.encode("utf-8"))
-        await process.stdin.drain()
-        process.stdin.close()
-        try:
-            output, stopped = await _wait_output(process, should_cancel=should_cancel)
         except TimeoutError:
             return f"bash: 命令运行超过 {BASH_TIMEOUT_SECONDS} 秒，已强制结束。"
-        # No output and no kill is not a state the waiter can produce, so the
-        # None check only exists to say so; the two travel together.
-        if stopped or output is None:
-            return BASH_STOPPED_TEXT
-        output = output.rstrip()
-        if len(output) > BASH_OUTPUT_MAX_CHARS:
-            output = (
-                output[:BASH_OUTPUT_MAX_CHARS]
-                + f"\n…（输出超过 {BASH_OUTPUT_MAX_CHARS} 字符，已截断。）"
-            )
-        if process.returncode not in (0, None):
-            output += f"\n（退出码 {process.returncode}）"
-        return output or "bash: 命令执行完成，没有输出。"

@@ -687,3 +687,70 @@ async def test_migration_backfills_vec_rows_from_stored_embeddings(
         (document["id"],),
     )
     assert rows[0]["n"] > 0
+
+
+def test_strip_page_furniture_counts_folio_lines_with_digits_folded() -> None:
+    """A header that carries its own page number never repeats verbatim; it
+    is folio-shaped, so folding digits makes 「第 3 页」 and 「第 4 页」 one
+    line. A body line whose digits vary is not folio-shaped and survives."""
+    pages = [
+        f"产品手册 · 第 {index} 页\n\n登录模块第{index}章的接口约定。\n第{index}节描述操作步骤。"
+        for index in range(1, 4)
+    ]
+    stripped = knowledge_module._strip_page_furniture(pages)
+    joined = "\n".join(stripped)
+    assert "产品手册" not in joined
+    assert "登录模块第1章的接口约定。" in joined
+    assert "登录模块第3章的接口约定。" in joined
+    assert "第3节描述操作步骤。" in joined
+
+
+def test_strip_page_furniture_kills_decorated_folio_lines_without_agreement() -> None:
+    """— 3 —, · 4 ·, - 5 -: a line that is nothing but a folio in punctuation
+    dies at the page edge even though no two pages agree on it."""
+    pages = [
+        "— 3 —\n正文甲的第一行。\n正文甲的第二行。",
+        "· 4 ·\n正文乙的第一行。\n正文乙的第二行。",
+        "- 5 -\n正文丙的第一行。\n正文丙的第二行。",
+    ]
+    assert knowledge_module._strip_page_furniture(pages) == [
+        "正文甲的第一行。\n正文甲的第二行。",
+        "正文乙的第一行。\n正文乙的第二行。",
+        "正文丙的第一行。\n正文丙的第二行。",
+    ]
+
+
+def test_strip_page_furniture_keeps_a_single_page_whole() -> None:
+    """One page has no repetition to observe, so nothing is judged."""
+    page = "Jarvis 手册\n第 1 页\n正文。"
+    assert knowledge_module._strip_page_furniture([page]) == [page]
+
+
+@pytest.mark.asyncio
+async def test_pdf_strips_a_header_that_carries_the_page_number(core: CoreServices) -> None:
+    """The real-world leak: a Word export stamps 「产品手册 · 第 N 页」 on
+    every page - verbatim never equal, folio-shaped and equal with digits
+    folded. The body's own varying numbers (第 N 章) stay."""
+    import pymupdf
+
+    buffer = io.BytesIO()
+    with pymupdf.open() as source:
+        for index in range(1, 4):
+            page = source.new_page()
+            page.insert_text((72, 40), f"产品手册 · 第 {index} 页", fontsize=9, fontname="china-s")
+            page.insert_text(
+                (72, 120),
+                f"登录模块第{index}章的接口约定：统一返回 JSON。",
+                fontsize=11,
+                fontname="china-s",
+            )
+        source.save(buffer)
+    imported = await core.knowledge.import_items(
+        [ImportItem(filename="手册.pdf", content=buffer.getvalue())], project_id=None
+    )
+    assert imported[-1]["status"] == "ready"
+    content = imported[-1]["document"]["content"]
+
+    assert "产品手册" not in content
+    assert "登录模块第1章的接口约定" in content
+    assert "登录模块第3章的接口约定" in content

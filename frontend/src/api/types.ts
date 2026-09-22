@@ -340,9 +340,22 @@ export interface RetrievalModelSetting {
 }
 
 /** Both retrieval configs; a kind the server has none of comes back null. */
+/** One retrieval floor as the GET returns it: the value in force and the
+ *  default it restores to, the shape AppSettings.tool_limits draws. */
+export interface RetrievalThresholdState {
+  value: number
+  default: number
+  is_default: boolean
+}
+
 export interface RetrievalSettings {
   embedding: RetrievalModelSetting | null
   rerank: RetrievalModelSetting | null
+  thresholds: {
+    memory_floor: RetrievalThresholdState
+    semantic_floor: RetrievalThresholdState
+    rerank_floor: RetrievalThresholdState
+  }
 }
 
 /**
@@ -350,11 +363,17 @@ export interface RetrievalSettings {
  *
  * Same key deal as profiles: a value replaces the stored key, an empty string
  * deletes it, and leaving the field out keeps whatever is stored. A kind sent
- * as null clears that whole config; a kind left out is untouched.
+ * as null clears that whole config; a kind left out is untouched. A threshold
+ * sent as a number writes it, null restores its default; left out is untouched.
  */
 export interface RetrievalSettingsPatch {
   embedding?: { base_url: string; model: string; api_key?: string | null } | null
   rerank?: { base_url: string; model: string; api_key?: string | null } | null
+  thresholds?: {
+    memory_floor?: number | null
+    semantic_floor?: number | null
+    rerank_floor?: number | null
+  }
 }
 
 /** The response of the retrieval test endpoints. */

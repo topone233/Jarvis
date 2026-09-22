@@ -1030,3 +1030,115 @@ async def test_a_running_bash_command_is_killed_when_the_run_stops(
     steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
     assert steps[-1]["state"] == "cancelled"
     assert steps[-1]["payload"]["reason"] == "执行中被用户停止"
+
+
+async def test_reasoning_accumulates_across_tool_rounds(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """Thinking from earlier rounds is not disposable.
+
+    The next round's text replaces the answer text on purpose, but the thought
+    behind each round joins one growing block - a paragraph break at the seam -
+    and the run ends with the whole block in the metadata, which is also what
+    a reload reads back. The live stream carries one `round.reset` at the
+    boundary so the client knows to replace rather than append.
+    """
+    await _import_one_case(core)
+    provider = paced(
+        ["我看一下知识库。"],
+        reasoning=["第一轮的想法。"],
+        tail_events=[
+            _knowledge_call("list"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"reasoning": ["第二轮的想法。"], "chunks": ["知识库里有一份 cases.md。"]}],
+    )
+    service, run = _begin(core, profile)
+
+    async def watch() -> str:
+        text = ""
+        async for chunk in service.follow(run["id"]):
+            text += chunk
+        return text
+
+    watcher = asyncio.gather(watch())
+    await asyncio.sleep(0.05)
+    provider.release.set()
+    (live,) = await watcher
+
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+    names = [name for name, _ in _parse(live)]
+    assert names.count("round.reset") == 1
+    assert names.index("round.reset") < names.index("message.completed")
+    metadata = core.store.get_message(run["assistant_message_id"])["metadata"]
+    assert metadata["reasoning"] == "第一轮的想法。\n\n第二轮的想法。"
+    assert core.store.get_message(run["assistant_message_id"])["content"] == (
+        "知识库里有一份 cases.md。"
+    )
+
+
+async def test_a_tool_crash_answers_as_text_and_closes_its_row(
+    core: CoreServices, profile: dict[str, Any], paced: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool raising must not fail the run: the crash goes back to the model
+    as words, the stage's row closes as failed (an open row would count
+    seconds on screen forever), and the model answers anyway."""
+    core.store.set_setting("bash_grace_seconds", 0)
+    provider = paced(
+        ["我来执行一个命令。"],
+        tail_events=[
+            _bash_call("echo hi"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["命令出错了，我直接说明结论。"]}],
+    )
+
+    async def boom(command: str, *, cwd: Path, should_cancel: Any = None) -> str:
+        del command, cwd, should_cancel
+        raise RuntimeError("子进程炸了")
+
+    monkeypatch.setattr(core.bash_tool, "execute", boom)
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
+    assert [(step["state"]) for step in steps] == ["running", "failed"]
+    assert "执行异常" in steps[1]["payload"]["output"]
+    assert "子进程炸了" in steps[1]["payload"]["output"]
+    message = core.store.get_message(run["assistant_message_id"])
+    assert message["content"] == "命令出错了，我直接说明结论。"
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    assert "执行异常" in tool_messages[0]["content"]
+
+
+async def test_an_unplanned_ending_closes_the_rows_it_left_open(
+    core: CoreServices, profile: dict[str, Any], paced: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever ends a run ahead of its plan, no audit row may stay open: the
+    closers go out before the terminal event, so a watching client sees the
+    row stop instead of timing it against `now` forever."""
+    core.store.set_setting("bash_grace_seconds", 0)
+    provider = paced(
+        ["我来执行一个命令。"],
+        tail_events=[
+            _bash_call("echo hi"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["不会到这里。"]}],
+    )
+
+    async def exploding_grace(registry: Any, run_id: str, seconds: float) -> bool:
+        del registry, run_id, seconds
+        raise RuntimeError("窗口本身炸了")
+
+    monkeypatch.setattr("app.runs.grace_window", exploding_grace)
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "failed"
+
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
+    assert [(step["state"]) for step in steps] == ["running", "failed"]
+    assert steps[1]["payload"]["reason"] == "运行提前结束"
+    model_steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "model_stream"]
+    assert [step["state"] for step in model_steps] == ["running", "failed"]

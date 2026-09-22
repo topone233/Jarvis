@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -309,6 +311,30 @@ async def test_run_truncates_enormous_output(
     output = await _one(SkillToolService(installed), "run demo loud.py")
     assert "已截断" in output
     assert len(output) < 200
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the selector loop is a Windows affair")
+def test_a_script_runs_on_the_selector_loop(skills: SkillService, tmp_path: Path) -> None:
+    """The regression behind `执行异常：` once coming out blank.
+
+    uvicorn's --reload server runs Windows' selector event loop, which cannot
+    spawn subprocesses: its async API raises a bare NotImplementedError. The
+    script is driven from a worker thread precisely so that it also works
+    here - under a selector loop chosen on purpose.
+    """
+    source = _write_skill(tmp_path / "demo")
+    (source / "scripts").mkdir()
+    (source / "scripts" / "echo.py").write_text(
+        "import sys\nprint('回声', ' '.join(sys.argv[1:]))", encoding="utf-8"
+    )
+    skills.import_from_path(str(source))
+    previous = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        output = asyncio.run(SkillToolService(skills).execute("run demo scripts/echo.py 甲"))
+    finally:
+        asyncio.set_event_loop_policy(previous)
+    assert "回声 甲" in output
 
 
 async def test_unknown_and_empty_commands_name_the_usage(skills: SkillService) -> None:

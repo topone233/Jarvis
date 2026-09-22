@@ -514,3 +514,34 @@ async def test_knowledge_citations_are_numbered_and_carry_an_outline(
 def test_memories_table_has_embedding_cache_columns(core: CoreServices) -> None:
     columns = {row["name"] for row in core.database.fetchall("PRAGMA table_info(memories)")}
     assert {"embedding_json", "embedding_model"} <= columns
+
+
+@pytest.mark.asyncio
+async def test_the_memory_floor_is_a_setting(
+    core: CoreServices,
+    profile: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    use_embedding: Callable[[], None],
+) -> None:
+    """The floor is the embedding model's business, so it is a setting: a
+    memory at 0.5 similarity stays out at the default floor and comes in
+    once the floor is lowered - no code change in between."""
+    use_embedding()
+
+    async def embed(spec: dict[str, Any], texts: list[str]) -> list[list[float]]:
+        del spec
+        # The query sits on one axis; the memory is 0.5 cosine away from it.
+        return [
+            [1.0, 0.0] if text == "今晚买点苹果" else [0.5, 0.8660254037844387] for text in texts
+        ]
+
+    monkeypatch.setattr(core.context.provider, "embed", embed)
+    save_call(core, "用户最喜欢吃苹果", say(core, profile, "我最喜欢吃苹果。"), key="水果")
+    conversation = core.store.create_conversation("对话", None, profile["id"], False)
+
+    strict = await core.context.build(conversation["id"], profile, "今晚买点苹果")
+    assert strict.memories == []
+
+    core.store.set_setting("retrieval_memory_floor", 0.4)
+    relaxed = await core.context.build(conversation["id"], profile, "今晚买点苹果")
+    assert [memory["content"] for memory in relaxed.memories] == ["用户最喜欢吃苹果"]

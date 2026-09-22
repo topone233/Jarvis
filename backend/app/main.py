@@ -35,8 +35,18 @@ from app.schemas import (
     SetupRequest,
     SkillEnabledUpdate,
     SkillImportRequest,
+    UserInputSubmission,
 )
 from app.sections import parse_sections
+from app.settings import (
+    RETRIEVAL_MEMORY_FLOOR,
+    RETRIEVAL_MEMORY_FLOOR_DEFAULT,
+    RETRIEVAL_RERANK_FLOOR,
+    RETRIEVAL_RERANK_FLOOR_DEFAULT,
+    RETRIEVAL_SEMANTIC_FLOOR,
+    RETRIEVAL_SEMANTIC_FLOOR_DEFAULT,
+    read_retrieval_thresholds,
+)
 from app.store import RETRIEVAL_KEY_IDS
 
 
@@ -268,6 +278,27 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                     "has_api_key": spec["has_api_key"],
                 }
             )
+        # Same shape AppSettings.tool_limits draws: the value in force next to
+        # the default it restores to, so the form can show both.
+        stored = core.store.list_settings()
+        floors = read_retrieval_thresholds(core.store)
+        result["thresholds"] = {
+            "memory_floor": {
+                "value": floors.memory_floor,
+                "default": RETRIEVAL_MEMORY_FLOOR_DEFAULT,
+                "is_default": RETRIEVAL_MEMORY_FLOOR not in stored,
+            },
+            "semantic_floor": {
+                "value": floors.semantic_floor,
+                "default": RETRIEVAL_SEMANTIC_FLOOR_DEFAULT,
+                "is_default": RETRIEVAL_SEMANTIC_FLOOR not in stored,
+            },
+            "rerank_floor": {
+                "value": floors.rerank_floor,
+                "default": RETRIEVAL_RERANK_FLOOR_DEFAULT,
+                "is_default": RETRIEVAL_RERANK_FLOOR not in stored,
+            },
+        }
         return result
 
     def _retrieval_test_spec(
@@ -330,6 +361,23 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 {"base_url": values["base_url"], "model": values["model"]},
                 has_api_key=has_api_key,
             )
+        # The floors ride the same PUT, with the same per-key deal: a number
+        # writes, null restores the default by deleting the row, a key left
+        # out leaves what is stored.
+        thresholds = updates.get("thresholds")
+        if thresholds is not None:
+            for name, key in (
+                ("memory_floor", RETRIEVAL_MEMORY_FLOOR),
+                ("semantic_floor", RETRIEVAL_SEMANTIC_FLOOR),
+                ("rerank_floor", RETRIEVAL_RERANK_FLOOR),
+            ):
+                if name not in thresholds:
+                    continue
+                value = thresholds[name]
+                if value is None:
+                    core.store.delete_setting(key)
+                else:
+                    core.store.set_setting(key, float(value))
         return _public_retrieval_settings(core)
 
     @app.post("/api/retrieval-settings/embedding/test")
@@ -530,6 +578,16 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     @app.post("/api/runs/{run_id}/cancel")
     async def cancel_run(run_id: str, core: CoreServices = Depends(services)) -> dict[str, Any]:
         return RunService(core).cancel(run_id)
+
+    @app.post("/api/runs/{run_id}/user_input")
+    async def submit_user_input(
+        run_id: str,
+        payload: UserInputSubmission,
+        core: CoreServices = Depends(services),
+    ) -> dict[str, Any]:
+        """Answer a run that paused for the user: a bash approval or a
+        question's answer. Refused when nothing is waiting."""
+        return RunService(core).submit_user_input(run_id, payload.value)
 
     @app.get("/api/runs/{run_id}/events")
     async def list_run_events(

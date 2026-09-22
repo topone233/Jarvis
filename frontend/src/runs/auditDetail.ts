@@ -51,6 +51,8 @@ export function detailLines(row: AuditRow): DetailLine[] {
       return toolLines(payload, 'skill')
     case 'bash_tool':
       return bashLines(row, payload)
+    case 'ask_user':
+      return askUserLines(payload)
     case 'tool_call':
       return toolLines(payload, null)
     case 'tool_rounds_exhausted':
@@ -84,6 +86,15 @@ export function summaryOf(row: AuditRow): string {
     // Several rows can now share one stage label, so the command is what
     // tells them apart on the strip without expanding anything.
     parts.push(payload.command)
+  }
+  if (row.stage === 'ask_user') {
+    // While the model waits, the question is the headline; once answered,
+    // the choice the user made is what the strip should say.
+    if (typeof payload.answer === 'string' && payload.answer !== '') {
+      parts.push(`回答：${payload.answer}`)
+    } else if (typeof payload.question === 'string' && payload.question !== '') {
+      parts.push(payload.question)
+    }
   }
   if (
     row.stage === 'context_retrieval' &&
@@ -189,16 +200,18 @@ function memoryLines(payload: Record<string, unknown>): DetailLine[] {
 }
 
 /**
- * A bash call's rows carry one thing the other tools do not: a window of
- * seconds between showing the command and running it, which is the user's
- * time to stop it. While the row is running that window is the headline -
- * first thing read, before the call JSON - and the directory it will run in
- * rides along, since the settings' working directory is not visible anywhere
- * else on the answer.
+ * A bash call's rows carry one thing the other tools do not: what stands
+ * between the model asking for a command and that command running. In the
+ * grace mode it is a window of seconds to read the command and stop it; in
+ * the ask mode it is the user's own approval, and while the row runs that
+ * request is the headline. The directory rides along either way, since the
+ * settings' working directory is not visible anywhere else on the answer.
  */
 function bashLines(row: AuditRow, payload: Record<string, unknown>): DetailLine[] {
   const lines: DetailLine[] = []
-  if (
+  if (row.state === 'running' && payload.approval === 'ask') {
+    lines.push({ kind: 'text', text: '等待用户批准后执行。' })
+  } else if (
     row.state === 'running' &&
     typeof payload.grace_seconds === 'number' &&
     payload.grace_seconds > 0
@@ -212,6 +225,27 @@ function bashLines(row: AuditRow, payload: Record<string, unknown>): DetailLine[
     lines.push({ kind: 'text', text: `工作目录：${payload.cwd}` })
   }
   lines.push(...toolLines(payload, 'bash'))
+  return lines
+}
+
+/** The model's question for the user, the choices offered, and the answer. */
+function askUserLines(payload: Record<string, unknown>): DetailLine[] {
+  const lines: DetailLine[] = []
+  if (typeof payload.question === 'string' && payload.question !== '') {
+    lines.push({ kind: 'text', text: payload.question })
+  }
+  if (Array.isArray(payload.options) && payload.options.length > 0) {
+    const options = payload.options.filter(isString).join('；')
+    if (options !== '') {
+      lines.push({ kind: 'text', text: `选项：${options}` })
+    }
+  }
+  if (typeof payload.answer === 'string' && payload.answer !== '') {
+    lines.push({ kind: 'text', text: `用户的回答：${payload.answer}` })
+  }
+  if (typeof payload.output === 'string' && payload.output !== '') {
+    lines.push({ kind: 'code', label: '返回给模型', text: payload.output })
+  }
   return lines
 }
 
@@ -248,6 +282,11 @@ function toolLines(
     lines.push({ kind: 'code', label: '执行结果', text: payload.output })
   } else if (typeof payload.output_chars === 'number') {
     lines.push({ kind: 'text', text: `返回 ${payload.output_chars} 字符` })
+  }
+  // A tool that crashed carries its traceback here; folded away until the
+  // row is opened, like every other raw block.
+  if (typeof payload.traceback === 'string' && payload.traceback !== '') {
+    lines.push({ kind: 'code', label: '异常堆栈', text: payload.traceback })
   }
   return lines
 }

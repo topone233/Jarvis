@@ -24,12 +24,21 @@ chat profiles - they serve every conversation the same way, and their keys
 outlive any single profile.
 
 - GET /api/retrieval-settings returns
-  `{"embedding": {base_url, model, has_api_key} | null, "rerank": {...} | null}`.
+  `{"embedding": {base_url, model, has_api_key} | null, "rerank": {...} | null,
+  "thresholds": {memory_floor: {value, default, is_default}, semantic_floor:
+  {...}, rerank_floor: {...}}}`.
 - PUT /api/retrieval-settings saves both cards at once; per kind, a kind left
   out is untouched and a kind sent as null is cleared (config and keyring entry
   both). Inside a spec, api_key is write-only with the profile form's deal: a
   value replaces the stored key, an empty string deletes it, absent or null
   leaves it alone.
+- `thresholds` carries the three relevance floors a retrieval pass applies -
+  a hit below its floor is not a hit, whether it came from the semantic stage,
+  the reranker, or memory ranking. The nested object follows the tool-limits
+  deal: a number writes it, null restores the code default by deleting the
+  row, a key left out is untouched; values are cosine/relevance scores on
+  0..0.99 and anything past the ceiling is a 422. The floors are read by the
+  next search, not the one already running.
 - POST /api/retrieval-settings/embedding/test makes a real embed call and
   returns `{ok, dimensions}`. POST /api/retrieval-settings/rerank/test makes a
   real rerank call and returns `{ok}`. Both accept an optional body of
@@ -39,9 +48,10 @@ outlive any single profile.
 
 When rerank is configured, knowledge search sends the top 20 hybrid candidates
 to the rerank endpoint (Cohere-compatible `/rerank`) and the returned
-relevance_score becomes each hit's `score`, with `source: "reranked"`. A
-rerank call that fails only degrades the search back to the mixed order - it
-never fails the retrieval.
+relevance_score becomes each hit's `score`, with `source: "reranked"` - hits
+below the rerank floor are dropped, so the stage cannot become a way around
+the thresholds. A rerank call that fails only degrades the search back to the
+mixed order - it never fails the retrieval.
 
 Each profile carries two request fragments, thinking_on and thinking_off, both
 JSON objects and both empty by default. **Only thinking_off still reaches the
@@ -96,6 +106,7 @@ default). It returns text/event-stream. Events use a JSON data payload:
 | context.ready | Estimated context budget and structured knowledge citations. |
 | message.delta | Assistant text produced since the last delta this client received. |
 | reasoning.delta | Optional compatible-provider reasoning text, same rule. |
+| round.reset | A tool round ended and the next round is about to stream: the next message.delta replaces the answer text instead of appending to it. Reasoning never resets - it accumulates across rounds on the server, so no round's thinking is lost. |
 | message.completed | Persisted final message and metadata. |
 | run.cancelled / run.failed | Terminal status. |
 
@@ -133,7 +144,11 @@ that attaches halfway through therefore renders the whole answer in its first
 flush and then continues token by token, with no gap and no duplication, and two
 clients watching at once each get their own complete copy. A client that attaches
 after the run ended gets run.started and the terminal event, whose content field
-holds the finished answer - so one code path renders both cases.
+holds the finished answer - so one code path renders both cases. The one
+exception to "cumulative" is a tool round boundary: a `round.reset` event tells
+every subscriber to zero its position, because the next round's text is a
+replacement, not an extension - and a subscriber that missed the event would
+glue round two onto round one.
 
 The streaming answer is checkpointed to the database roughly every half second
 or 400 characters, whichever comes first. That interval is what a power cut can

@@ -649,3 +649,44 @@ not degrade one screen, it takes the whole app; read it as "something threw"
 rather than "the page is broken". This project has no error boundary and the
 user chose not to add one — the console remains the only place a render throw
 shows up.
+
+## `Counter.update` counts a mapping's values, not its keys
+
+**Symptom.** Every PDF import came back `skipped` — extraction raised
+`TypeError: unsupported operand type(s) for +: 'NoneType' and 'NoneType'` —
+after the page-furniture counter was rewritten from an explicit `for` loop to
+what looked like an equivalent one-liner.
+
+**Root cause.** `Counter.update()` is polymorphic: an iterable counts its
+elements, but a *mapping* treats its values as counts. `dict.fromkeys(edge)`
+produces `{line: None}` — deduplicated, but with `None` for every count — so
+the Counter tried to add `None + None`. The deduplication that motivated the
+rewrite was correct; the container was wrong. `set(edge)` deduplicates the same
+way and updates as an iterable.
+
+**Invariant.** When the argument to `Counter.update` changes shape between an
+iterable and a mapping, the semantics change with it. Deduplicate with `set()`
+when the goal is "once per page/occurrence", and let a test with a short page
+(one whose first and last edge lines coincide) pin the once-only behavior —
+that is the exact case the old code had a comment for and the new code broke.
+
+## Narrowing does not survive capture: a lambda reads the declared type
+
+**Symptom.** `mypy` flagged `knowledge_tool.execute(command)` inside a lambda
+as `Any | None` after `str`, while the *identical* pattern in the bash branch
+three screenfuls below passed.
+
+**Root cause.** mypy applies narrowing from the enclosing scope inside a
+closure only while the captured variable is not reassigned anywhere *after*
+the closure is created. `command` is reassigned by each sibling tool branch
+below, so the knowledge and skill lambdas (which have siblings after them)
+read the declared `Any | None`; the bash branch is the last one, nothing
+reassigns after it, and its lambda is trusted. The asymmetry is real, and
+"but the bash one compiles" is the trap.
+
+**Invariant.** A narrowed value crossing a function boundary must be bound to
+a name whose type does not depend on narrowing — a parameter, a typed local,
+or the callable's own arguments. Here `run_tool` changed from taking a
+zero-arg closure to taking the bound method plus `*args, **kwargs`, so the
+narrowed `command` is passed at statement level, where narrowing always
+applies. Side benefit: no lambda indirection at all.
