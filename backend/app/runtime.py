@@ -115,7 +115,9 @@ class RunRegistry:
     def is_cancelled(self, run_id: str) -> bool:
         return run_id in self._cancelled
 
-    def request_user_input(self, run_id: str, kind: str, payload: dict[str, Any]) -> PendingUserInput:
+    def request_user_input(
+        self, run_id: str, kind: str, payload: dict[str, Any]
+    ) -> PendingUserInput:
         pending = PendingUserInput(
             kind=kind,
             payload=payload,

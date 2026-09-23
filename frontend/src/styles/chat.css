@@ -213,6 +213,35 @@
   text-align: left;
 }
 
+/* One round's thinking, on its 生成回复 row. The dotted left rule and the
+   muted prose are the thinking panel's own look - only its address moved,
+   from a single pile above the answer to the row where it happened. */
+.progress-thinking {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.progress-thinking-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.progress-thinking-body {
+  background-image: radial-gradient(circle, var(--border-strong) 1px, transparent 1.4px);
+  background-size: 4px 7px;
+  background-repeat: repeat-y;
+  background-position: left 2px top 0;
+  padding-left: 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 /* A tool call's raw material - the AI's original JSON and the result text that
    went back to it - in a quiet mono block. No border: the background alone
    marks it as content, per the visual pass. The head names what the block is;
@@ -811,6 +840,94 @@
 .composer {
   flex: 0 0 auto;
   padding: 0 24px 18px;
+}
+
+/* The run-held-for-you card, above the input box. It borrows the composer's
+   row so it lines up with the column the eye already reads, and it wears the
+   same shadow-lifted surface the composer does - a thing asking for input,
+   not a notification passing by. */
+.user-input-card {
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-input);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.user-input-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.user-input-command pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.user-input-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.user-input-question {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.user-input-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.user-input-option {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+
+.user-input-option:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.user-input-free {
+  display: flex;
+  gap: 8px;
+}
+
+.user-input-free input {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.user-input-free input:focus {
+  outline: none;
+  box-shadow: var(--ring-accent-tight);
+}
+
+.user-input-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .composer-inner {

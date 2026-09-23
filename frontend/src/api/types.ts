@@ -203,6 +203,9 @@ export interface AppSettings {
     /** Empty means no row: commands start in the data directory. */
     working_dir: { value: string; is_default: boolean }
     grace_seconds: ToolLimitSetting
+    /** "ask" holds each command for the user's approval; "grace" is the
+     *  fixed buffer before it runs. */
+    approval_mode: { value: 'ask' | 'grace'; default: 'ask' | 'grace'; is_default: boolean }
   }
 }
 
@@ -235,6 +238,7 @@ export type SettingsPatch = PromptPatch & {
   bash_enabled?: boolean | null
   bash_working_dir?: string | null
   bash_grace_seconds?: number | null
+  bash_approval_mode?: 'ask' | 'grace' | null
 }
 
 /** One row of the audit trail (`run_events`). Also what `audit` SSE events carry. */

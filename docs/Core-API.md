@@ -102,11 +102,12 @@ default). It returns text/event-stream. Events use a JSON data payload:
 | Event | Meaning |
 | --- | --- |
 | run.started | Returns run and placeholder assistant-message IDs. |
-| audit | Internal stage progress: compact, context retrieval, model stream, memory write, each knowledge/skill/bash tool call. Every tool call records the AI's raw call object (id, name, arguments) and the full result text that went back to it, so the trail is auditable after a reload; calls refused before they ran (repeat gate, unknown tool, invalid arguments, a bash command stopped inside its grace window) are recorded too. |
+| audit | Internal stage progress: compact, context retrieval, one `model_stream` row per model round, memory write, each knowledge/skill/bash/ask_user tool call. Every tool call records the AI's raw call object (id, name, arguments) and the full result text that went back to it, so the trail is auditable after a reload; calls refused before they ran (repeat gate, unknown tool, invalid arguments, a bash command stopped or refused before it ran) are recorded too. A tool that crashed closes its row as failed with the exception type in the text and the full traceback in a `traceback` field. A `model_stream` row spans its own round only - it sits between the tool rows around it - and its completed record carries that round's thinking in a `reasoning` field (cancelled and failed records carry what the round had thought so far), which is what puts each round's reasoning in position on the trail. |
 | context.ready | Estimated context budget and structured knowledge citations. |
 | message.delta | Assistant text produced since the last delta this client received. |
-| reasoning.delta | Optional compatible-provider reasoning text, same rule. |
-| round.reset | A tool round ended and the next round is about to stream: the next message.delta replaces the answer text instead of appending to it. Reasoning never resets - it accumulates across rounds on the server, so no round's thinking is lost. |
+| reasoning.delta | Optional compatible-provider reasoning text, same rule - for the round in flight; past rounds' thinking lives on their audit rows. |
+| round.reset | A tool round ended and the next round is about to stream: the next message.delta and reasoning.delta replace instead of appending to what the client has. |
+| user_input.requested | The run has paused for something only the user can give: `kind: "bash"` carries the command and working directory and waits for approve/deny; `kind: "question"` carries the model's question and its options and waits for an answer. Rides the event list like every other event, so a client that reattaches mid-wait sees the request again. The run waits indefinitely; the answer goes out on POST /api/runs/{run_id}/user_input. |
 | message.completed | Persisted final message and metadata. |
 | run.cancelled / run.failed | Terminal status. |
 
@@ -124,7 +125,12 @@ and not the model name it was handed - the composer's choice is the composer's,
 and a reload comes back to what the profile itself says.
 
 Use POST /api/runs/{run_id}/cancel for the stop button. Use
-POST /api/conversations/{id}/compact for an explicit compact action.
+POST /api/runs/{run_id}/user_input to answer a run that paused for the user -
+`{"value": "approve"}` or `{"value": "deny"}` for a bash approval, any
+non-empty text for a question. A run holding nothing refuses the call, and so
+does a request that was already answered, which is what keeps two windows from
+double-resolving. Use POST /api/conversations/{id}/compact for an explicit
+compact action.
 
 ### A run outlives the connection that started it
 
@@ -146,9 +152,11 @@ clients watching at once each get their own complete copy. A client that attache
 after the run ended gets run.started and the terminal event, whose content field
 holds the finished answer - so one code path renders both cases. The one
 exception to "cumulative" is a tool round boundary: a `round.reset` event tells
-every subscriber to zero its position, because the next round's text is a
-replacement, not an extension - and a subscriber that missed the event would
-glue round two onto round one.
+every subscriber to zero its position, because the next round's text and
+reasoning are replacements, not extensions - and a subscriber that missed the
+event would glue round two onto round one. A round's thinking is not lost at
+that boundary: each round's `model_stream` audit row records it, in the position
+the round occupied.
 
 The streaming answer is checkpointed to the database roughly every half second
 or 400 characters, whichever comes first. That interval is what a power cut can
@@ -270,23 +278,49 @@ reaches PowerShell anyway via `powershell -Command`. The shell is located by
 known Git install paths first - a PATH search that lands on System32's WSL
 `bash.exe` is refused, since that would run commands in Linux.
 
-Execution is real and unconfined, like skills. What makes an irreversible
-command survivable is the **grace window**: every `bash` call waits
-`bash_grace_seconds` (default 5) between the raw call appearing on the audit
-trail and the command running, polling the stop button the whole time - a
-stop in time means the command never ran, audited as `bash_tool` cancelled
-with `执行前被用户停止`. A stop landing while the command runs kills the
-child process (`执行中被用户停止`). There is no dangerous-command detection:
-a window that is always there is a promise, a filter that guesses is not.
-Bounds are the skills script's: 120 seconds, 20,000 characters, exit code
-appended, stderr merged into stdout, UTF-8 throughout. The repeat gate covers
-bash like every other tool.
+Execution is real and unconfined, like skills. What stands between the model
+and the command is the user's, chosen by `bash_approval_mode`:
+
+- **ask** (the default) holds the run until the user answers the popup: the
+  command waits for `approve` or `deny` on POST /api/runs/{run_id}/user_input,
+  however long that takes - the heartbeat keeps the connection alive, and the
+  stop button ends the run instead (`执行前被用户停止`). A denial means the
+  command never ran, audited as `bash_tool` cancelled with `用户拒绝执行`.
+- **grace** keeps the older fixed buffer: every `bash` call waits
+  `bash_grace_seconds` (default 5) between the raw call appearing on the audit
+  trail and the command running, polling the stop button the whole time.
+
+A stop landing while the command runs kills the child process
+(`执行中被用户停止`). There is no dangerous-command detection: approval is the
+user's click, and a window that is always there is a promise, a filter that
+guesses is not. Bounds are the skills script's: 120 seconds, 20,000
+characters, exit code appended, stderr merged into stdout, UTF-8 throughout.
+The repeat gate covers bash like every other tool, so a model cannot hammer a
+refused command forever.
+
+The subprocess itself is driven synchronously on a worker thread rather than
+by the async subprocess API, on purpose: uvicorn's `--reload` server runs
+Windows' selector event loop, which cannot spawn subprocesses at all - its
+async API raises a bare NotImplementedError whose empty message once came out
+as a blank `执行异常：`. A thread is the one launcher that is loop-agnostic,
+so the tool behaves the same in dev and production. The skills runner made
+the same change for the same reason.
 
 Settings ride the settings KV (`bash_enabled`, `bash_working_dir`,
-`bash_grace_seconds`) inside the usual no-row-is-the-default model; the
-working directory is validated at save time as an existing absolute path, and
-a blank value clears the row. All three are edited on the 工具调用 settings
-tab, alongside the round budget.
+`bash_grace_seconds`, `bash_approval_mode`) inside the usual
+no-row-is-the-default model; the working directory is validated at save time
+as an existing absolute path, and a blank value clears the row. All of them
+are edited on the 工具调用 settings tab, alongside the round budget.
+
+## Asking the user
+
+The `ask_user` tool is the model's way to put a decision to the user instead
+of guessing: a question, plus 0 to 6 options. Calling it pauses the run and
+emits `user_input.requested` with `kind: "question"`; the popup shows option
+buttons and a free-text field, and whatever the user answers comes back as
+the tool result (`用户的回答：…`). It is always registered, and the repeat
+gate applies - a model cannot re-ask the identical question past the limit.
+Invalid arguments never reach the user; the model gets the usage text back.
 
 ## Trash
 

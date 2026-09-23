@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.errors import ValidationError
 from app.provider import ProviderEvent
 from app.runs import RepeatGuard, RunChoice, RunService
 from app.runtime import CoreServices
@@ -309,12 +311,13 @@ async def test_the_model_loads_a_skill_through_the_tool(
     tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
     assert "把句子倒序输出" in tool_messages[0]["content"]
     # Memory tools always ride; the skill tool is there because one is enabled,
-    # and bash because it is on by default.
+    # bash because it is on by default, and ask_user because it always is.
     assert [tool["function"]["name"] for tool in provider.last_tools or []] == [
         "save_memory",
         "forget_memory",
         "skill",
         "bash",
+        "ask_user",
     ]
     assert any(event["stage"] == "skill_tool" for event in core.store.list_run_events(run["id"]))
 
@@ -641,11 +644,13 @@ async def test_a_memory_tool_call_rides_the_reply_and_is_carried_out(
     assert stages == [("memory_write", "running"), ("memory_write", "completed")]
     # The request carried the memory tools: the model could not have called
     # what the run never registered. Bash rides too - it is on by default -
-    # and no knowledge or skill tool, since this conversation has neither.
+    # ask_user always is, and no knowledge or skill tool, since this
+    # conversation has neither.
     assert [tool["function"]["name"] for tool in provider.last_tools or []] == [
         "save_memory",
         "forget_memory",
         "bash",
+        "ask_user",
     ]
     # And the wire protocol held: the memory call was answered with a tool
     # message in place, so the model could continue.
@@ -790,7 +795,7 @@ async def test_two_clients_watching_together_see_the_same_answer(
 async def test_stopping_a_live_run_keeps_what_it_had_already_written(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:
-    provider = paced(["第一段。"], tail=["不会出现。"])
+    provider = paced(["第一段。"], reasoning=["想了半截。"], tail=["不会出现。"])
     service, run = _begin(core, profile)
     await provider.gated.wait()
 
@@ -799,6 +804,11 @@ async def test_stopping_a_live_run_keeps_what_it_had_already_written(
 
     assert (await _settle(core, run["id"]))["status"] == "cancelled"
     assert core.store.get_message(run["assistant_message_id"])["content"] == "第一段。"
+    # The cancelled round's row carries what the model had thought so far -
+    # the same rule the text follows: a stop keeps what already happened.
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "model_stream"]
+    assert [step["state"] for step in steps] == ["running", "cancelled"]
+    assert steps[1]["payload"]["reasoning"] == "想了半截。"
 
 
 async def test_stopping_a_finished_run_leaves_the_record_alone(
@@ -892,6 +902,21 @@ def _bash_call(command: str, call_id: str = "call_1") -> ProviderEvent:
     )
 
 
+def _ask_call(question: str, options: list[str], call_id: str = "call_1") -> ProviderEvent:
+    return ProviderEvent(
+        "tool_calls",
+        {
+            "calls": [
+                {
+                    "id": call_id,
+                    "name": "ask_user",
+                    "arguments": json.dumps({"question": question, "options": options}),
+                }
+            ]
+        },
+    )
+
+
 async def _wait_for_stage(
     core: CoreServices, run_id: str, stage: str, timeout: float = 5.0
 ) -> dict[str, Any]:
@@ -911,6 +936,7 @@ async def test_the_bash_tool_executes_and_audits_the_call(
     """The command runs for real, its output answers the model, and the raw
     call plus that output both land on the trail."""
     core.store.set_setting("bash_grace_seconds", 0)
+    core.store.set_setting("bash_approval_mode", "grace")
     provider = paced(
         ["我来执行。"],
         tail_events=[
@@ -957,6 +983,7 @@ async def test_a_bash_command_runs_in_the_configured_working_directory(
     work.mkdir()
     core.store.set_setting("bash_working_dir", str(work))
     core.store.set_setting("bash_grace_seconds", 0)
+    core.store.set_setting("bash_approval_mode", "grace")
     provider = paced(
         [],
         tail_events=[
@@ -983,6 +1010,7 @@ async def test_a_bash_command_stopped_inside_the_grace_window_never_runs(
     work.mkdir()
     core.store.set_setting("bash_working_dir", str(work))
     core.store.set_setting("bash_grace_seconds", 1)
+    core.store.set_setting("bash_approval_mode", "grace")
     provider = paced(
         [],
         tail_events=[
@@ -1012,6 +1040,7 @@ async def test_a_running_bash_command_is_killed_when_the_run_stops(
     work.mkdir()
     core.store.set_setting("bash_working_dir", str(work))
     core.store.set_setting("bash_grace_seconds", 0)
+    core.store.set_setting("bash_approval_mode", "grace")
     provider = paced(
         [],
         tail_events=[
@@ -1032,16 +1061,17 @@ async def test_a_running_bash_command_is_killed_when_the_run_stops(
     assert steps[-1]["payload"]["reason"] == "执行中被用户停止"
 
 
-async def test_reasoning_accumulates_across_tool_rounds(
+async def test_a_rounds_thinking_is_recorded_on_its_own_row(
     core: CoreServices, profile: dict[str, Any], paced: Any
 ) -> None:
-    """Thinking from earlier rounds is not disposable.
+    """Thinking is recorded in position: one 生成回复 row per round, sitting
+    between the tool rows around it, carrying that round's thinking in its
+    completed payload.
 
-    The next round's text replaces the answer text on purpose, but the thought
-    behind each round joins one growing block - a paragraph break at the seam -
-    and the run ends with the whole block in the metadata, which is also what
-    a reload reads back. The live stream carries one `round.reset` at the
-    boundary so the client knows to replace rather than append.
+    The live reasoning stream resets at the boundary (the same event tells
+    the client to replace rather than append), so a round's thinking is
+    delivered once, to the round it belongs to. The whole run's thinking
+    still accumulates in the metadata - that is what a reload seeds from.
     """
     await _import_one_case(core)
     provider = paced(
@@ -1070,6 +1100,15 @@ async def test_reasoning_accumulates_across_tool_rounds(
     names = [name for name, _ in _parse(live)]
     assert names.count("round.reset") == 1
     assert names.index("round.reset") < names.index("message.completed")
+    deltas = [payload["delta"] for name, payload in _parse(live) if name == "reasoning.delta"]
+    assert deltas == ["第一轮的想法。", "第二轮的想法。"]
+
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "model_stream"]
+    assert [step["state"] for step in steps] == ["running", "completed", "running", "completed"]
+    assert steps[0]["payload"]["model"]
+    assert steps[1]["payload"]["reasoning"] == "第一轮的想法。"
+    assert steps[3]["payload"]["reasoning"] == "第二轮的想法。"
+
     metadata = core.store.get_message(run["assistant_message_id"])["metadata"]
     assert metadata["reasoning"] == "第一轮的想法。\n\n第二轮的想法。"
     assert core.store.get_message(run["assistant_message_id"])["content"] == (
@@ -1078,12 +1117,19 @@ async def test_reasoning_accumulates_across_tool_rounds(
 
 
 async def test_a_tool_crash_answers_as_text_and_closes_its_row(
-    core: CoreServices, profile: dict[str, Any], paced: Any, monkeypatch: pytest.MonkeyPatch
+    core: CoreServices,
+    profile: dict[str, Any],
+    paced: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A tool raising must not fail the run: the crash goes back to the model
     as words, the stage's row closes as failed (an open row would count
-    seconds on screen forever), and the model answers anyway."""
+    seconds on screen forever), and the model answers anyway. The type name
+    rides in the text and the traceback onto the row and into the log, so a
+    crash whose message is empty is still diagnosable everywhere."""
     core.store.set_setting("bash_grace_seconds", 0)
+    core.store.set_setting("bash_approval_mode", "grace")
     provider = paced(
         ["我来执行一个命令。"],
         tail_events=[
@@ -1098,18 +1144,217 @@ async def test_a_tool_crash_answers_as_text_and_closes_its_row(
         raise RuntimeError("子进程炸了")
 
     monkeypatch.setattr(core.bash_tool, "execute", boom)
-    _, run = _begin(core, profile)
-    provider.release.set()
-    assert (await _settle(core, run["id"]))["status"] == "completed"
+    with caplog.at_level(logging.ERROR, logger="app.runs"):
+        _, run = _begin(core, profile)
+        provider.release.set()
+        assert (await _settle(core, run["id"]))["status"] == "completed"
 
     steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
     assert [(step["state"]) for step in steps] == ["running", "failed"]
     assert "执行异常" in steps[1]["payload"]["output"]
+    assert "RuntimeError" in steps[1]["payload"]["output"]
     assert "子进程炸了" in steps[1]["payload"]["output"]
+    assert "RuntimeError: 子进程炸了" in steps[1]["payload"]["traceback"]
     message = core.store.get_message(run["assistant_message_id"])
     assert message["content"] == "命令出错了，我直接说明结论。"
     tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
     assert "执行异常" in tool_messages[0]["content"]
+    assert "工具 bash 执行异常" in caplog.text
+    assert "RuntimeError: 子进程炸了" in caplog.text
+
+
+async def test_a_bash_command_in_ask_mode_runs_only_after_approval(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    """The default mode holds the run until the user answers the popup: an
+    approval lets the command run, and nothing moves until one arrives."""
+    work = tmp_path / "work"
+    work.mkdir()
+    core.store.set_setting("bash_working_dir", str(work))
+    provider = paced(
+        [],
+        tail_events=[
+            _bash_call("echo done > marker.txt"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["完成。"]}],
+    )
+    service, run = _begin(core, profile)
+    provider.release.set()
+    await _wait_for_stage(core, run["id"], "bash_tool")
+    await asyncio.sleep(0.1)
+    # Holding: the run is not done, the command has not run, and the popup's
+    # request went out on the broadcast for every watching client.
+    assert core.store.get_run(run["id"])["status"] == "running"
+    assert not (work / "marker.txt").exists()
+    broadcast = core.run_registry.broadcast(run["id"])
+    assert any(name == "user_input.requested" for name, _ in broadcast.events)
+    running = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"][0]
+    assert running["payload"]["approval"] == "ask"
+
+    service.submit_user_input(run["id"], "approve")
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+    assert (work / "marker.txt").is_file()
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
+    assert steps[-1]["state"] == "completed"
+
+
+async def test_a_bash_command_denied_in_ask_mode_never_runs(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    """A refusal is an answer too: the command does not run, the model is
+    told so, and the row closes as cancelled with the reason on it."""
+    work = tmp_path / "work"
+    work.mkdir()
+    core.store.set_setting("bash_working_dir", str(work))
+    provider = paced(
+        [],
+        tail_events=[
+            _bash_call("echo done > marker.txt"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["好的，不执行了。"]}],
+    )
+    service, run = _begin(core, profile)
+    provider.release.set()
+    await _wait_for_stage(core, run["id"], "bash_tool")
+    service.submit_user_input(run["id"], "deny")
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    assert not (work / "marker.txt").exists()
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    assert tool_messages[0]["content"] == "bash: 用户拒绝了这条命令。"
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
+    assert steps[-1]["state"] == "cancelled"
+    assert steps[-1]["payload"]["reason"] == "用户拒绝执行"
+
+
+async def test_a_run_stopped_while_awaiting_approval_never_runs(
+    core: CoreServices, profile: dict[str, Any], paced: Any, tmp_path: Path
+) -> None:
+    """The stop button stays ahead of a pending approval: stopping the run
+    while the popup waits means the command never runs."""
+    work = tmp_path / "work"
+    work.mkdir()
+    core.store.set_setting("bash_working_dir", str(work))
+    provider = paced(
+        [],
+        tail_events=[
+            _bash_call("echo done > marker.txt"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["不会到达。"]}],
+    )
+    service, run = _begin(core, profile)
+    provider.release.set()
+    await _wait_for_stage(core, run["id"], "bash_tool")
+    service.cancel(run["id"])
+    assert (await _settle(core, run["id"]))["status"] == "cancelled"
+
+    assert not (work / "marker.txt").exists()
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
+    assert steps[-1]["state"] == "cancelled"
+    assert steps[-1]["payload"]["reason"] == "执行前被用户停止"
+
+
+async def test_user_input_only_accepts_what_is_being_waited_for(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """An answer is checked against the waiting run: a bash approval takes
+    only approve or deny, a run holding nothing refuses everything, and a
+    request answered once cannot be answered again."""
+    provider = paced(
+        [],
+        tail_events=[
+            _bash_call("echo hi"),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["完成。"]}],
+    )
+    service, run = _begin(core, profile)
+    provider.release.set()
+    await _wait_for_stage(core, run["id"], "bash_tool")
+
+    with pytest.raises(ValidationError):
+        service.submit_user_input(run["id"], "随便看看")
+    with pytest.raises(ValidationError):
+        service.submit_user_input("没有这个运行", "approve")
+    service.submit_user_input(run["id"], "approve")
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+    with pytest.raises(ValidationError):
+        service.submit_user_input(run["id"], "deny")
+
+
+async def test_ask_user_pauses_the_run_and_delivers_the_answer(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """The model's question holds the run; the user's answer rides back as
+    the tool result, and the trail shows what was asked and what was said."""
+    provider = paced(
+        ["我想确认一下。"],
+        tail_events=[
+            _ask_call("用哪种方案？", ["方案一", "方案二"]),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["已按方案二处理。"]}],
+    )
+    service, run = _begin(core, profile)
+    provider.release.set()
+    await _wait_for_stage(core, run["id"], "ask_user")
+    await asyncio.sleep(0.1)
+    assert core.store.get_run(run["id"])["status"] == "running"
+    assert "ask_user" in [tool["function"]["name"] for tool in provider.last_tools or []]
+    broadcast = core.run_registry.broadcast(run["id"])
+    requests = [payload for name, payload in broadcast.events if name == "user_input.requested"]
+    assert requests[-1]["kind"] == "question"
+    assert requests[-1]["options"] == ["方案一", "方案二"]
+
+    service.submit_user_input(run["id"], "方案二")
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    assert tool_messages[0]["content"] == "用户的回答：方案二"
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "ask_user"]
+    assert [(step["state"], step["payload"].get("answer")) for step in steps] == [
+        ("running", None),
+        ("completed", "方案二"),
+    ]
+    assert steps[0]["payload"]["question"] == "用哪种方案？"
+
+
+async def test_ask_user_with_bad_arguments_answers_as_text(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """Options that are not a list of strings never reach the user: the model
+    gets the usage text back, and the row closes as failed."""
+    provider = paced(
+        ["我想确认一下。"],
+        tail_events=[
+            ProviderEvent(
+                "tool_calls",
+                {
+                    "calls": [
+                        {
+                            "id": "call_1",
+                            "name": "ask_user",
+                            "arguments": json.dumps({"question": "选哪个", "options": "方案一"}),
+                        }
+                    ]
+                },
+            ),
+            ProviderEvent("finish", {"reason": "tool_calls"}),
+        ],
+        followups=[{"chunks": ["那我直接决定。"]}],
+    )
+    _, run = _begin(core, profile)
+    provider.release.set()
+    assert (await _settle(core, run["id"]))["status"] == "completed"
+
+    tool_messages = [m for m in provider.last_messages or [] if m["role"] == "tool"]
+    assert "必须是字符串数组" in tool_messages[0]["content"]
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "ask_user"]
+    assert steps[-1]["state"] == "failed"
+    assert steps[-1]["payload"]["reason"] == "参数无效"
 
 
 async def test_an_unplanned_ending_closes_the_rows_it_left_open(
@@ -1119,6 +1364,7 @@ async def test_an_unplanned_ending_closes_the_rows_it_left_open(
     closers go out before the terminal event, so a watching client sees the
     row stop instead of timing it against `now` forever."""
     core.store.set_setting("bash_grace_seconds", 0)
+    core.store.set_setting("bash_approval_mode", "grace")
     provider = paced(
         ["我来执行一个命令。"],
         tail_events=[
@@ -1140,5 +1386,8 @@ async def test_an_unplanned_ending_closes_the_rows_it_left_open(
     steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"]
     assert [(step["state"]) for step in steps] == ["running", "failed"]
     assert steps[1]["payload"]["reason"] == "运行提前结束"
+    # The round's generation had already finished when the tool phase blew
+    # up, so its row closed completed - carrying its thinking - and the
+    # failure belongs to the bash row. No stray failed record may open.
     model_steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "model_stream"]
-    assert [step["state"] for step in model_steps] == ["running", "failed"]
+    assert [step["state"] for step in model_steps] == ["running", "completed"]

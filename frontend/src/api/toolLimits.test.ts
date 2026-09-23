@@ -28,6 +28,7 @@ const overview: AppSettings = {
     enabled: { value: true, is_default: true },
     working_dir: { value: '', is_default: true },
     grace_seconds: { value: 5, default: 5, is_default: true },
+    approval_mode: { value: 'ask', default: 'ask', is_default: true },
   },
 }
 
@@ -42,7 +43,7 @@ function draft(over: Partial<ToolLimitsDraft> = {}): ToolLimitsDraft {
 }
 
 function bash(over: Partial<BashDraft> = {}): BashDraft {
-  return { enabled: true, workingDir: '', ...over }
+  return { enabled: true, workingDir: '', approvalMode: 'ask', ...over }
 }
 
 describe('what a save refuses', () => {
@@ -79,13 +80,18 @@ describe('what a save sends', () => {
       bash_grace_seconds: 5,
       bash_enabled: null,
       bash_working_dir: null,
+      // "ask" IS the default, so it sends null instead of a stale copy.
+      bash_approval_mode: null,
     })
   })
 
   it('sends the switch as false and the directory as its text', () => {
-    expect(toPayload(draft(), bash({ enabled: false, workingDir: ' D:/work ' }))).toMatchObject({
+    expect(
+      toPayload(draft(), bash({ enabled: false, workingDir: ' D:/work ', approvalMode: 'grace' })),
+    ).toMatchObject({
       bash_enabled: false,
       bash_working_dir: 'D:/work',
+      bash_approval_mode: 'grace',
     })
   })
 
@@ -97,6 +103,7 @@ describe('what a save sends', () => {
       bash_enabled: null,
       bash_working_dir: null,
       bash_grace_seconds: null,
+      bash_approval_mode: null,
     })
   })
 })
@@ -118,9 +125,12 @@ describe('drafting from the overview', () => {
         enabled: { value: false, is_default: false },
         working_dir: { value: 'C:/work', is_default: false },
         grace_seconds: { value: 0, default: 5, is_default: false },
+        approval_mode: { value: 'grace', default: 'ask', is_default: false },
       },
     }
     expect(draftFrom(changed)).toEqual(draft({ max_rounds: '50', bash_grace_seconds: '0' }))
-    expect(bashDraftFrom(changed)).toEqual(bash({ enabled: false, workingDir: 'C:/work' }))
+    expect(bashDraftFrom(changed)).toEqual(
+      bash({ enabled: false, workingDir: 'C:/work', approvalMode: 'grace' }),
+    )
   })
 })

@@ -27,10 +27,13 @@ export const TOOL_LIMITS: Record<ToolLimitKey, { min: number; max: number }> = {
 /** One input's draft: what the box shows, which may be half-typed. */
 export type ToolLimitsDraft = Record<ToolLimitKey, string>
 
-/** The bash switch and directory, drafted beside the numbers. */
+/** The bash switch, directory, and how a command gets to run, drafted. */
 export interface BashDraft {
   enabled: boolean
   workingDir: string
+  /** "ask" holds each command for the user's approval; "grace" is the fixed
+   *  buffer, whose length the bash_grace_seconds input owns. */
+  approvalMode: 'ask' | 'grace'
 }
 
 export function draftFrom(settings: AppSettings): ToolLimitsDraft {
@@ -46,6 +49,7 @@ export function bashDraftFrom(settings: AppSettings): BashDraft {
   return {
     enabled: settings.bash_tool.enabled.value,
     workingDir: settings.bash_tool.working_dir.value,
+    approvalMode: settings.bash_tool.approval_mode.value,
   }
 }
 
@@ -102,9 +106,10 @@ export function toPayload(draft: ToolLimitsDraft, bash: BashDraft): SettingsPatc
     // On IS the default, so enabling sends null - deleting the row - instead
     // of storing a stale copy of the default, the same deal the skills list
     // makes. A blank directory is "no row": commands start in the data
-    // directory.
+    // directory. The mode is the same deal: "ask" IS the default.
     bash_enabled: bash.enabled ? null : false,
     bash_working_dir: bash.workingDir.trim() === '' ? null : bash.workingDir.trim(),
+    bash_approval_mode: bash.approvalMode === 'ask' ? null : bash.approvalMode,
   }
 }
 
@@ -116,4 +121,5 @@ export const TOOL_LIMITS_DEFAULT_PATCH: SettingsPatch = {
   bash_enabled: null,
   bash_working_dir: null,
   bash_grace_seconds: null,
+  bash_approval_mode: null,
 }

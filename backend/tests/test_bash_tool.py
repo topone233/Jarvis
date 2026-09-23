@@ -114,6 +114,7 @@ def test_read_bash_settings_falls_back_to_the_defaults(core: CoreServices) -> No
     assert settings.enabled is True
     assert settings.working_dir is None
     assert settings.grace_seconds == 5
+    assert settings.approval_mode == "ask"
 
     core.store.set_setting("bash_enabled", False)
     core.store.set_setting("bash_working_dir", "  C:/work  ")
@@ -123,6 +124,13 @@ def test_read_bash_settings_falls_back_to_the_defaults(core: CoreServices) -> No
     assert settings.enabled is False
     assert settings.working_dir == "C:/work"
     assert settings.grace_seconds == 5
+    assert settings.approval_mode == "ask"
+
+    core.store.set_setting("bash_approval_mode", "grace")
+    assert read_bash_settings(core.store).approval_mode == "grace"
+    # A mode the code has never heard of is the default, not a crash.
+    core.store.set_setting("bash_approval_mode", "auto")
+    assert read_bash_settings(core.store).approval_mode == "ask"
 
 
 async def test_the_grace_window_reports_a_stop_in_time(core: CoreServices) -> None:

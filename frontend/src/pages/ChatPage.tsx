@@ -23,11 +23,13 @@ import { CitationPanel } from '../components/CitationPanel'
 import { MessageList, type LastRun } from '../components/MessageList'
 import { ModelControls } from '../components/ModelControls'
 import { Outline } from '../components/Outline'
+import { UserInputCard } from '../components/UserInputCard'
 import type { FeedbackKind } from '../components/AssistantTurn'
 import type { ConversationsController } from '../hooks/useConversations'
 import { useModelChoice } from '../hooks/useModelChoice'
 import { useQuickPrompts } from '../hooks/useQuickPrompts'
 import { useStickToBottom } from '../hooks/useStickToBottom'
+import { useToast } from '../hooks/useToast'
 import { takePendingImages } from '../pendingImages'
 import { useRun } from '../runs/useRun'
 
@@ -93,7 +95,17 @@ export function ChatPage({
   )
 
   const run = useRun(conversationId, () => void refresh())
-  const { attach, cancel, regenerate, reconnect, send, turn, gaveUp } = run
+  const { attach, cancel, regenerate, reconnect, resolveInput, send, turn, gaveUp } = run
+  const toast = useToast()
+
+  // A refused answer means the wait ended without us: another window answered
+  // first, or the run finished. The card clears with the server's own records;
+  // the toast is just the reason the button seemed not to work.
+  const onResolveInput = useCallback(
+    (value: string) =>
+      resolveInput(value).catch(() => toast.show('这个请求已经结束了，不需要再回复。', 'bad')),
+    [resolveInput, toast],
+  )
 
   const conversation = conversations.conversations.find((item) => item.id === conversationId)
   // What the composer is showing, and what the next turn will carry. The seed is
@@ -280,6 +292,14 @@ export function ChatPage({
           <CitationPanel citation={activeCitation} onClose={() => setActiveCitation(null)} />
         )}
       </div>
+
+      {turn?.pendingInput != null && (
+        <div className="composer">
+          <div className="composer-inner">
+            <UserInputCard request={turn.pendingInput} onResolve={onResolveInput} />
+          </div>
+        </div>
+      )}
 
       <Composer
         busy={busy}

@@ -62,9 +62,12 @@ export function detailLines(row: AuditRow): DetailLine[] {
   }
 }
 
-/** One expanded line: prose, or a foldable block of raw content. */
+/** One expanded line: prose, a foldable block of raw content, or one round's
+ *  thinking - which draws as prose with the thinking's own look, not as code. */
 export type DetailLine =
-  { kind: 'text'; text: string } | { kind: 'code'; label: string; text: string }
+  | { kind: 'text'; text: string }
+  | { kind: 'code'; label: string; text: string }
+  | { kind: 'reasoning'; text: string }
 
 /** The short verdict on the row itself, beside the label. */
 export function summaryOf(row: AuditRow): string {
@@ -160,6 +163,11 @@ function retrievalLines(payload: Record<string, unknown>): DetailLine[] {
 
 function modelLines(payload: Record<string, unknown>): DetailLine[] {
   const lines: DetailLine[] = []
+  // The round's own thinking, recorded on its row - first, because it is
+  // what the model did before anything else on this row happened.
+  if (typeof payload.reasoning === 'string' && payload.reasoning !== '') {
+    lines.push({ kind: 'reasoning', text: payload.reasoning })
+  }
   if (typeof payload.model === 'string' && payload.model !== '') {
     lines.push({ kind: 'text', text: `这一轮用的模型：${payload.model}` })
   }

@@ -3,11 +3,12 @@
  * tool's ground rules.
  *
  * The screen edits a local draft - the three budget numbers, plus the bash
- * switch, its working directory, and the grace window before each command;
- * 保存 parses and sends them together, and 恢复默认 - like on the prompts
- * tab, because "put the shipped values back" has no draft shape worth showing
- * between the click and the save - sends nulls immediately and throws away
- * what was typed. Values are read by the next run, not the one already going.
+ * switch, its working directory, and how a command gets to run (the approval
+ * switch, with the grace window beside it when it applies); 保存 parses and
+ * sends them together, and 恢复默认 - like on the prompts tab, because "put
+ * the shipped values back" has no draft shape worth showing between the click
+ * and the save - sends nulls immediately and throws away what was typed.
+ * Values are read by the next run, not the one already going.
  */
 
 import { useEffect, useState } from 'react'
@@ -63,7 +64,8 @@ export function ToolCallsPanel() {
             settings.tool_limits.repeat_limit.is_default &&
             settings.bash_tool.enabled.is_default &&
             settings.bash_tool.working_dir.is_default &&
-            settings.bash_tool.grace_seconds.is_default,
+            settings.bash_tool.grace_seconds.is_default &&
+            settings.bash_tool.approval_mode.is_default,
         )
       })
       .catch((cause: unknown) => setError(describe(cause)))
@@ -116,7 +118,8 @@ export function ToolCallsPanel() {
           settings.tool_limits.repeat_limit.is_default &&
           settings.bash_tool.enabled.is_default &&
           settings.bash_tool.working_dir.is_default &&
-          settings.bash_tool.grace_seconds.is_default,
+          settings.bash_tool.grace_seconds.is_default &&
+          settings.bash_tool.approval_mode.is_default,
       )
       setNote('已保存。')
     } catch (cause) {
@@ -197,17 +200,38 @@ export function ToolCallsPanel() {
         </span>
       </div>
       <div className="field">
-        <label htmlFor="tool-limit-bash_grace_seconds">{labelOf('bash_grace_seconds')}</label>
-        <input
-          id="tool-limit-bash_grace_seconds"
-          type="number"
-          min={TOOL_LIMITS.bash_grace_seconds.min}
-          max={TOOL_LIMITS.bash_grace_seconds.max}
-          value={draft.bash_grace_seconds}
-          onChange={(event) => edit('bash_grace_seconds', event.target.value)}
-        />
-        <span className="hint">{HINTS.bash_grace_seconds}</span>
+        <label>执行方式</label>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={bash.approvalMode === 'ask'}
+          aria-label={bash.approvalMode === 'ask' ? '改为固定缓冲' : '改为每次审批'}
+          className={`skill-switch${bash.approvalMode === 'ask' ? ' is-on' : ''}`}
+          title={bash.approvalMode === 'ask' ? '每次审批' : '固定缓冲'}
+          onClick={() => editBash({ approvalMode: bash.approvalMode === 'ask' ? 'grace' : 'ask' })}
+        >
+          <span className="skill-knob" />
+        </button>
+        <span className="hint">
+          {bash.approvalMode === 'ask'
+            ? '每条命令先暂停，在输入框上方等你批准或拒绝，点了才会执行。'
+            : '命令在固定缓冲期后自动执行，缓冲期内可点停止按钮拦下。'}
+        </span>
       </div>
+      {bash.approvalMode === 'grace' && (
+        <div className="field">
+          <label htmlFor="tool-limit-bash_grace_seconds">{labelOf('bash_grace_seconds')}</label>
+          <input
+            id="tool-limit-bash_grace_seconds"
+            type="number"
+            min={TOOL_LIMITS.bash_grace_seconds.min}
+            max={TOOL_LIMITS.bash_grace_seconds.max}
+            value={draft.bash_grace_seconds}
+            onChange={(event) => edit('bash_grace_seconds', event.target.value)}
+          />
+          <span className="hint">{HINTS.bash_grace_seconds}</span>
+        </div>
+      )}
       <div className="setup-actions">
         {isDefault ? (
           <span className="badge badge-quiet">默认</span>
@@ -250,6 +274,7 @@ function serialize(draft: ToolLimitsDraft, bash: BashDraft): string {
     draft.bash_grace_seconds.trim(),
     bash.enabled,
     bash.workingDir.trim(),
+    bash.approvalMode,
   ])
 }
 

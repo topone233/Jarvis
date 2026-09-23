@@ -17,6 +17,15 @@ export type RunEvent =
   | { type: 'reasoning.delta'; messageId: string; delta: string }
   /** A tool round ended: the next round's text replaces this one's. */
   | { type: 'round.reset'; messageId: string }
+  | {
+      type: 'user_input.requested'
+      /** "bash" waits for an approve/deny; "question" waits for an answer. */
+      kind: 'bash' | 'question'
+      command: string
+      cwd: string
+      question: string
+      options: string[]
+    }
   | { type: 'message.completed'; messageId: string; content: string; metadata: MessageMetadata }
   | { type: 'run.cancelled'; messageId: string; content: string }
   | { type: 'run.failed'; error: string }
@@ -56,6 +65,17 @@ export function decodeFrame(frame: SseFrame): RunEvent {
       }
     case 'round.reset':
       return { type: 'round.reset', messageId: text(payload.message_id) }
+    case 'user_input.requested':
+      return {
+        type: 'user_input.requested',
+        kind: payload.kind === 'question' ? 'question' : 'bash',
+        command: text(payload.command),
+        cwd: text(payload.cwd),
+        question: text(payload.question),
+        options: Array.isArray(payload.options)
+          ? payload.options.filter((option): option is string => typeof option === 'string')
+          : [],
+      }
     case 'message.completed':
       return {
         type: 'message.completed',

@@ -572,6 +572,8 @@ def test_bash_tool_settings_start_at_the_built_in_defaults(client: TestClient) -
     assert entry["enabled"] == {"value": True, "is_default": True}
     assert entry["working_dir"] == {"value": "", "is_default": True}
     assert entry["grace_seconds"] == {"value": 5, "default": 5, "is_default": True}
+    # The default is to ask: a command runs only after the user approves it.
+    assert entry["approval_mode"] == {"value": "ask", "default": "ask", "is_default": True}
 
 
 def test_saved_bash_settings_round_trip_and_null_restores_them(
@@ -583,21 +585,29 @@ def test_saved_bash_settings_round_trip_and_null_restores_them(
             "bash_enabled": False,
             "bash_working_dir": str(tmp_path / "data"),
             "bash_grace_seconds": 2,
+            "bash_approval_mode": "grace",
         },
     )
     entry = client.get("/api/settings").json()["bash_tool"]
     assert entry["enabled"] == {"value": False, "is_default": False}
     assert entry["working_dir"] == {"value": str(tmp_path / "data"), "is_default": False}
     assert entry["grace_seconds"] == {"value": 2, "default": 5, "is_default": False}
+    assert entry["approval_mode"] == {"value": "grace", "default": "ask", "is_default": False}
 
     client.put(
         "/api/settings",
-        json={"bash_enabled": None, "bash_working_dir": None, "bash_grace_seconds": None},
+        json={
+            "bash_enabled": None,
+            "bash_working_dir": None,
+            "bash_grace_seconds": None,
+            "bash_approval_mode": None,
+        },
     )
     entry = client.get("/api/settings").json()["bash_tool"]
     assert entry["enabled"] == {"value": True, "is_default": True}
     assert entry["working_dir"] == {"value": "", "is_default": True}
     assert entry["grace_seconds"] == {"value": 5, "default": 5, "is_default": True}
+    assert entry["approval_mode"] == {"value": "ask", "default": "ask", "is_default": True}
 
 
 def test_an_empty_working_dir_clears_instead_of_storing(client: TestClient, tmp_path: Path) -> None:
@@ -621,3 +631,8 @@ def test_a_working_dir_that_is_not_an_existing_absolute_path_is_refused(
 def test_a_bash_grace_outside_its_range_is_refused(client: TestClient) -> None:
     assert client.put("/api/settings", json={"bash_grace_seconds": 61}).status_code == 422
     assert client.put("/api/settings", json={"bash_grace_seconds": -1}).status_code == 422
+
+
+def test_an_unknown_bash_approval_mode_is_refused(client: TestClient) -> None:
+    assert client.put("/api/settings", json={"bash_approval_mode": "auto"}).status_code == 422
+    assert client.put("/api/settings", json={"bash_approval_mode": "ask"}).status_code == 200

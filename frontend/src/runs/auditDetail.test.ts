@@ -91,6 +91,21 @@ describe('detailLines', () => {
     expect(lines).toEqual([text('这一轮用的模型：deepseek-chat'), text('token：输入 120，输出 45')])
   })
 
+  it('leads a round that thought with that round’s thinking', () => {
+    // The thinking is recorded on the round's own row, in position between
+    // the tool rows; it draws as prose with the thinking look, not as code.
+    const lines = detailLines(
+      row('model_stream', 'completed', {
+        model: 'deepseek-chat',
+        reasoning: '先把文档列出来再读。',
+      }),
+    )
+    expect(lines).toEqual([
+      { kind: 'reasoning', text: '先把文档列出来再读。' },
+      text('这一轮用的模型：deepseek-chat'),
+    ])
+  })
+
   it('reports what retrieval assembled, down to what it found nothing of', () => {
     const lines = detailLines(
       row('context_retrieval', 'completed', {

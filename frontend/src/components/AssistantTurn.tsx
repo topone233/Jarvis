@@ -47,11 +47,23 @@ export function AssistantTurn({
   // failure, because the answer below it is real and simply unfinished.
   const interrupted = turn.status === 'interrupted'
   const messageId = turn.assistantMessageId
+  // Thinking moved onto the trail rows (one block per round, in position).
+  // Runs that finished before that change have no reasoning in any row
+  // payload - their thinking exists only as the accumulated metadata string,
+  // so the old top panel stays as the fallback for exactly those turns.
+  const hasRowThinking = turn.audits.some(
+    (row) =>
+      row.stage === 'model_stream' &&
+      typeof row.payload.reasoning === 'string' &&
+      row.payload.reasoning !== '',
+  )
 
   return (
     <div className="turn">
-      <ProgressStrip audits={turn.audits} />
-      <ReasoningPanel reasoning={turn.reasoning} thinking={busy && turn.content === ''} />
+      <ProgressStrip audits={turn.audits} liveThinking={busy ? turn.reasoning : ''} />
+      {!busy && turn.reasoning !== '' && !hasRowThinking && (
+        <ReasoningPanel reasoning={turn.reasoning} thinking={false} />
+      )}
 
       {busy && turn.detached && (
         <div className="turn-notice">

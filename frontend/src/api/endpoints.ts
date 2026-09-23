@@ -74,6 +74,18 @@ export function cancelRun(runId: string): Promise<Run> {
   return api<Run>(`/api/runs/${runId}/cancel`, { method: 'POST' })
 }
 
+/**
+ * Answer a run that paused for the user: "approve"/"deny" for a bash
+ * approval, the chosen option or typed text for a question. The server
+ * refuses anything else - including a request that was already answered.
+ */
+export function submitUserInput(runId: string, value: string): Promise<Run> {
+  return api<Run>(`/api/runs/${runId}/user_input`, {
+    method: 'POST',
+    body: JSON.stringify({ value }),
+  })
+}
+
 export function listModelProfiles(): Promise<ModelProfile[]> {
   return api<ModelProfile[]>('/api/model-profiles')
 }

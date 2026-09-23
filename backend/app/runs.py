@@ -405,14 +405,6 @@ class RunService:
                     "completed",
                     {"command": f"/{bundle.forced_skill}", "trigger": "user_request"},
                 )
-            # The name that goes on the wire is the one worth auditing - the
-            # composer may have named another model for this one run, and the
-            # profile's own name would be wrong here.
-            audit(
-                "model_stream",
-                "running",
-                {"model": choice.chat_model or profile["chat_model"]},
-            )
             # The tool rounds. A round that ends in tool calls is not the
             # answer - its text was a stop on the way ("我来查一下"), shown
             # live and replaced by the next round's. The loop owns the wire's
@@ -452,6 +444,15 @@ class RunService:
                 messages.pop()
             response_parts: list[str] = []
             reasoning_parts: list[str] = []
+            # One round's own thinking and usage, reset at each boundary - the
+            # round's audit row records them, which is what puts the thinking
+            # on the trail between the tool rows it sits between.
+            round_reasoning: list[str] = []
+            round_usage: dict[str, Any] | None = None
+            # Whether a model_stream row is currently open: the failure paths
+            # may only emit their failed record over a row that is actually
+            # open, or an ending record with no open row opens a stray one.
+            round_row_open = False
             usage: dict[str, Any] | None = None
             flushed = 0
             flushed_at = time.monotonic()
@@ -609,15 +610,22 @@ class RunService:
                         audit(
                             "bash_tool",
                             "running",
-                            {**call_payload, "command": command, "cwd": str(bash_cwd),
-                             "approval": "ask"},
+                            {
+                                **call_payload,
+                                "command": command,
+                                "cwd": str(bash_cwd),
+                                "approval": "ask",
+                            },
+                        )
+                        # The slot exists before the announcement, so a client
+                        # that answers impossibly fast still finds a future
+                        # to resolve instead of a refusal.
+                        pending = registry.request_user_input(
+                            run_id, "bash", {"command": command, "cwd": str(bash_cwd)}
                         )
                         broadcast.emit(
                             "user_input.requested",
                             {"kind": "bash", "command": command, "cwd": str(bash_cwd)},
-                        )
-                        pending = registry.request_user_input(
-                            run_id, "bash", {"command": command, "cwd": str(bash_cwd)}
                         )
                         decision = await wait_user_input(registry, run_id, pending)
                         registry.pop_user_input(run_id)
@@ -625,17 +633,19 @@ class RunService:
                             audit(
                                 "bash_tool",
                                 "cancelled",
-                                {**call_payload, "command": command,
-                                 "reason": "执行前被用户停止"},
+                                {**call_payload, "command": command, "reason": "执行前被用户停止"},
                             )
                             return "bash: 用户在执行前停止了这条命令。"
                         if decision == "deny":
                             audit(
                                 "bash_tool",
                                 "cancelled",
-                                {**call_payload, "command": command,
-                                 "output": "bash: 用户拒绝了这条命令。",
-                                 "reason": "用户拒绝执行"},
+                                {
+                                    **call_payload,
+                                    "command": command,
+                                    "output": "bash: 用户拒绝了这条命令。",
+                                    "reason": "用户拒绝执行",
+                                },
                             )
                             return "bash: 用户拒绝了这条命令。"
                     else:
@@ -653,8 +663,7 @@ class RunService:
                             audit(
                                 "bash_tool",
                                 "cancelled",
-                                {**call_payload, "command": command,
-                                 "reason": "执行前被用户停止"},
+                                {**call_payload, "command": command, "reason": "执行前被用户停止"},
                             )
                             return "bash: 用户在执行前停止了这条命令。"
                     output, failed = await run_tool(
@@ -704,12 +713,13 @@ class RunService:
                         "running",
                         {**call_payload, "question": question, "options": options},
                     )
+                    # Slot before announcement, for the same reason as bash.
+                    pending = registry.request_user_input(
+                        run_id, "question", {"question": question, "options": options}
+                    )
                     broadcast.emit(
                         "user_input.requested",
                         {"kind": "question", "question": question, "options": options},
-                    )
-                    pending = registry.request_user_input(
-                        run_id, "question", {"question": question, "options": options}
                     )
                     answer = await wait_user_input(registry, run_id, pending)
                     registry.pop_user_input(run_id)
@@ -723,8 +733,12 @@ class RunService:
                     audit(
                         "ask_user",
                         "completed",
-                        {**call_payload, "question": question, "options": options,
-                         "answer": answer},
+                        {
+                            **call_payload,
+                            "question": question,
+                            "options": options,
+                            "answer": answer,
+                        },
                     )
                     return f"用户的回答：{answer}"
                 if name in ("save_memory", "forget_memory"):
@@ -776,6 +790,15 @@ class RunService:
 
             for _ in range(limits.max_rounds):
                 tool_calls: list[dict[str, Any]] = []
+                # One row per round, opened here and closed by the round's own
+                # completed record: the row's span is that round's work, and it
+                # sits exactly between the tool rows around it.
+                audit(
+                    "model_stream",
+                    "running",
+                    {"model": choice.chat_model or profile["chat_model"]},
+                )
+                round_row_open = True
                 async for event in self.services.provider.stream_chat(
                     profile,
                     messages,
@@ -799,18 +822,24 @@ class RunService:
                             output_token_estimate=estimate_tokens(partial),
                             completed=True,
                         )
-                        audit("model_stream", "cancelled", {})
-                        broadcast.show_text(content=partial, reasoning="".join(reasoning_parts))
+                        audit(
+                            "model_stream",
+                            "cancelled",
+                            {"reasoning": "".join(round_reasoning)},
+                        )
+                        round_row_open = False
+                        broadcast.show_text(content=partial, reasoning="".join(round_reasoning))
                         broadcast.finish(
                             "run.cancelled",
                             {"run_id": run_id, "message_id": assistant_id, "content": partial},
                         )
                         return
                     if event.kind == "usage":
-                        usage = event.payload["usage"]
+                        usage = round_usage = event.payload["usage"]
                         continue
                     if event.kind == "reasoning":
                         reasoning_parts.append(event.payload["text"])
+                        round_reasoning.append(event.payload["text"])
                     elif event.kind == "delta":
                         response_parts.append(event.payload["text"])
                     elif event.kind == "tool_calls":
@@ -819,7 +848,9 @@ class RunService:
                         continue
 
                     content = "".join(response_parts)
-                    reasoning = "".join(reasoning_parts)
+                    # The wire carries this round's thinking; the whole run's
+                    # accumulation lives on in the metadata for a reload.
+                    reasoning = "".join(round_reasoning)
                     broadcast.show_text(content=content, reasoning=reasoning)
                     now = time.monotonic()
                     # Reasoning counts towards the window as well: a model can think for
@@ -844,6 +875,15 @@ class RunService:
                 if not tool_calls:
                     # A round with nothing to answer is the answer.
                     break
+                # The round ended in tool calls: close its row now, with its
+                # own thinking attached, so the reasoning is recorded between
+                # the tool rows rather than in one pile after all of them.
+                audit(
+                    "model_stream",
+                    "completed",
+                    {"usage": round_usage or {}, "reasoning": "".join(round_reasoning)},
+                )
+                round_row_open = False
                 messages.append(
                     {
                         "role": "assistant",
@@ -871,17 +911,20 @@ class RunService:
                             ),
                         }
                     )
-                # The next round's text replaces this round's on the wire, but
-                # the thinking does not: reasoning accumulates across rounds -
-                # a paragraph break marks the seam - because the inter-round
-                # words being shown live does not make the thought behind them
-                # disposable.
+                # The next round's text and thinking both replace this round's
+                # on the wire: each round's reasoning is recorded on its own
+                # audit row (the completed record above), so the live stream
+                # only ever needs to carry the round in flight. The whole
+                # run's thinking still accumulates in the metadata, which is
+                # what a reload seeds from.
                 response_parts = []
+                round_reasoning = []
+                round_usage = None
                 if reasoning_parts:
                     reasoning_parts.append("\n\n")
                 flushed = 0
                 flushed_at = time.monotonic()
-                broadcast.show_text(content="", reasoning="".join(reasoning_parts))
+                broadcast.show_text(content="", reasoning="")
                 # The shrinking content is a boundary a subscriber cannot
                 # infer from snapshots alone: the reset tells it to replace
                 # rather than append, and follow() re-homes its own cursor.
@@ -907,7 +950,10 @@ class RunService:
                         output_token_estimate=estimate_tokens(partial),
                         completed=True,
                     )
-                    audit("model_stream", "cancelled", {})
+                    # The round's own row already closed with its thinking
+                    # attached, so no model_stream record here: a cancelled
+                    # record with no open row would open a stray one, and the
+                    # stop itself is carried by the run.cancelled event.
                     broadcast.finish(
                         "run.cancelled",
                         {"run_id": run_id, "message_id": assistant_id, "content": partial},
@@ -935,8 +981,13 @@ class RunService:
                 output_token_estimate=estimate_tokens(response),
                 completed=True,
             )
-            audit("model_stream", "completed", {"usage": usage or {}})
-            broadcast.show_text(content=response, reasoning="".join(reasoning_parts))
+            audit(
+                "model_stream",
+                "completed",
+                {"usage": usage or {}, "reasoning": "".join(round_reasoning)},
+            )
+            round_row_open = False
+            broadcast.show_text(content=response, reasoning="".join(round_reasoning))
             broadcast.emit(
                 "message.completed",
                 {"message_id": assistant_id, "content": response, "metadata": metadata},
@@ -963,7 +1014,13 @@ class RunService:
                     output_token_estimate=estimate_tokens(partial),
                     completed=True,
                 )
-                audit("model_stream", "failed", {"error": str(error)})
+                if round_row_open:
+                    audit(
+                        "model_stream",
+                        "failed",
+                        {"error": str(error), "reasoning": "".join(round_reasoning)},
+                    )
+                    round_row_open = False
                 # Before the terminal event, not after: a subscriber that has
                 # seen `closed` stops reading, so closers landing later would
                 # reach only the next reload.
@@ -976,7 +1033,12 @@ class RunService:
             with contextlib.suppress(Exception):
                 store.update_run(run_id, status="failed", error_message=str(error), completed=True)
             with contextlib.suppress(Exception):
-                audit("model_stream", "failed", {"error": str(error)})
+                if round_row_open:
+                    audit(
+                        "model_stream",
+                        "failed",
+                        {"error": str(error), "reasoning": "".join(round_reasoning)},
+                    )
                 close_open_stages("运行提前结束")
             broadcast.finish("run.failed", {"run_id": run_id, "error": str(error)})
         finally:
@@ -1018,12 +1080,13 @@ class RunService:
             while events_sent < len(broadcast.events):
                 name, payload = broadcast.events[events_sent]
                 events_sent += 1
-                # A round boundary empties the published content; the cursor
-                # goes back with it, so the next round's text is sent whole
-                # and the client - told by the same event - replaces rather
-                # than appends. Reasoning never shrinks, so its cursor stays.
+                # A round boundary empties the published content and reasoning;
+                # the cursors go back with them, so the next round's text and
+                # thinking are sent whole and the client - told by the same
+                # event - replaces rather than appends.
                 if name == "round.reset":
                     content_sent = 0
+                    reasoning_sent = 0
                 yield encode_sse(name, payload)
             if len(broadcast.content) > content_sent:
                 yield encode_sse(

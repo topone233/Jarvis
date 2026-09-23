@@ -8,14 +8,17 @@
  * from disk and shows the same numbers, because both come from the same two
  * timestamps rather than from anything the browser counted.
  *
- * A stage can occur several times in one run - each tool round is its own call
- * - and every occurrence is its own row. A row with something to show expands
- * into the details of what the stage actually did: which memories went in,
- * what a compaction folded, which model answered - and for a tool call, the
- * AI's original call JSON and the result text that went back to it, long text
- * folded until asked for. Running stages are open; finished ones fold away,
- * with one exception: the memory step only exists when it did something, so
- * its result stays readable.
+ * A stage can occur several times in one run - the model works one round per
+ * tool call, so 生成回复 has a row per round, each carrying that round's
+ * thinking in the position it happened - and every occurrence is its own row.
+ * A row with something to show expands into the details of what the stage
+ * actually did: which memories went in, what a compaction folded, which model
+ * answered - and for a tool call, the AI's original call JSON and the result
+ * text that went back to it, long text folded until asked for. Running stages
+ * are open; finished ones fold away, with exceptions: the memory step (it only
+ * exists when it did something, so its result stays readable) and every round
+ * that thought - the thinking is the record of what happened there, so the
+ * system never folds it away on its own.
  */
 
 import { useState } from 'react'
@@ -43,7 +46,15 @@ const STAGE_LABELS: Record<string, string> = {
 /** Above this many characters a raw block clamps until the user expands it. */
 const CODE_CLAMP_CHARS = 480
 
-export function ProgressStrip({ audits }: { audits: AuditRow[] }) {
+export function ProgressStrip({
+  audits,
+  liveThinking = '',
+}: {
+  audits: AuditRow[]
+  /** The round in flight's thinking, still streaming. It renders inside the
+   *  running 生成回复 row; when that row closes, its payload takes over. */
+  liveThinking?: string
+}) {
   const running = audits.some((row) => row.state === 'running')
   const now = useNow(running)
   // The user's own choice of open rows, kept apart from the default so a
@@ -92,9 +103,14 @@ export function ProgressStrip({ audits }: { audits: AuditRow[] }) {
             </button>
             {open && (
               <div className="progress-detail-body">
+                {row.stage === 'model_stream' && row.state === 'running' && liveThinking !== '' && (
+                  <ThinkingBlock text={liveThinking} live />
+                )}
                 {details.map((line, index) =>
                   line.kind === 'code' ? (
                     <CodeDetail key={index} label={line.label} text={line.text} />
+                  ) : line.kind === 'reasoning' ? (
+                    <ThinkingBlock key={index} text={line.text} />
                   ) : (
                     <div key={index} className="progress-detail-line">
                       {line.text}
@@ -135,11 +151,34 @@ function CodeDetail({ label, text }: { label: string; text: string }) {
 }
 
 /**
- * Open while a stage is running, and for the memory step afterwards: it only
- * ever appears having done something, so what it did is the point of it.
+ * One round's thinking, live or recorded. This is the trail's memory of what
+ * the model was thinking at that point in the run - it sits on the round's own
+ * row, exactly between the tool rows it led to, and it is never folded away by
+ * the system: 默认展开, the reader closes it if they want it closed.
+ */
+function ThinkingBlock({ text, live = false }: { text: string; live?: boolean }) {
+  return (
+    <div className="progress-thinking">
+      <span className="progress-thinking-label">{live ? '思考中…' : '思考过程'}</span>
+      <div className="progress-thinking-body">{text}</div>
+    </div>
+  )
+}
+
+/**
+ * Open while a stage is running, for the memory step afterwards - it only
+ * ever appears having done something, so what it did is the point of it -
+ * and for any round that thought: the thinking is the record of what the
+ * model did, so the system does not fold it away on its own.
  */
 function defaultOpen(row: AuditRow): boolean {
-  return row.state === 'running' || row.stage === 'memory_write'
+  return (
+    row.state === 'running' ||
+    row.stage === 'memory_write' ||
+    (row.stage === 'model_stream' &&
+      typeof row.payload.reasoning === 'string' &&
+      row.payload.reasoning !== '')
+  )
 }
 
 /** How long the stage has taken, or nothing when it was never timed. */

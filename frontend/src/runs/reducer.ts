@@ -13,8 +13,8 @@
  *    arriving twice, or arriving after some deltas, converges to the same result.
  *
  * Between those, a `round.reset` says a tool round ended: the next round's
- * text replaces this one's, while reasoning keeps accumulating - the server
- * never shrinks it mid-run.
+ * text and reasoning both replace this one's - each round's thinking lives on
+ * its own trail row, so the live strings only carry the round in flight.
  *
  * Together those mean "I was here the whole time" and "I just reloaded" render
  * through one path, which is the point of the whole run-lifecycle design.
@@ -37,6 +37,19 @@ export interface AuditRow {
   endedAt: string | null
 }
 
+/**
+ * A run paused for something only the user can give it: an approval for a
+ * bash command, or an answer to the model's question. One at a time - the
+ * run is a single coroutine, so at most one thing can be waiting.
+ */
+export interface PendingInput {
+  kind: 'bash' | 'question'
+  command: string
+  cwd: string
+  question: string
+  options: string[]
+}
+
 export interface TurnState {
   /** A key that exists before the server has told us the message's real id. */
   localId: string
@@ -48,6 +61,8 @@ export interface TurnState {
   reasoning: string
   citations: Citation[]
   audits: AuditRow[]
+  /** What the run is waiting on, when it is waiting. */
+  pendingInput: PendingInput | null
   phase: TurnPhase
   error: string | null
   /** True while the stream is down and a retry is pending. Orthogonal to phase. */
@@ -75,6 +90,7 @@ export function createTurn(localId: string, seed?: TurnSeed): TurnState {
     reasoning: seed?.reasoning ?? '',
     citations: [],
     audits: [],
+    pendingInput: null,
     phase: 'connecting',
     error: null,
     detached: false,
@@ -139,13 +155,21 @@ function applyEvent(state: TurnState, event: RunEvent): TurnState {
       }
 
     case 'round.reset':
-      // A tool round ended and the next round's text replaces this one's.
-      // Reasoning is not touched - the server accumulates it across rounds on
-      // purpose, so what a round thought stays on the page.
+      // A tool round ended and the next round's text and thinking replace
+      // this one's. Reasoning resets with the text because each round's
+      // thinking is recorded on its own trail row - the live string only
+      // ever carries the round in flight. (The server's metadata.reasoning
+      // still accumulates across rounds; that is what a reload seeds from.)
       if (!forThisMessage(state, event.messageId) || isTerminal(state.phase)) {
         return state
       }
-      return { ...state, content: '', awaitingContent: true }
+      return {
+        ...state,
+        content: '',
+        awaitingContent: true,
+        reasoning: '',
+        awaitingReasoning: true,
+      }
 
     case 'message.completed':
       if (!forThisMessage(state, event.messageId)) {
@@ -158,6 +182,7 @@ function applyEvent(state: TurnState, event: RunEvent): TurnState {
         // the only place its thinking can come from.
         reasoning: event.metadata.reasoning || state.reasoning,
         citations: event.metadata.citations ?? state.citations,
+        pendingInput: null,
         awaitingContent: false,
         awaitingReasoning: false,
         phase: 'completed',
@@ -168,20 +193,54 @@ function applyEvent(state: TurnState, event: RunEvent): TurnState {
       if (!forThisMessage(state, event.messageId)) {
         return state
       }
-      return { ...state, content: event.content, phase: 'cancelled', error: null }
+      return {
+        ...state,
+        content: event.content,
+        pendingInput: null,
+        phase: 'cancelled',
+        error: null,
+      }
 
     case 'run.failed':
       // Deliberately does not touch the text: whatever arrived before the
       // failure is what the user should keep seeing.
-      return { ...state, phase: 'failed', error: event.error }
+      return { ...state, pendingInput: null, phase: 'failed', error: event.error }
 
     case 'context.ready':
       // Only the citations are kept. The event also estimates the tokens left in
       // the window, but nothing on screen asks for that any more.
       return { ...state, citations: event.citations }
 
-    case 'audit':
-      return upsertAudit(state, event.record)
+    case 'audit': {
+      const next = upsertAudit(state, event.record)
+      // A pending request dies with the stage it belongs to: the closing
+      // record of bash_tool or ask_user is the server saying the wait is
+      // over, however it ended. Only one stage can be waiting at a time,
+      // so either closing record clears it.
+      if (
+        next.pendingInput !== null &&
+        event.record.state !== 'running' &&
+        (event.record.stage === 'bash_tool' || event.record.stage === 'ask_user')
+      ) {
+        return { ...next, pendingInput: null }
+      }
+      return next
+    }
+
+    case 'user_input.requested':
+      if (isTerminal(state.phase)) {
+        return state
+      }
+      return {
+        ...state,
+        pendingInput: {
+          kind: event.kind,
+          command: event.command,
+          cwd: event.cwd,
+          question: event.question,
+          options: event.options,
+        },
+      }
 
     case 'ignored':
       return state

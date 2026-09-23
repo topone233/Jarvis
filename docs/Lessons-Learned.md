@@ -690,3 +690,39 @@ or the callable's own arguments. Here `run_tool` changed from taking a
 zero-arg closure to taking the bound method plus `*args, **kwargs`, so the
 narrowed `command` is passed at statement level, where narrowing always
 applies. Side benefit: no lambda indirection at all.
+
+## `str(exception)` can be empty: uvicorn's reload loop cannot spawn subprocesses
+
+**Symptom.** Every `bash` call failed as `bash: 执行异常：` — nothing after the
+colon, in the audit row, in the model's tool result, and (since nothing logged)
+nothing on the console either. `echo test` failed the same way as anything
+complex. Every failure landed exactly one grace window after the `running`
+record, meaning the subprocess never got as far as running a command.
+
+**Root cause.** A chain of three things, each hiding the next:
+
+1. `uvicorn --reload` on Windows makes uvicorn install
+   `WindowsSelectorEventLoopPolicy` (`use_subprocess = reload or workers > 1`).
+2. The **selector** loop cannot spawn subprocesses at all, so
+   `asyncio.create_subprocess_exec` raises `NotImplementedError` — and it
+   raises it *bare*, with no message, so `str(error)` is `""`.
+3. The failure text was built as `f"{name}: 执行异常：{error}"` and nothing
+   logged the exception, so the one part of the message that could have
+   identified the problem (the type name, the traceback) was thrown away at
+   the only two places anyone would look.
+
+The same construction existed in the skills runner, so both tools were dead
+under `--reload` while the test suite (plain `asyncio.run`, Proactor loop) was
+green.
+
+**Fix.** Both runners now drive the child synchronously on a worker thread
+(`asyncio.to_thread` + `subprocess.Popen`), which is loop-agnostic — one code
+path for dev, production, and tests. Failure text carries
+`type(error).__name__`, `logger.exception` goes to the console, and the
+traceback rides the failed audit row so a reload shows it too.
+
+**Invariant.** Never interpolate only `str(error)` into a user-facing
+failure — include the exception type name, and log with the traceback.
+And a tool that spawns subprocesses must not assume the event loop can:
+either use the thread path, or assert the loop kind at startup and fail
+loudly, not silently at spawn time.

@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { cancelRun, getRun, listRunEvents } from '../api/endpoints'
+import { cancelRun, getRun, listRunEvents, submitUserInput } from '../api/endpoints'
 import type { ThinkingLevel } from '../api/thinking'
 import { isTerminalEvent, streamRun } from '../sse/runStream'
 import { createTurn, reduce, type TurnAction, type TurnSeed, type TurnState } from './reducer'
@@ -60,6 +60,10 @@ export interface RunController {
   attach(runId: string, seed?: TurnSeed): void
   cancel(): void
   reconnect(): void
+  /** Answers a run holding for the user: a bash approval or a question's
+   *  answer. Rejects when the server says nothing is waiting (another
+   *  window answered first, or the run ended in the meantime). */
+  resolveInput(value: string): Promise<void>
   /** True once retries are exhausted and only a manual reconnect is left. */
   gaveUp: boolean
 }
@@ -238,6 +242,16 @@ export function useRun(conversationId: string | null, onChanged: () => void): Ru
     void drive(`/api/runs/${runId}/stream`, { method: 'GET' }, runId)
   }, [commit, drive, replaceTurn])
 
+  const resolveInput = useCallback((value: string): Promise<void> => {
+    const runId = turnRef.current?.runId
+    if (!runId) {
+      return Promise.reject(new Error('没有正在进行的回合。'))
+    }
+    // The card clears when the closing audit arrives over the stream; this
+    // only has to deliver the answer.
+    return submitUserInput(runId, value).then(() => undefined)
+  }, [])
+
   useEffect(() => {
     return () => {
       // Only let go of a stream we are actually watching. Aborting is for
@@ -263,7 +277,7 @@ export function useRun(conversationId: string | null, onChanged: () => void): Ru
     }
   }, [])
 
-  return { turn, send, regenerate, attach, cancel, reconnect, gaveUp }
+  return { turn, send, regenerate, attach, cancel, reconnect, resolveInput, gaveUp }
 }
 
 function describe(error: unknown): string {

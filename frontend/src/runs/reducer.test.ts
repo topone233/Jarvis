@@ -271,9 +271,10 @@ describe('reduce', () => {
     expect(state.content).toBe('第二轮的回答')
   })
 
-  it('keeps the reasoning across a round reset', () => {
-    // The server accumulates reasoning across rounds on purpose - what a
-    // round thought stays on the page while the answer text turns over.
+  it('starts the reasoning over when a tool round ends', () => {
+    // Each round's thinking is recorded on its own trail row, so the live
+    // reasoning only carries the round in flight: the reset drops the last
+    // round's text AND thinking, and the next round's first delta replaces.
     const state = run([
       { type: 'reasoning.delta', messageId: MESSAGE_ID, delta: '第一轮的想法。' },
       delta('第一轮的回答'),
@@ -281,7 +282,7 @@ describe('reduce', () => {
       { type: 'reasoning.delta', messageId: MESSAGE_ID, delta: '第二轮的想法。' },
       delta('第二轮的回答'),
     ])
-    expect(state.reasoning).toBe('第一轮的想法。第二轮的想法。')
+    expect(state.reasoning).toBe('第二轮的想法。')
     expect(state.content).toBe('第二轮的回答')
     expect(state.phase).toBe('streaming')
   })
@@ -344,5 +345,66 @@ describe('reduce', () => {
     ]
     const state = apply(run([]), { type: 'audits', records })
     expect(state.audits.map((row) => row.stage)).toEqual(['model_stream'])
+  })
+})
+
+describe('a run holding for user input', () => {
+  const bashRequest: RunEvent = {
+    type: 'user_input.requested',
+    kind: 'bash',
+    command: 'rm -rf tmp',
+    cwd: 'C:/work',
+    question: '',
+    options: [],
+  }
+  const questionRequest: RunEvent = {
+    type: 'user_input.requested',
+    kind: 'question',
+    command: '',
+    cwd: '',
+    question: '用哪种方案？',
+    options: ['方案一', '方案二'],
+  }
+
+  it('holds the request on the turn', () => {
+    const state = run([bashRequest])
+    expect(state.pendingInput).toEqual({
+      kind: 'bash',
+      command: 'rm -rf tmp',
+      cwd: 'C:/work',
+      question: '',
+      options: [],
+    })
+  })
+
+  it('clears it when the waiting stage closes', () => {
+    let state = run([questionRequest, audit('ask_user', 'completed', 5, DONE_AT)])
+    expect(state.pendingInput).toBeNull()
+    state = run([bashRequest, audit('bash_tool', 'cancelled', 5, DONE_AT)])
+    expect(state.pendingInput).toBeNull()
+  })
+
+  it('keeps it while the stage is merely running', () => {
+    const state = run([bashRequest, audit('bash_tool', 'running', 4, RAN_AT)])
+    expect(state.pendingInput).not.toBeNull()
+  })
+
+  it('clears it when the run ends by any path', () => {
+    const cancelled = run([
+      bashRequest,
+      { type: 'run.cancelled', messageId: MESSAGE_ID, content: '' },
+    ])
+    expect(cancelled.pendingInput).toBeNull()
+    const failed = run([bashRequest, { type: 'run.failed', error: '服务中断' }])
+    expect(failed.pendingInput).toBeNull()
+  })
+
+  it('ignores a request that arrives after a terminal event', () => {
+    const state = run([
+      delta('完整回答'),
+      { type: 'message.completed', messageId: MESSAGE_ID, content: '完整回答', metadata: {} },
+      questionRequest,
+    ])
+    expect(state.pendingInput).toBeNull()
   })
 })
