@@ -862,16 +862,61 @@
   color: var(--text-secondary);
 }
 
-.user-input-command pre {
-  margin: 0;
-  padding: 8px 10px;
+/* The command, in its own bordered block. The block holds the frame - the
+   fold bar closes it off from the inside - and the pre is just the text. It
+   clamps to three lines: an approval card that grew with the script would
+   push its own buttons off the bottom of the window, where the page, which
+   never scrolls, cannot reach them.
+
+   The vertical padding sits on the block rather than on the pre, because
+   overflow clips at the padding box: padding under the text is visible space,
+   and eight pixels of it would show a slice of the fourth line. */
+.user-input-command {
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg);
-  border: 1px solid var(--border);
+  overflow: hidden;
+  padding: 8px 0;
+}
+
+.user-input-command pre {
+  margin: 0;
+  padding: 0 10px;
   font-family: var(--font-mono);
   font-size: 12px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-all;
+  /* Three lines exactly - COMMAND_VISIBLE_LINES in runs/commandFold.ts. */
+  max-height: calc(3 * 1.55 * 12px);
+  overflow: hidden;
+}
+
+/* Opened, the whole command is there, but the block still has a ceiling: it
+   scrolls inside itself rather than stretching the card. */
+.user-input-command pre.is-open {
+  max-height: min(320px, 40vh);
+  overflow-y: auto;
+}
+
+/* The bar under the text: what the clamp is holding back, and the way back
+   once it has been opened. */
+.user-input-fold {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.user-input-fold:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .user-input-note {

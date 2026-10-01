@@ -726,3 +726,34 @@ failure — include the exception type name, and log with the traceback.
 And a tool that spawns subprocesses must not assume the event loop can:
 either use the thread path, or assert the loop kind at startup and fail
 loudly, not silently at spawn time.
+
+## Overflow clips at the padding box, so a line-count clamp must not own its padding
+
+**Symptom.** The approval card folds a long bash command to three lines. It
+showed three lines and then the top half of the fourth, right above the fold
+bar. Nothing in the DOM disagreed with anything else: the `pre` was 71.8px
+tall, `clientHeight` 72, `scrollHeight` 332, every number exactly as intended.
+
+**Root cause.** `overflow: hidden` clips at the *padding box*, and
+`box-sizing: border-box` means `max-height` sizes that same box. A ceiling of
+`3 lines + 16px` therefore gives a three-line content box with 8px of padding
+still painted below it — visible space, inside the clip, showing the first 8px
+of the next line. The same padding also made `scrollHeight > clientHeight`
+true for a command that hid nothing, so a three-line command would have worn a
+fold bar promising to reveal nothing.
+
+**Fix.** The vertical padding moved to the frame (`.user-input-command`) and
+the `pre` kept only horizontal padding, so the clip lands exactly on the last
+visible line and the overflow test compares like with like. Measured after:
+three lines → no bar; four lines → `+1 行`; seventeen → `+14 行`, and the
+opened block scrolls to its last line.
+
+**Invariant.** A clamp counted in lines puts the vertical padding on the
+frame, never on the clipped element. And `scrollHeight > clientHeight` only
+answers "is something hidden" when no padding sits between the two — read the
+line boxes with `Range.getClientRects()` when the answer matters.
+
+**Harness note.** Measure geometry and take the screenshot in the *same*
+session at the *same* deviceScaleFactor. Reading a screenshot from one run
+against numbers from another cost two rounds here: the layouts were 50px
+apart and the arithmetic kept insisting the fourth line could not be visible.

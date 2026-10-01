@@ -8,8 +8,9 @@
  * server's verdict, not this component's optimism.
  */
 
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 
+import { commandFold, commandText } from '../runs/commandFold'
 import type { PendingInput } from '../runs/reducer'
 
 export interface UserInputCardProps {
@@ -22,6 +23,37 @@ export interface UserInputCardProps {
 export function UserInputCard({ request, onResolve }: UserInputCardProps) {
   const [sending, setSending] = useState(false)
   const [draft, setDraft] = useState('')
+  // The command clamps to three lines and opens on demand. A script of forty
+  // lines would otherwise push the buttons below the bottom of the window,
+  // where nothing can scroll to them.
+  const [open, setOpen] = useState(false)
+  const [clipped, setClipped] = useState(false)
+  const commandRef = useRef<HTMLPreElement | null>(null)
+  const fold = commandFold(request.command)
+
+  // Whether the clamp is hiding anything, asked of the rendered block itself:
+  // only it knows where its lines wrap. Measured while collapsed - opened,
+  // the block is a scroller and the answer would be about the wrong box.
+  useLayoutEffect(() => {
+    const element = commandRef.current
+    if (element === null) {
+      return
+    }
+    const measure = () => {
+      if (!open) {
+        setClipped(element.scrollHeight > element.clientHeight)
+      }
+    }
+    measure()
+    // A narrower card wraps the command into more lines, and lines the clamp
+    // was not hiding before it starts hiding now - so the question is asked
+    // again whenever the block is resized, by the window or by the sidebar
+    // folding away. The block's own width is what changes; its height is the
+    // clamped one and would say nothing.
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [request.command, open])
 
   const resolve = (value: string) => {
     if (sending || value === '') return
@@ -37,7 +69,19 @@ export function UserInputCard({ request, onResolve }: UserInputCardProps) {
       {request.kind === 'bash' ? (
         <>
           <div className="user-input-command">
-            <pre>{request.command}</pre>
+            <pre ref={commandRef} className={open ? 'is-open' : ''}>
+              {commandText(request.command)}
+            </pre>
+            {clipped && (
+              <button
+                type="button"
+                className="user-input-fold"
+                aria-expanded={open}
+                onClick={() => setOpen((current) => !current)}
+              >
+                {open ? '收起' : fold.label}
+              </button>
+            )}
           </div>
           {request.cwd !== '' && <div className="user-input-note">工作目录：{request.cwd}</div>}
           <div className="user-input-actions">
