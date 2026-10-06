@@ -9,6 +9,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import type { ComponentType } from 'react'
 import { NavLink } from 'react-router'
 
 import type { Conversation } from '../api/types'
@@ -31,6 +32,18 @@ export interface SidebarProps {
   /** The keyword the list above is filtered by; '' is no filter. */
   search: string
   onSearchChange(search: string): void
+  /**
+   * Enabled plugins with a frontend, in registry order. Each contributes one
+   * nav row above 设置; the route it points at is the plugin's own business.
+   */
+  plugins: PluginNavItem[]
+}
+
+export interface PluginNavItem {
+  id: string
+  label: string
+  path: string
+  Icon: ComponentType<{ size?: number }>
 }
 
 export function Sidebar({
@@ -41,6 +54,7 @@ export function Sidebar({
   onDelete,
   search,
   onSearchChange,
+  plugins,
 }: SidebarProps) {
   const [searchOpen, setSearchOpen] = useState(false)
   const searchInput = useRef<HTMLInputElement>(null)
@@ -169,6 +183,12 @@ export function Sidebar({
           <BookmarkIcon size={17} />
           {!collapsed && <span className="label">记忆</span>}
         </NavLink>
+        {plugins.map(({ id, label, path, Icon }) => (
+          <NavLink key={id} to={path} className="sidebar-item" title={label}>
+            <Icon size={17} />
+            {!collapsed && <span className="label">{label}</span>}
+          </NavLink>
+        ))}
         <NavLink to="/setup" className="sidebar-item" title="设置">
           <PanelIcon size={17} />
           {!collapsed && <span className="label">设置</span>}

@@ -238,3 +238,21 @@ export function CodeIcon(props: IconProps) {
     </Icon>
   )
 }
+
+/** Attaches an image: a paperclip. */
+export function PaperclipIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M20.5 11.5 12 20a5.3 5.3 0 0 1-7.5-7.5l8.2-8.2a3.55 3.55 0 0 1 5 5l-8.1 8.2a1.8 1.8 0 0 1-2.5-2.5l7.4-7.4" />
+    </Icon>
+  )
+}
+
+/** Back to the newest message: a down arrow. */
+export function ArrowDownIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 4v16M5.5 13.5 12 20l6.5-6.5" />
+    </Icon>
+  )
+}

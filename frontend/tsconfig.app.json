@@ -15,6 +15,17 @@
     "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
+    /* Plugin files sit above frontend/, where the node_modules walk-up ends
+       before it reaches the packages they import. The fallback sends every
+       bare specifier here: @types/* first (react and react-dom carry no types
+       of their own), then the real packages, which ship their own .d.ts. */
+    "paths": {
+      /* paths-mapped directories are resolved as plain folders - package.json
+         "exports" is not consulted - and react-router publishes only through
+         exports, so it gets pointed at its declaration file directly. */
+      "react-router": ["./node_modules/react-router/dist/production/index.d.ts"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    },
 
     /* Linting */
     "noUnusedLocals": true,
@@ -22,5 +33,8 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  /* Plugin frontends live in the project-root `plugin/` directory, next to
+     backend/ and frontend/, so the registry's glob can reach them and tsc
+     checks them with the same rules the app's own code follows. */
+  "include": ["src", "../plugin/*/frontend/**/*"]
 }

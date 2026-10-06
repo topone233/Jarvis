@@ -1,10 +1,26 @@
 /* ---------- scroll area ---------- */
 
+/* The conversation is a row: the chat frame owns the transcript and the
+   composer, and the right panel docks beside it as a peer - opening it
+   narrows the frame, it never covers it. */
 .chat {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+
+/* The frame is the query container: what the turn rail and its preview measure
+   themselves against. On the frame, not the row, so a docked panel - which
+   narrows the frame without narrowing the row - still pushes the rail aside
+   when the space left over can no longer hold it clear of the text. */
+.chat-frame {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
+  container-type: inline-size;
 }
 
 .messages {
@@ -12,7 +28,7 @@
   min-height: 0;
   min-width: 0;
   overflow-y: auto;
-  /* No visible scrollbar: the outline rail beside it already says where you
+  /* No visible scrollbar: the turn rail beside it already says where you
      are. Scrolling itself is untouched. */
   scrollbar-width: none;
 }
@@ -27,16 +43,14 @@
   padding: 26px 24px 20px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px;
 }
 
-/* The messages and the outline rail share the row above the composer. The rail
-   takes the right edge only; the content column is centred in what is left,
-   which at 44px wide moves it barely at all. */
-.chat-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
+/* The rhythm between turns: an answer sits 16px under its question, and a
+   new question gets a full breath after the answer before it - the extra 8px
+   under each turn makes that boundary read as a boundary. */
+.turn {
+  margin-bottom: 8px;
 }
 
 /* ---------- messages ---------- */
@@ -44,8 +58,8 @@
 .msg-user {
   align-self: flex-end;
   max-width: 76%;
-  padding: 10px 15px;
-  border-radius: var(--radius-lg);
+  padding: 10px 16px;
+  border-radius: var(--radius-xl);
   background: var(--user-bubble);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -80,7 +94,7 @@
 .turn {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .turn-error {
@@ -128,7 +142,7 @@
 }
 
 .turn-notice button {
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   font-size: 13px;
 }
 
@@ -392,7 +406,7 @@
 .progress-caret {
   flex: 0 0 auto;
   color: var(--text-muted);
-  transition: transform 0.16s ease;
+  transition: transform var(--dur-fast) var(--ease);
 }
 
 .progress-caret.is-open {
@@ -436,14 +450,6 @@
     animation: none;
     opacity: 1;
   }
-
-  .outline-line {
-    transition: none;
-  }
-
-  .outline-tip {
-    animation: none;
-  }
 }
 
 /* ---------- reasoning ---------- */
@@ -470,7 +476,7 @@
 }
 
 .reasoning-head .chevron {
-  transition: transform 0.15s ease;
+  transition: transform var(--dur-fast) var(--ease);
 }
 
 .reasoning-head.is-open .chevron {
@@ -549,8 +555,19 @@
   margin: 0.25em 0;
 }
 
+/* Links take the accent and a medium weight, bare at rest; the dotted
+   underline only appears when the link is the thing under the pointer, which
+   keeps a paragraph of prose from growing whiskers. */
 .markdown a {
-  color: var(--accent-strong);
+  color: var(--accent-ink);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.markdown a:hover,
+.markdown a:focus-visible {
+  text-decoration: underline dotted 3px;
+  text-underline-offset: 3px;
 }
 
 .markdown blockquote {
@@ -561,7 +578,7 @@
 
 .markdown code {
   padding: 0.13em 0.38em;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: var(--bg-subtle);
   font-family: var(--font-mono);
   font-size: 0.88em;
@@ -569,7 +586,7 @@
 
 .markdown pre {
   padding: 13px 15px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--bg-subtle);
   overflow-x: auto;
 }
@@ -673,35 +690,28 @@
 /* ---------- code blocks ---------- */
 
 .code-block {
-  position: relative;
+  /* The block owns R16 as a whole - banner on top, body below - and the
+     overflow clips both to the one contour. */
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-subtle);
 }
 
-/* The toolbar surfaces on hover and stays out of the code's way otherwise: a
-   pill pinned to the top-right corner. A floating pill rather than a header
-   bar, so the block keeps its quiet look. */
+/* A banner, not a hover pill: the language label and the copy control are
+   always visible, which is how every mainstream client marks a block of code.
+   A hairline under the bar is the one rule - it separates chrome from the
+   code, it does not outline anything. */
 .code-toolbar {
-  position: absolute;
-  top: 8px;
-  right: 8px;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 3px 4px 3px 10px;
-  border-radius: var(--radius-pill);
-  background: var(--bg);
-  box-shadow: var(--shadow-pop);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.code-block:hover .code-toolbar,
-.code-block:focus-within .code-toolbar {
-  opacity: 1;
-  pointer-events: auto;
+  padding: 4px 6px 4px 12px;
+  border-bottom: 0.5px solid var(--border);
+  background: var(--bg-subtle);
 }
 
 .code-lang {
+  flex: 1;
   margin-right: 4px;
   font-size: 11px;
   color: var(--text-muted);
@@ -713,12 +723,18 @@
   height: 26px;
 }
 
+/* The body under the banner: square shoulders against the bar, the block's
+   own rounding at the bottom. The bare `pre` case (no CodeBlock wrapper)
+   keeps its own R16 from .markdown pre above. */
+.code-block pre {
+  margin: 0;
+  border-radius: 0;
+}
+
 /* The preview areas wear the same background as a code block: they are what the
    block shows, not a panel beside it. */
-
 .code-preview {
   padding: 16px;
-  border-radius: var(--radius-md);
   background: var(--bg-subtle);
   display: flex;
   justify-content: center;
@@ -735,103 +751,240 @@
 .code-frame {
   width: 100%;
   height: 320px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: #fff;
+  border: none;
+  border-top: 0.5px solid var(--border);
+  background: var(--bg);
 }
 
-/* ---------- outline rail ---------- */
+/* ---------- turn rail ---------- */
 
-.outline {
-  flex: none;
-  width: 44px;
-  padding: 24px 10px 24px 0;
+/* A floating overlay pinned to the frame's right edge, not a column: the
+   transcript runs full width beneath it, and the rail only exists where
+   there is something to navigate. The slot is a full-frame layer - the rail
+   centred inside it reads its band from the frame's own height. */
+.turn-rail-slot {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+}
+
+/* The band a reader actually sees: the frame minus the composer stack at its
+   floor (--composer-h is the card's height, published by the page; the 34px
+   is the composer's own padding plus the air between card and rail). The rail
+   is centred in that band and never taller than 420px - a ladder longer than
+   that scrolls inside, under gradient fades.
+
+   The cap is a definite `height`, not a `max-height`: the scroller inside
+   measures itself against this box, and a max-height would leave the rail's
+   own height content-driven - percentages against an auto-height box don't
+   resolve, and the cap would never reach the child. */
+.turn-rail {
+  --band: calc(100% - var(--composer-h, 148px) - 34px);
+  position: absolute;
+  top: calc(var(--band) / 2);
+  right: 12px;
+  width: 28px;
+  height: min(calc(var(--band) - 32px), 420px);
+  transform: translateY(-50%);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+/* The frame's inner scroller: fills the rail, no visible scrollbar, no scroll
+   chaining into the transcript, and gradient fades over the ends that can
+   still scroll. The flex column with auto margins is what centres a short
+   ladder without breaking scroll once the ladder outgrows the box - the
+   margins collapse to zero exactly when scrolling begins. */
+.turn-rail-scroller {
+  position: relative;
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-  overflow-y: auto;
-  scrollbar-width: none;
 }
 
-.outline::-webkit-scrollbar {
+.turn-rail-scroller::-webkit-scrollbar {
   display: none;
 }
 
-.outline-item {
+.turn-rail-scroller.fade-top {
+  mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 100%);
+}
+
+.turn-rail-scroller.fade-bottom {
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
+}
+
+.turn-rail-scroller.fade-top.fade-bottom {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent 100%
+  );
+}
+
+.turn-rail-marks {
   position: relative;
-  display: flex;
-  align-items: center;
-  height: 12px;
+  margin: auto 0;
+}
+
+/* Each mark is a 10px-tall hit area whose tick is a 20x2 bar, right-aligned.
+   At rest the tick holds back at three fifths of its length; the tick the
+   viewport is inside stretches to full width and takes the ink's colour. */
+.turn-mark {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 10px;
   padding: 0;
   border: 0;
-  background: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
   cursor: pointer;
 }
 
-/* The group sits centred in the rail when it fits. Auto margins rather than
-   `justify-content: center` because the rail scrolls: centred flex children
-   overflow both ends, and the top end would be gone for good - auto margins
-   collapse to plain stacking exactly when centring stops being possible. */
-.outline-item:first-child {
-  margin-top: auto;
-}
-
-.outline-item:last-child {
-  margin-bottom: auto;
-}
-
-.outline-line {
-  width: 14px;
+.turn-tick {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 20px;
   height: 2px;
-  border-radius: 1px;
+  border-radius: 2px;
   background: var(--border-strong);
+  transform: translateY(-50%) scaleX(0.6);
+  transform-origin: right center;
   transition:
-    width 120ms ease,
-    background 120ms ease;
+    transform 140ms var(--ease),
+    background-color 140ms var(--ease);
 }
 
-/* A heading inside an answer: shorter, quieter - a spot within a section. */
-.outline-item.is-l2 .outline-line {
-  width: 9px;
-}
-
-.outline-item:hover .outline-line {
+.turn-mark:hover .turn-tick,
+.turn-mark:focus-visible .turn-tick {
+  transform: translateY(-50%) scaleX(0.9);
   background: var(--text-muted);
 }
 
-.outline-item.is-active .outline-line {
-  width: 18px;
-  background: var(--accent-strong);
+.turn-mark.is-active .turn-tick {
+  transform: translateY(-50%) scaleX(1);
+  background: var(--text);
 }
 
-/* One tooltip for the whole rail, placed by the component just left of the
-   hovered line and centred on it. Fixed to the viewport: the rail scrolls, and
-   a scroll container would clip anything poking out of it, which is exactly
-   what a tooltip that lives outside a 44px strip has to do. */
-.outline-tip {
-  position: fixed;
-  transform: translate(-100%, -50%);
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 5px 10px;
-  border-radius: var(--radius-sm);
+.turn-mark:focus-visible {
+  outline: none;
+}
+
+/* A live answer breathes on its tick: the only mark that moves, so it reads
+   as "this one", not as "the rail is busy". */
+.turn-mark.is-busy .turn-tick {
+  animation: turn-busy 1s ease-in-out infinite;
+}
+
+@keyframes turn-busy {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* The preview card hangs left of the rail, over the hovered tick. The frame
+   does not scroll - the scroller inside it does - so an absolutely placed
+   card survives its marks moving underneath. */
+.turn-preview {
+  position: absolute;
+  right: calc(100% + 10px);
+  width: min(300px, calc(100cqw - 120px));
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
   background: var(--bg);
   box-shadow: var(--shadow-pop);
-  font-size: 12px;
-  color: var(--text-secondary);
   pointer-events: none;
-  animation: outline-tip-in 120ms ease 80ms both;
+  animation: turn-preview-in 120ms ease-out;
 }
 
-@keyframes outline-tip-in {
+.turn-preview-q {
+  font-size: 13px;
+  font-weight: 600;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+
+.turn-preview-a {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+@keyframes turn-preview-in {
   from {
     opacity: 0;
+    transform: translateX(4px);
   }
   to {
     opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* A narrow conversation has no right edge to spare: the rail steps aside
+   entirely, the way the reference does below 900px. */
+@container (max-width: 900px) {
+  .turn-rail {
+    display: none;
+  }
+}
+
+/* ---------- back to bottom ---------- */
+
+/* A floating circle above the composer's right shoulder, in the family of
+   the reference's scroll affordance: white fill, hairline-and-lift shadow,
+   and nothing else. It exists only once the reader has scrolled away from
+   the newest message (the page mounts it then). */
+.to-bottom {
+  position: absolute;
+  right: 20px;
+  bottom: calc(var(--composer-h, 148px) + 50px);
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
+  color: var(--text-secondary);
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.to-bottom:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-mark.is-busy .turn-tick,
+  .turn-preview {
+    animation: none;
+  }
+
+  .turn-tick,
+  .turn-preview {
+    transition: none;
   }
 }
 
@@ -847,7 +1000,7 @@
    same shadow-lifted surface the composer does - a thing asking for input,
    not a notification passing by. */
 .user-input-card {
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--accent-soft);
   box-shadow: var(--shadow-input);
   padding: 12px 14px;
@@ -976,19 +1129,20 @@
 }
 
 .composer-inner {
-  max-width: var(--content-width);
+  max-width: calc(var(--content-width) + 32px);
   margin: 0 auto;
 }
 
-/* The pasted images, waiting above the box. They take the quick prompts'
-   slot - one row above the composer, never two - and each thumb carries its
-   own small ✕ so removal stays where the eye already is. */
+/* The pasted images, waiting inside the card above the draft. They live in
+   the card now - attachments belong to the message being written, not to the
+   page - and each thumb carries its own small ✕ so removal stays where the
+   eye already is. */
 .composer-images {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 0 6px 8px;
+  padding: 2px 4px 0;
 }
 
 .composer-image {
@@ -1018,7 +1172,7 @@
   font-size: 9px;
   line-height: 1;
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--dur-fast) var(--ease);
 }
 
 .composer-image:hover .composer-image-remove,
@@ -1029,6 +1183,110 @@
 .composer-image-note {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+/* The quick prompts: named pills above the card. One click fills the text
+   in; typing anything takes the row away again. They are furniture, not
+   actions of record, so they wear the quietest fill in the palette and only
+   darken one step on hover - no border, no shadow. */
+.composer-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 6px 8px;
+}
+
+.quick-prompt {
+  padding: 5px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 13px;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.quick-prompt:hover {
+  background: var(--bg-hover);
+}
+
+/* The card: draft on top, controls underneath. The panel radius and the
+   hairline-in-shadow elevation are the reference's composer contract - the
+   silhouette never grows a border of its own. */
+.composer-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-radius: var(--radius-panel);
+  background: var(--bg);
+  box-shadow: var(--shadow-input);
+  transition: box-shadow var(--dur-fast) var(--ease);
+}
+
+/* Focus shows as light gathering around the box rather than as a line drawn on
+   it: the silhouette never changes, so nothing on screen moves when the caret
+   arrives. */
+.composer-box:focus-within {
+  box-shadow: var(--ring-accent), var(--shadow-input);
+}
+
+.composer-box textarea {
+  flex: 1;
+  /* The card above gives when the window narrows - with a floor of its own
+     the textarea keeps the row honest and scrolls once the ceiling is hit. */
+  min-width: 0;
+  min-height: 36px;
+  max-height: 320px;
+  padding: 4px 10px 0 14px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: none;
+  line-height: 1.7;
+  caret-color: var(--accent-strong);
+}
+
+.composer-box textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* The centered hero keeps a two-line floor, so an empty prompt reads as an
+   invitation rather than a sliver. */
+.hero .composer-box textarea {
+  min-height: 52px;
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 2px 6px;
+}
+
+.composer-tools,
+.composer-side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.composer-tools {
+  justify-content: flex-start;
+}
+
+.composer-side {
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* The file input is invisible; the paperclip beside it is the affordance, so
+   attaching starts from a control that matches every other button. */
+.composer-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
 }
 
 /* The ring beside the send button: the draft's share of the input budget.
@@ -1048,70 +1306,7 @@
   fill: none;
   stroke-width: 2.5;
   stroke-linecap: round;
-  transition: stroke-dasharray 0.2s ease;
-}
-
-/* The quick prompts: named pills above an empty box. One click fills the text
-   in; typing anything takes the row away again. They are furniture, not
-   actions of record, so they wear the quietest fill in the palette and only
-   darken one step on hover - no border, no shadow. */
-.composer-quick {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 0 6px 8px;
-}
-
-.quick-prompt {
-  padding: 5px 14px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-  font-size: 13px;
-  transition: background 0.12s ease;
-}
-
-.quick-prompt:hover {
-  background: var(--bg-hover);
-}
-
-.composer-box {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 10px 10px 10px 16px;
-  border-radius: 22px;
-  background: var(--bg);
-  box-shadow: var(--shadow-input);
-  transition: box-shadow 0.12s ease;
-}
-
-/* Focus shows as light gathering around the box rather than as a line drawn on
-   it: the silhouette never changes, so nothing on screen moves when the caret
-   arrives. */
-.composer-box:focus-within {
-  box-shadow: var(--ring-accent), var(--shadow-input);
-}
-
-.composer-box textarea {
-  flex: 1;
-  /* The controls beside it are fixed width - a model name and a slider - so the
-     only thing left to give when the window narrows is this. Without a floor of
-     its own a textarea will not shrink past the width it was born with, and the
-     row would push the send button off the edge instead. */
-  min-width: 0;
-  min-height: 26px;
-  max-height: 220px;
-  padding: 3px 0;
-  border: none;
-  outline: none;
-  resize: none;
-  background: none;
-  line-height: 1.6;
-}
-
-.composer-box textarea::placeholder {
-  color: var(--text-muted);
+  transition: stroke-dasharray var(--dur-base) var(--ease);
 }
 
 .composer-hint {
@@ -1120,10 +1315,10 @@
   font-size: 12px;
 }
 
-/* Pale while the box is empty and fully saturated the moment there is anything
-   to send. The button is never disabled - a click that does nothing is worse
-   than a button that looks like it will do nothing - so the colour is the only
-   thing that has to carry "not yet". */
+/* Grey circle, ink arrow, while there is nothing to send; the accent with a
+   white arrow the moment there is. The button is never disabled - a click that
+   does nothing is worse than a button that looks like it will do nothing - so
+   the two states are the only "not yet" the box offers. */
 .send-button {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1133,18 +1328,25 @@
   height: 32px;
   border-radius: 50%;
   background: var(--send-idle);
-  color: #fff;
+  color: var(--text-secondary);
   transition:
-    background 0.12s ease,
-    opacity 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .send-button:hover {
-  opacity: 0.9;
+  background: var(--border-strong);
+  color: var(--text);
 }
 
 .send-button.is-filled {
   background: var(--send-active);
+  color: var(--text-on-accent);
+}
+
+.send-button.is-filled:hover {
+  background: color-mix(in srgb, var(--send-active) 88%, black);
+  color: var(--text-on-accent);
 }
 
 .stop-button {
@@ -1155,13 +1357,14 @@
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--bg-hover);
+  background: var(--bg-active);
   color: var(--text-secondary);
-  transition: background 0.12s ease;
+  transition: background var(--dur-fast) var(--ease);
 }
 
 .stop-button:hover {
-  background: var(--bg-active);
+  background: var(--border-strong);
+  color: var(--text);
 }
 
 /* ---------- the model and thinking controls ---------- */
@@ -1185,8 +1388,8 @@
   color: var(--text-secondary);
   font-size: 12.5px;
   transition:
-    background 0.12s ease,
-    color 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .menu-trigger:hover,
@@ -1204,7 +1407,12 @@
 }
 
 /* Above the button, because every composer in this app sits at the bottom of
-   its window. */
+   its window.
+
+   Glass, not paper: the panel is a translucent slab over a blur of whatever
+   is beneath it - the mainstream menu material. The solid --bg declaration
+   comes first, so a browser without backdrop-filter renders an opaque panel
+   instead of nothing. */
 .menu-panel {
   position: absolute;
   right: 0;
@@ -1215,6 +1423,9 @@
   padding: 4px;
   border-radius: var(--radius-md);
   background: var(--bg);
+  background: var(--menu-fill);
+  -webkit-backdrop-filter: var(--menu-blur);
+  backdrop-filter: var(--menu-blur);
   box-shadow: var(--shadow-pop);
 }
 
@@ -1320,11 +1531,11 @@
 .think-dial-value {
   min-width: 28px;
   color: var(--text-muted);
-  transition: color 0.12s ease;
+  transition: color var(--dur-fast) var(--ease);
 }
 
 .think-dial.is-on .think-dial-value {
-  color: var(--accent-strong);
+  color: var(--accent-ink);
 }
 
 /* Takes whatever the panel leaves it, so all four stops are far enough apart to
@@ -1412,7 +1623,7 @@
   gap: 2px;
   min-height: 30px;
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--dur-fast) var(--ease);
 }
 
 .turn:hover .turn-actions {
@@ -1481,8 +1692,8 @@ button.citation-chip:hover {
   height: 16px;
   padding: 0 4px;
   border-radius: var(--radius-pill);
-  background: var(--accent-strong);
-  color: #fff;
+  background: var(--accent-ink);
+  color: var(--text-on-accent);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
@@ -1498,7 +1709,7 @@ button.citation-chip:hover {
   border: none;
   border-radius: var(--radius-pill);
   background: var(--bg-subtle);
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   font-size: 10px;
   line-height: 1.5;
   cursor: pointer;
@@ -1506,29 +1717,30 @@ button.citation-chip:hover {
 }
 
 .citation-mark button:hover {
-  background: var(--accent-strong);
-  color: #fff;
+  background: var(--accent-ink);
+  color: var(--text-on-accent);
 }
 
-/* ---------- citation drawer ---------- */
+/* ---------- right panel ---------- */
 
-/* The drawer docks at the right edge of the chat body, a peer of the
-   messages column - opening it narrows the conversation, never covers it. */
-.citation-panel {
-  width: min(420px, 38vw);
+/* The panel docks at the right edge of the conversation as a peer of the chat
+   frame - opening it narrows the conversation, never covers it. A hairline on
+   its left edge is the seam; the surface stays the page's own white, and the
+   slide-in is the drawer telling you where it came from. */
+.right-panel {
+  flex: 0 0 auto;
+  width: min(400px, 36vw);
   min-width: 280px;
-  margin-left: 8px;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-left: 1px solid var(--border, rgba(128, 128, 128, 0.2));
-  background: var(--bg-subtle);
-  border-radius: var(--radius-lg, 10px);
-  animation: citation-panel-in 0.18s ease-out;
+  border-left: 0.5px solid var(--border);
+  background: var(--bg);
+  animation: right-panel-in 0.2s var(--ease);
   overflow: hidden;
 }
 
-@keyframes citation-panel-in {
+@keyframes right-panel-in {
   from {
     transform: translateX(24px);
     opacity: 0;
@@ -1539,12 +1751,49 @@ button.citation-chip:hover {
   }
 }
 
-.citation-panel-header {
+@media (prefers-reduced-motion: reduce) {
+  .right-panel {
+    animation: none;
+  }
+}
+
+/* The head is the tab strip and the close button - the two surfaces the panel
+   can hold are a choice, not a hidden step behind a button in the body. */
+.right-panel-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.2));
+  gap: 4px;
+  padding: 8px 10px 8px 12px;
+  border-bottom: 0.5px solid var(--border);
+}
+
+.right-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.right-panel-tab {
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 13px;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.right-panel-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.right-panel-tab.is-active {
+  background: var(--bg-active);
+  color: var(--text);
+  font-weight: 500;
 }
 
 .citation-panel-heading {
@@ -1552,7 +1801,7 @@ button.citation-chip:hover {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 1;
+  margin-bottom: 8px;
 }
 
 .citation-panel-title {
@@ -1560,7 +1809,7 @@ button.citation-chip:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .citation-panel-section {
@@ -1591,8 +1840,8 @@ button.citation-chip:hover {
   margin: 8px 0 4px;
   padding: 2px 8px;
   border-radius: var(--radius-pill);
-  background: var(--accent-strong);
-  color: #fff;
+  background: var(--accent-ink);
+  color: var(--text-on-accent);
   display: inline-block;
   font-size: 11px;
 }
@@ -1627,7 +1876,7 @@ button.citation-chip:hover {
 }
 
 .citation-toc-item.is-cited {
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   font-weight: 600;
 }
 
@@ -1694,7 +1943,7 @@ button.citation-chip:hover {
   /* Tight, because every pixel here is taken from the panel's width: the card
      is a window onto settings, not a poster to centre them in. */
   padding: 16px 20px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
   background: var(--bg);
   /* The heavier of the two page shadows, since the tinted backdrop makes the
      lift believable - on white-on-white this one looked like dirt. */
@@ -1787,8 +2036,8 @@ button.citation-chip:hover {
   font-size: 14px;
   text-decoration: none;
   transition:
-    background 0.12s ease,
-    color 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .setup-tab:hover {
@@ -1835,7 +2084,7 @@ button.citation-chip:hover {
   flex-direction: column;
   gap: 6px;
   padding: 11px 13px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
   /* A fill rather than a line, so the row still separates from the white card
      it sits on without drawing a box around every entry in the list. */
   background: var(--bg-subtle);
@@ -1865,7 +2114,7 @@ button.citation-chip:hover {
   padding: 1px 7px;
   border-radius: var(--radius-pill);
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   font-size: 11px;
 }
 
@@ -1923,7 +2172,7 @@ button.citation-chip:hover {
   flex-direction: column;
   gap: 8px;
   padding: 12px 14px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
   background: var(--bg-subtle);
 }
 
@@ -1978,7 +2227,7 @@ button.citation-chip:hover {
   background: var(--bg-active);
   display: inline-flex;
   align-items: center;
-  transition: background 0.15s ease;
+  transition: background var(--dur-fast) var(--ease);
 }
 
 .skill-switch.is-on {
@@ -1989,13 +2238,100 @@ button.citation-chip:hover {
   width: 16px;
   height: 16px;
   border-radius: var(--radius-pill);
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.2);
-  transition: transform 0.15s ease;
+  background: var(--bg);
+  box-shadow: var(--shadow-knob);
+  transition: transform var(--dur-fast) var(--ease);
 }
 
 .skill-switch.is-on .skill-knob {
   transform: translateX(14px);
+}
+
+/* --- Plugins tab ------------------------------------------------------------ */
+
+/* The rescan row sits with the tab's other standalone actions. */
+.plugin-actions {
+  display: flex;
+}
+
+/* One full-width card per plugin, tall by design: a card carries its own
+   config form, which the skills grid's tiles have no room for. */
+.plugin-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.plugin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: var(--radius-xl);
+  background: var(--bg-subtle);
+}
+
+.plugin-card.is-broken {
+  background: var(--bg-hover);
+}
+
+.plugin-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+
+.plugin-head .spacer {
+  flex: 1;
+}
+
+.plugin-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.plugin-version {
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.plugin-stale {
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.plugin-description {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* A config field inside the card keeps the form's spacing but gives back the
+   card's own bottom margin - the save button closes the gap instead. */
+.plugin-card .plugin-field {
+  margin-bottom: 0;
+}
+
+.plugin-save {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+/* The hotkey recorder shows a chord, so it reads as one even while empty. */
+.plugin-hotkey {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
 }
 
 /* The deleted section sits below the list, folded: it is where things go when
@@ -2115,12 +2451,12 @@ button.citation-chip:hover {
 
 .setup-step.is-active .index {
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--accent-ink);
 }
 
 .setup-step.is-done .index {
-  background: var(--ok);
-  color: #fff;
+  background: var(--ok-strong);
+  color: var(--text-on-accent);
 }
 
 .field {
@@ -2196,12 +2532,12 @@ button.citation-chip:hover {
 .knowledge-search input {
   width: 100%;
   padding: 9px 12px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   outline: none;
   /* A fill instead of an outline. The field is still visibly a field, and the
      settings page stops looking like a stack of boxes. */
   background: var(--bg-subtle);
-  transition: box-shadow 0.12s ease;
+  transition: box-shadow var(--dur-fast) var(--ease);
 }
 
 .field textarea {
@@ -2256,10 +2592,10 @@ button.citation-chip:hover {
 .quick-row input {
   width: 100%;
   padding: 8px 12px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   outline: none;
   background: var(--bg-subtle);
-  transition: box-shadow 0.12s ease;
+  transition: box-shadow var(--dur-fast) var(--ease);
 }
 
 .quick-row input:focus {
@@ -2309,17 +2645,17 @@ button.citation-chip:hover {
   border-radius: var(--radius-sm);
   font-size: 14px;
   transition:
-    background 0.12s ease,
-    opacity 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
 }
 
 .button-primary {
   background: var(--accent-strong);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 .button-primary:hover {
-  background: #4089c0;
+  background: color-mix(in srgb, var(--accent-strong) 88%, black);
 }
 
 .button-primary:disabled {
@@ -2374,15 +2710,17 @@ button.citation-chip:hover {
   max-height: none;
 }
 
+/* The mask is flat ink at a quarter - the reference's dialog backdrop. No
+   blur: what sits behind the question should stay readable, just dimmed. */
 .confirm-dialog::backdrop {
-  background: rgba(16, 24, 40, 0.26);
+  background: rgba(0, 0, 0, 0.24);
 }
 
 .confirm-box {
   position: relative;
   width: min(400px, calc(100vw - 40px));
   padding: 22px 24px 18px;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--bg);
   box-shadow: var(--shadow-pop);
 }

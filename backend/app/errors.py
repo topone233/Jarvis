@@ -16,3 +16,11 @@ class ValidationError(JarvisError):
 
 class ProviderError(JarvisError):
     """Raised when a model provider cannot complete an operation."""
+
+
+class PluginDisabledError(JarvisError):
+    """Raised when a request reaches a plugin that is switched off.
+
+    The router stays mounted so the switch takes effect without a restart;
+    this error is what the mounted gate answers with.
+    """

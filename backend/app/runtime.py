@@ -13,6 +13,7 @@ from app.database import Database
 from app.errors import JarvisError, SetupRequiredError
 from app.knowledge import KnowledgeService
 from app.memory import MemoryService
+from app.plugin_host import PLUGIN_ROOT, PluginService
 from app.provider import OpenAICompatibleProvider
 from app.secrets import KeyringSecretStore, SecretStore
 from app.skills import SkillService
@@ -174,6 +175,9 @@ class CoreServices:
     skills: SkillService
     bash_tool: BashToolService
     run_registry: RunRegistry
+    # Assigned after construction: the PluginService needs this very instance
+    # to hand plugins a live context, which a constructor argument cannot be.
+    plugins: PluginService | None = None
 
     @classmethod
     def create(cls, data_directory: Path, secrets: SecretStore | None = None) -> CoreServices:
@@ -187,7 +191,7 @@ class CoreServices:
         context = ContextManager(store, provider, knowledge, skills)
         memory = MemoryService(store)
         bash_tool = BashToolService()
-        return cls(
+        services = cls(
             database=database,
             store=store,
             provider=provider,
@@ -198,6 +202,13 @@ class CoreServices:
             bash_tool=bash_tool,
             run_registry=RunRegistry(),
         )
+        # Assigned before load_all: the ensure hooks resolve their context
+        # through services.plugins, which must already be in place.
+        plugins = PluginService(store, PLUGIN_ROOT)
+        services.plugins = plugins
+        plugins.bind_services(services)
+        plugins.load_all()
+        return services
 
 
 class Runtime:

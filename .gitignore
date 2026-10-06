@@ -16,6 +16,11 @@ backend/.coverage
 frontend/node_modules/
 frontend/dist/
 
+# The root junction into frontend/node_modules (created by scripts/start-core.ps1,
+# machine-local): plugin/ code imports the frontend's packages, and node module
+# resolution from plugin/ has to find them.
+node_modules/
+
 
 # JetBrains IDE configuration, per machine.
 .idea/

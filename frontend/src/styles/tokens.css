@@ -1,58 +1,92 @@
 /* Every colour, radius and shadow in the app is named here. Components refer to
-   these names only, which is what keeps a light, low-contrast palette from
-   drifting into something louder one component at a time. */
+   these names only. The values are mapped from the DeepSeek design system
+   (deepseek-harness ui-theme): cool neutral-bluish grays, DeepSeek blue as the
+   single accent, role-graded radii, and elevation shadows that carry their own
+   0.5px hairline stroke. */
 
 :root {
   --bg: #ffffff;
-  --bg-sidebar: #f9f9f9;
-  --bg-subtle: #f5f5f7;
-  --bg-hover: #ececef;
-  --bg-active: #e6e6ea;
+  --bg-sidebar: #f9fafb;
+  --bg-subtle: #f5f6f7;
+  /* Hover and active fills are translucent ink-blue washes rather than solid
+     greys, so they sit correctly on every surface they land on. */
+  --bg-hover: rgba(38, 49, 72, 0.06);
+  --bg-active: rgba(38, 49, 72, 0.1);
 
-  --border: #e7e8ea;
-  --border-strong: #d6d8db;
+  /* Alpha hairlines: borders are the ink's opacity, not a mixed grey, which is
+     what keeps them quiet next to the cool grays. */
+  --border: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.16);
 
-  --text: #1f2328;
-  --text-secondary: #565869;
-  --text-muted: #8e8ea0;
+  --text: #0f1115;
+  --text-secondary: #61666b;
+  /* One step darker than the reference's own grey: the reference value sits
+     at ~3.4-3.7:1 on the light surfaces, and this token is what 10-13px
+     captions and placeholders are made of, where AA wants 4.5. */
+  --text-muted: #6b717c;
 
-  /* Two steps, no base: everything that used to reach for `--accent` was
-     drawing a 1px line with it, and there are no lines left to draw. */
-  --accent-strong: #4f9ed8;
-  --accent-soft: #eef6fd;
+  /* DeepSeek blue, and its wash. The one saturated colour in the app.
+     Fills keep --accent-strong; text and icons take --accent-ink, a step
+     deeper that clears 4.5:1 on every light surface (white, subtle, the
+     soft wash) - #4176e6 itself manages only 4.23:1 on white. */
+  --accent-strong: #4176e6;
+  --accent-ink: #2e63d9;
+  --accent-soft: #e4edfd;
+  /* The ink that sits on accent fills (buttons, chips, markers). Named so
+     the white-on-accent pair has one home. */
+  --text-on-accent: #ffffff;
 
-  --user-bubble: #e8f3fe;
+  --user-bubble: #edf3fe;
 
-  /* The send button. Pale while there is nothing to send, and the one
-     saturated colour in the app once there is. */
-  --send-idle: #b0c1ff;
-  --send-active: #3964fe;
+  /* The send button. Grey with an ink arrow while there is nothing to send,
+     and the accent with a white arrow once there is. */
+  --send-idle: var(--bg-active);
+  --send-active: var(--accent-strong);
 
-  --ok: #6fb587;
-  --warn: #d9a25f;
-  --bad: #c98a8a;
-  /* The same red, dark enough to be read as text on white. `--bad` is a wash,
-     used behind things; this one is for the words that say what will happen. */
-  --bad-strong: #b07070;
+  /* DSH's green/amber/red, one ramp per state. `--bad` is a wash for behind
+     things; `--bad-strong` is the red that reads as text on white. */
+  --ok: #22c55e;
+  /* The green that carries white text: #22c55e holds it at only 2.2:1. */
+  --ok-strong: #15803d;
+  --warn: #f59e0b;
+  --bad: #ef4444;
+  --bad-strong: #ec1919;
 
   /* Scrollbars, since the platform's own are not used. */
-  --scroll-thumb: #d6d8db;
-  --scroll-thumb-hover: #c1c4ca;
+  --scroll-thumb: #e5e5e5;
+  --scroll-thumb-hover: #d4d4d4;
 
+  /* Radii are graded by role, DSH-style: 4 inline code, 8 compact controls,
+     12 standard controls and nav rows, 16 grouped content and code blocks,
+     20 cards and message bubbles, 28 the composer and dialogs. */
+  --radius-xs: 4px;
   --radius-sm: 8px;
   --radius-md: 12px;
-  --radius-lg: 18px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-panel: 28px;
   --radius-pill: 999px;
 
-  /* Two layers: the near one gives the thing an edge, the far one lifts it off
-     the page. This is what replaces a 1px outline on anything whose fill is the
-     same white as what is behind it - the composer, the setup card. */
-  --shadow-input: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 20px rgba(16, 24, 40, 0.06);
-  --shadow-pop: 0 6px 20px rgba(16, 24, 40, 0.1);
+  /* Two elevation tiers. The first layer of each is a 0.5px hairline: elevated
+     surfaces draw no border of their own, the stroke rides in the shadow. The
+     near layer gives the thing an edge, the far ones lift it off the page. */
+  --shadow-input: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(16, 24, 40, 0.04),
+    0 12px 32px rgba(16, 24, 40, 0.05);
+  --shadow-pop: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 2px 6px rgba(16, 24, 40, 0.05),
+    0 8px 24px rgba(16, 24, 40, 0.12);
+  /* The small toss a knob casts on the track it rides - no hairline layer,
+     just enough to lift a 16px circle off its pill. */
+  --shadow-knob: 0 1px 2px rgba(16, 24, 40, 0.2);
 
   /* The halo a focused field or the focused composer wears. Never a line. */
   --ring-accent: 0 0 0 4px var(--accent-soft);
   --ring-accent-tight: 0 0 0 3px var(--accent-soft);
+
+  /* Menus are translucent glass over the page; toasts and tooltips are ink. */
+  --menu-fill: rgba(248, 249, 250, 0.72);
+  --menu-blur: blur(20px) saturate(1.8);
+  --tooltip-bg: #212124;
+  --toast-bg: #353638;
 
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC',
@@ -62,7 +96,37 @@
      CJK comments, chiefly - and for the instant before the font arrives. */
   --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
 
+  /* Motion: one curve, two durations. 0.1s for colour and opacity, 0.2s for
+     anything that moves. */
+  --dur-fast: 0.1s;
+  --dur-base: 0.2s;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
   --sidebar-width: 260px;
   --sidebar-collapsed: 60px;
-  --content-width: 780px;
+  --content-width: 748px;
+}
+
+/* On engines that can shape corners beyond circular arcs, the big rounded
+   surfaces take the superellipse: straighter sides, softer shoulders, the
+   squircle every mainstream client draws. Unsupported browsers keep the
+   ordinary radius - the declaration below simply never applies. */
+@supports (corner-shape: superellipse(1.5)) {
+  .msg-user,
+  .composer-box,
+  .user-input-card,
+  .setup-card,
+  .confirm-box,
+  .menu-panel,
+  .right-panel,
+  .code-block,
+  .markdown pre,
+  .toast,
+  .button,
+  .send-button,
+  .stop-button,
+  .quick-prompt,
+  .citation-chip {
+    corner-shape: superellipse(1.5);
+  }
 }

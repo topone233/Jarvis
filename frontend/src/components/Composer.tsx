@@ -6,16 +6,22 @@
  * gets typed. Without that guard, picking a candidate with Enter would send a
  * half-finished word.
  *
- * Paste only steals image items: a screenshot goes to the thumbnail row above
- * the box, while plain text - including the text of a mixed clipboard - goes
+ * Paste only steals image items: a screenshot goes to the thumbnail row inside
+ * the card, while plain text - including the text of a mixed clipboard - goes
  * through untouched. Images are compressed the moment they arrive, so the
  * preview is exactly what will be sent and stored.
+ *
+ * The card has two rows: the draft on top, the controls underneath - attach on
+ * the left, model, ring and send on the right. The paperclip opens the same
+ * file picker a paste would bypass, so attaching is possible without a
+ * clipboard round-trip.
  */
 
 import {
   useLayoutEffect,
   useRef,
   useState,
+  type ChangeEvent,
   type ClipboardEvent,
   type KeyboardEvent,
   type ReactNode,
@@ -25,14 +31,14 @@ import { compressImage } from '../api/images'
 import { draftTokens } from '../api/tokens'
 import type { QuickPrompt } from '../api/types'
 import { TokenRing } from './TokenRing'
-import { SendIcon, StopIcon } from './icons'
+import { PaperclipIcon, SendIcon, StopIcon } from './icons'
 
 export interface ComposerProps {
   /** True while an answer is being produced, which turns the send button into a
    *  stop button. Left false where there is nothing to stop. */
   busy?: boolean
-  /** The controls the page wants beside the send button - the model, the
-   *  thinking dial. The composer decides where they go, not what they are. */
+  /** The controls the page wants in the toolbar row - the model, the thinking
+   *  dial. The composer decides where they go, not what they are. */
   controls?: ReactNode
   /** The buttons above an empty box: one click fills the prompt in for the
    *  user to finish. Absent or empty means no row - which is also what an
@@ -41,21 +47,26 @@ export interface ComposerProps {
   /** The effective profile's input budget (context window minus reserve), for
    *  the ring. Null when no profile is configured, and then there is no ring. */
   inputBudget?: number | null
+  /** The page observes the card's height (the turn rail's visible band and the
+   *  back-to-bottom button both hang above it). */
+  boxRef?: (element: HTMLDivElement | null) => void
   onSend(text: string, images: string[]): void
   onStop?: () => void
 }
 
-const MAX_HEIGHT = 220
+const MAX_HEIGHT = 320
 
 export function Composer({
   busy = false,
   controls,
   quickPrompts,
   inputBudget = null,
+  boxRef,
   onSend,
   onStop,
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
   // The textarea stays uncontrolled - the height is set from its own
   // scrollHeight and never from React state - but the text keeps a state
   // mirror, because the ring needs the draft on every keystroke and a ref
@@ -132,6 +143,12 @@ export function Composer({
       return
     }
     event.preventDefault()
+    await attach(files)
+  }
+
+  // The paperclip and the paste funnel into the same store: one code path for
+  // reading and compressing, one place for the failure note.
+  async function attach(files: File[]) {
     const pasted: string[] = []
     for (const file of files) {
       try {
@@ -143,6 +160,14 @@ export function Composer({
     if (pasted.length > 0) {
       setPasteNote(null)
       setImages((current) => [...current, ...pasted])
+    }
+  }
+
+  function onPicked(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (files.length > 0) {
+      void attach(files)
     }
   }
 
@@ -167,25 +192,6 @@ export function Composer({
   return (
     <div className="composer">
       <div className="composer-inner">
-        {images.length > 0 && (
-          <div className="composer-images">
-            {images.map((image, index) => (
-              <span className="composer-image" key={`${index}:${image.slice(-16)}`}>
-                <img src={image} alt={`待发送图片 ${index + 1}`} />
-                <button
-                  type="button"
-                  className="composer-image-remove"
-                  title="移除这张图片"
-                  aria-label={`移除第 ${index + 1} 张图片`}
-                  onClick={() => setImages((current) => current.filter((_, at) => at !== index))}
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
-            {pasteNote !== null && <span className="composer-image-note">{pasteNote}</span>}
-          </div>
-        )}
         {!hasDraft && quickPrompts !== undefined && quickPrompts.length > 0 && (
           <div className="composer-quick">
             {quickPrompts.map((item, index) => (
@@ -200,7 +206,26 @@ export function Composer({
             ))}
           </div>
         )}
-        <div className="composer-box">
+        <div className="composer-box" ref={boxRef}>
+          {images.length > 0 && (
+            <div className="composer-images">
+              {images.map((image, index) => (
+                <span className="composer-image" key={`${index}:${image.slice(-16)}`}>
+                  <img src={image} alt={`待发送图片 ${index + 1}`} />
+                  <button
+                    type="button"
+                    className="composer-image-remove"
+                    title="移除这张图片"
+                    aria-label={`移除第 ${index + 1} 张图片`}
+                    onClick={() => setImages((current) => current.filter((_, at) => at !== index))}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+              {pasteNote !== null && <span className="composer-image-note">{pasteNote}</span>}
+            </div>
+          )}
           <textarea
             ref={ref}
             rows={1}
@@ -209,24 +234,46 @@ export function Composer({
             onPaste={(event) => void onPaste(event)}
             onKeyDown={onKeyDown}
           />
-          {controls}
-          {hasDraft && inputBudget !== null && inputBudget > 0 && (
-            <TokenRing tokens={tokens} budget={inputBudget} />
-          )}
-          {busy && onStop ? (
-            <button type="button" className="stop-button" title="停止生成" onClick={onStop}>
-              <StopIcon size={16} />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className={hasDraft ? 'send-button is-filled' : 'send-button'}
-              title="发送"
-              onClick={submit}
-            >
-              <SendIcon size={17} />
-            </button>
-          )}
+          <div className="composer-toolbar">
+            <div className="composer-tools">
+              <button
+                type="button"
+                className="icon-button"
+                title="添加图片"
+                onClick={() => fileRef.current?.click()}
+              >
+                <PaperclipIcon size={17} />
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="composer-file-input"
+                onChange={onPicked}
+              />
+            </div>
+            <div className="composer-side">
+              {controls}
+              {hasDraft && inputBudget !== null && inputBudget > 0 && (
+                <TokenRing tokens={tokens} budget={inputBudget} />
+              )}
+              {busy && onStop ? (
+                <button type="button" className="stop-button" title="停止生成" onClick={onStop}>
+                  <StopIcon size={16} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={hasDraft ? 'send-button is-filled' : 'send-button'}
+                  title="发送"
+                  onClick={submit}
+                >
+                  <SendIcon size={17} />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
         <div className="composer-hint">Enter 发送，Shift + Enter 换行</div>
       </div>

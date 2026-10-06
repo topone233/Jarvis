@@ -32,13 +32,14 @@ import { sameDirectory } from '../api/paths'
 import { CloseIcon } from '../components/icons'
 import { useConfirm } from '../hooks/useConfirm'
 import { ModelProfilesPanel } from './settings/ModelProfilesPanel'
+import { PluginsPanel } from './settings/PluginsPanel'
 import { PromptsPanel } from './settings/PromptsPanel'
 import { QuickPromptsPanel } from './settings/QuickPromptsPanel'
 import { RetrievalPanel } from './settings/RetrievalPanel'
 import { SkillsPanel } from './settings/SkillsPanel'
 import { ToolCallsPanel } from './settings/ToolCallsPanel'
 
-const TABS = ['directory', 'model', 'retrieval', 'prompts', 'quick', 'skills', 'tools'] as const
+const TABS = ['directory', 'model', 'retrieval', 'prompts', 'quick', 'skills', 'tools', 'plugins'] as const
 
 type Tab = (typeof TABS)[number]
 
@@ -50,6 +51,7 @@ const TAB_LABELS: Record<Tab, string> = {
   quick: '快捷指令',
   skills: '技能',
   tools: '工具调用',
+  plugins: '插件',
 }
 
 /** Anything unrecognised means the first tab, so an edited URL still lands somewhere. */
@@ -276,6 +278,7 @@ export function SetupPage({
               {tab === 'quick' && <QuickPromptsPanel />}
               {tab === 'skills' && <SkillsPanel />}
               {tab === 'tools' && <ToolCallsPanel />}
+              {tab === 'plugins' && <PluginsPanel />}
             </div>
           </div>
         )}

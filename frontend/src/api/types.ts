@@ -359,6 +359,7 @@ export interface RetrievalSettings {
     memory_floor: RetrievalThresholdState
     semantic_floor: RetrievalThresholdState
     rerank_floor: RetrievalThresholdState
+    fts_floor: RetrievalThresholdState
   }
 }
 
@@ -377,6 +378,7 @@ export interface RetrievalSettingsPatch {
     memory_floor?: number | null
     semantic_floor?: number | null
     rerank_floor?: number | null
+    fts_floor?: number | null
   }
 }
 

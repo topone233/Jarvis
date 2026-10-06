@@ -646,9 +646,17 @@ class KnowledgeService:
                     scored[item["id"]] = (score + (existing[0] if existing else 0), item)
             except (ProviderError, IndexError):
                 pass
-        candidates = sorted(scored.values(), key=lambda item: item[0], reverse=True)[
-            :candidate_limit
-        ]
+        # The keyword floor runs on the merged score, before the reranker:
+        # a semantic-only hit already cleared its own floor and clears this
+        # one with room to spare (0.50 * 0.75), while a keyword-only tail hit
+        # - one coincidental bigram deep in an OR result, 0.01 territory -
+        # dies here instead of riding to a citation on a reranker that is
+        # absent, dead, or never configured.
+        candidates = [
+            entry
+            for entry in sorted(scored.values(), key=lambda item: item[0], reverse=True)
+            if entry[0] >= thresholds.fts_floor
+        ][:candidate_limit]
         reranked = False
         if rerank_spec and len(candidates) > 1:
             try:

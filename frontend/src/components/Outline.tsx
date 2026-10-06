@@ -1,42 +1,55 @@
 /**
- * The right-hand rail: one short line per section of the conversation.
+ * The floating turn rail: one tick per user message, pinned to the right edge.
  *
- * A user message opens a section; a heading inside an answer marks a spot
- * within it. Hovering a line says what is there, clicking scrolls to it, and
- * while the page scrolls the line the viewport is in lights up. The rail is
- * chrome, not content - bare lines, no box - and it stays out of the way
- * entirely until there is something worth navigating.
+ * A tick marks where a turn starts - where the user speaks. Hovering or focusing
+ * one opens a preview card (the question on one line, the answer below it in
+ * three), clicking scrolls to the turn, and while the page scrolls the tick the
+ * viewport is in stretches to full width. The rail floats over the transcript
+ * instead of taking a column of its own, and disappears entirely on narrow
+ * containers - it is chrome, not content.
  *
- * The renderers only stamp `data-outline` attributes; this component owns
- * everything else, watching the scroll container for those stamps appearing,
- * changing and scrolling past. The rules themselves live in `outlineModel`.
+ * The renderers only stamp `data-outline="user"` on user bubbles; this
+ * component owns everything else, watching the scroll container for turns
+ * appearing, changing and scrolling past. The rules live in `turnRailModel`.
  */
 
-import { useEffect, useState, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 
-import { activeIndex, collectOutline, type OutlineEntry } from './outlineModel'
+import { activeTurnIndex, collectTurns, type TurnMark } from './turnRailModel'
 
 /** How far below the container's top edge the reading line sits. */
 const READING_LINE = 96
 
-export function Outline({ containerRef }: { containerRef: RefObject<HTMLDivElement | null> }) {
-  const [entries, setEntries] = useState<OutlineEntry[]>([])
+export function TurnRail({
+  containerRef,
+  busy,
+}: {
+  containerRef: RefObject<HTMLDivElement | null>
+  /** A live run is writing the last answer: its tick breathes. */
+  busy: boolean
+}) {
+  const [turns, setTurns] = useState<TurnMark[]>([])
   const [active, setActive] = useState(-1)
-  // One tooltip for the whole rail, positioned from the hovered line. It is
-  // fixed to the viewport rather than absolutely placed because the rail
-  // scrolls, and a scroll container clips anything that pokes out of it - the
-  // tooltip's whole job is to poke out to the left.
-  const [tip, setTip] = useState<{ label: string; x: number; y: number } | null>(null)
+  // The preview card hangs off the rail frame, positioned over the hovered
+  // tick. The frame does not scroll - the inner scroller does - so an
+  // absolutely placed card survives scrolling its marks.
+  const [preview, setPreview] = useState<{ mark: TurnMark; top: number } | null>(null)
+  const frameRef = useRef<HTMLDivElement | null>(null)
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  // The gradient fades at the scroller's ends only say something while the
+  // marks actually overflow; applied to a short ladder they would dim the
+  // first and last tick for nothing.
+  const [overflow, setOverflow] = useState<'none' | 'top' | 'bottom' | 'both'>('none')
 
   // Rebuild the list whenever the conversation's DOM changes. A stream writes
-  // headings into the container token by token, so observation beats polling;
+  // answers into the container token by token, so observation beats polling;
   // the rAF keeps a burst of mutations to one read per frame.
   useEffect(() => {
     const container = containerRef.current
     if (container === null) {
       return
     }
-    const read = () => setEntries(collectOutline(container))
+    const read = () => setTurns(collectTurns(container))
     read()
     let queued = false
     const observer = new MutationObserver(() => {
@@ -53,7 +66,37 @@ export function Outline({ containerRef }: { containerRef: RefObject<HTMLDivEleme
     return () => observer.disconnect()
   }, [containerRef])
 
-  // The lit line follows the scroll. Positions are read per frame rather than
+  // Which ends of the ladder are hiding scrollable marks. Re-read with the
+  // turns and on resize; the rail's own height is fixed, so scroll is the
+  // only other thing that can change it.
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (scroller === null) {
+      return
+    }
+    const measure = () => {
+      const room = scroller.scrollHeight - scroller.clientHeight
+      setOverflow(
+        room <= 1
+          ? 'none'
+          : scroller.scrollTop >= room - 1
+            ? 'top'
+            : scroller.scrollTop <= 1
+              ? 'bottom'
+              : 'both',
+      )
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(scroller)
+    scroller.addEventListener('scroll', measure, { passive: true })
+    return () => {
+      observer.disconnect()
+      scroller.removeEventListener('scroll', measure)
+    }
+  }, [turns])
+
+  // The lit tick follows the scroll. Positions are read per frame rather than
   // cached: the container resizes, and answers above the fold keep growing.
   useEffect(() => {
     const container = containerRef.current
@@ -65,8 +108,8 @@ export function Outline({ containerRef }: { containerRef: RefObject<HTMLDivEleme
       frame = null
       const top = container.getBoundingClientRect().top
       setActive(
-        activeIndex(
-          entries.map((entry) => entry.element.getBoundingClientRect().top - top),
+        activeTurnIndex(
+          turns.map((mark) => mark.element.getBoundingClientRect().top - top),
           READING_LINE,
         ),
       )
@@ -84,15 +127,38 @@ export function Outline({ containerRef }: { containerRef: RefObject<HTMLDivEleme
         cancelAnimationFrame(frame)
       }
     }
-  }, [entries, containerRef])
+  }, [turns, containerRef])
 
-  function jump(entry: OutlineEntry) {
+  // The lit tick must stay inside the rail's own viewport once the ladder
+  // outgrows it: stream a long conversation and the newest tick keeps
+  // appearing past the floor. The inner scroller nudges minimally to catch
+  // it - and only itself; the transcript is never scrolled for the rail.
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (scroller === null || active < 0) {
+      return
+    }
+    const mark = scroller.querySelectorAll<HTMLElement>('.turn-mark')[active]
+    if (mark === undefined) {
+      return
+    }
+    const head = scroller.getBoundingClientRect().top
+    const top = mark.getBoundingClientRect().top
+    const bottom = top + mark.clientHeight
+    if (top < head) {
+      scroller.scrollTop += top - head
+    } else if (bottom > head + scroller.clientHeight) {
+      scroller.scrollTop += bottom - head - scroller.clientHeight
+    }
+  }, [active, turns])
+
+  function jump(mark: TurnMark) {
     const container = containerRef.current
     if (container === null) {
       return
     }
     const target =
-      entry.element.getBoundingClientRect().top -
+      mark.element.getBoundingClientRect().top -
       container.getBoundingClientRect().top +
       container.scrollTop -
       12
@@ -100,43 +166,67 @@ export function Outline({ containerRef }: { containerRef: RefObject<HTMLDivEleme
     container.scrollTo({ top: target, behavior: reduced ? 'auto' : 'smooth' })
   }
 
-  function showTip(target: HTMLElement, entry: OutlineEntry) {
-    const rect = target.getBoundingClientRect()
-    setTip({ label: entry.label, x: rect.left, y: rect.top + rect.height / 2 })
+  // The card's top follows the tick, in the rail's own coordinates: the card
+  // hangs off the rail box, so keeping it inside the band means keeping it
+  // inside the box - a first or last tick can never push it past the rail's
+  // floor, which is itself pinned clear of the composer.
+  function showPreview(mark: TurnMark, target: HTMLElement) {
+    const rail = frameRef.current
+    if (rail === null) {
+      return
+    }
+    const height = 92
+    const markTop = target.getBoundingClientRect().top - rail.getBoundingClientRect().top
+    const top = Math.max(0, Math.min(markTop - height / 2, Math.max(0, rail.clientHeight - height)))
+    setPreview({ mark, top })
   }
 
-  // One section is nothing to navigate; two is the smallest thing a rail helps with.
-  if (entries.length < 2) {
+  // One turn is nothing to navigate; two is the smallest thing a rail helps with.
+  if (turns.length < 2) {
     return null
   }
 
-  // The tip is a sibling of the nav, not a child: as a child it would become
-  // the nav's `:last-child`, which the centreing auto-margins key on, and the
-  // whole rail would jump the moment a tooltip appeared - unhovering it again,
-  // and flickering for as long as the cursor sits on a line.
   return (
-    <>
-      <nav className="outline" aria-label="对话目录">
-        {entries.map((entry, index) => (
-          <button
-            key={index}
-            type="button"
-            className={`outline-item is-l${entry.level}${index === active ? ' is-active' : ''}`}
-            onClick={() => jump(entry)}
-            onMouseEnter={(event) => showTip(event.currentTarget, entry)}
-            onMouseLeave={() => setTip(null)}
-            onFocus={(event) => showTip(event.currentTarget, entry)}
-            onBlur={() => setTip(null)}
-          >
-            <span className="outline-line" />
-          </button>
-        ))}
-      </nav>
-      {tip !== null && (
-        <span className="outline-tip" style={{ top: tip.y, left: tip.x }}>
-          {tip.label}
-        </span>
-      )}
-    </>
+    <div className="turn-rail-slot">
+      <div className="turn-rail" ref={frameRef}>
+        <div
+          className={`turn-rail-scroller${overflow === 'top' || overflow === 'both' ? ' fade-top' : ''}${
+            overflow === 'bottom' || overflow === 'both' ? ' fade-bottom' : ''
+          }`}
+          ref={scrollerRef}
+        >
+          <div className="turn-rail-marks">
+            {turns.map((mark, index) => {
+              const isBusy = busy && index === turns.length - 1
+              return (
+                <button
+                  key={index}
+                  type="button"
+                  className={`turn-mark${index === active ? ' is-active' : ''}${
+                    isBusy ? ' is-busy' : ''
+                  }`}
+                  aria-label={`跳到第 ${index + 1} 回合`}
+                  onClick={() => jump(mark)}
+                  onMouseEnter={(event) => showPreview(mark, event.currentTarget)}
+                  onMouseLeave={() => setPreview(null)}
+                  onFocus={(event) => showPreview(mark, event.currentTarget)}
+                  onBlur={() => setPreview(null)}
+                >
+                  <span className="turn-tick" />
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        {preview !== null && (
+          <div className="turn-preview" style={{ top: preview.top }}>
+            {preview.mark.prompt !== '' && <div className="turn-preview-q">{preview.mark.prompt}</div>}
+            {preview.mark.response !== '' && (
+              <div className="turn-preview-a">{preview.mark.response}</div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }

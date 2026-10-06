@@ -12,7 +12,13 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import settings
-from app.errors import NotFoundError, ProviderError, SetupRequiredError, ValidationError
+from app.errors import (
+    NotFoundError,
+    PluginDisabledError,
+    ProviderError,
+    SetupRequiredError,
+    ValidationError,
+)
 from app.images import image_path, media_type_for, message_images
 from app.knowledge import ImportItem
 from app.runs import RunChoice, RunService
@@ -25,6 +31,8 @@ from app.schemas import (
     MemoryUpdate,
     ModelProfileCreate,
     ModelProfileUpdate,
+    PluginConfigUpdate,
+    PluginEnabledUpdate,
     ProjectCreate,
     ProjectUpdate,
     RegenerateRequest,
@@ -39,6 +47,8 @@ from app.schemas import (
 )
 from app.sections import parse_sections
 from app.settings import (
+    RETRIEVAL_FTS_FLOOR,
+    RETRIEVAL_FTS_FLOOR_DEFAULT,
     RETRIEVAL_MEMORY_FLOOR,
     RETRIEVAL_MEMORY_FLOOR_DEFAULT,
     RETRIEVAL_RERANK_FLOOR,
@@ -109,6 +119,15 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
             status_code=409, content={"detail": str(error), "code": "setup_required"}
         )
 
+    @app.exception_handler(PluginDisabledError)
+    async def plugin_disabled_handler(_: Request, error: PluginDisabledError) -> JSONResponse:
+        # The router stays mounted precisely so this, not a 404, is what a
+        # switched-off plugin answers - the settings screen's toggle is what
+        # the client should act on, and the code says so.
+        return JSONResponse(
+            status_code=409, content={"detail": str(error), "code": "plugin_disabled"}
+        )
+
     @app.exception_handler(NotFoundError)
     async def not_found_handler(_: Request, error: NotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(error), "code": "not_found"})
@@ -161,6 +180,9 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     @app.post("/api/setup")
     async def setup(payload: SetupRequest) -> dict[str, Any]:
         configured = app.state.runtime.setup(payload.data_directory)
+        # First run: the app was created before any plugin could load, so the
+        # routers go up now. Idempotent - an already-mounted plugin is skipped.
+        app.state.runtime.services().plugins.mount_into(app)
         return {
             "configured": True,
             "data_directory": str(configured.database.data_directory),
@@ -298,6 +320,11 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 "default": RETRIEVAL_RERANK_FLOOR_DEFAULT,
                 "is_default": RETRIEVAL_RERANK_FLOOR not in stored,
             },
+            "fts_floor": {
+                "value": floors.fts_floor,
+                "default": RETRIEVAL_FTS_FLOOR_DEFAULT,
+                "is_default": RETRIEVAL_FTS_FLOOR not in stored,
+            },
         }
         return result
 
@@ -370,6 +397,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 ("memory_floor", RETRIEVAL_MEMORY_FLOOR),
                 ("semantic_floor", RETRIEVAL_SEMANTIC_FLOOR),
                 ("rerank_floor", RETRIEVAL_RERANK_FLOOR),
+                ("fts_floor", RETRIEVAL_FTS_FLOOR),
             ):
                 if name not in thresholds:
                     continue
@@ -417,6 +445,38 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     @app.delete("/api/skills/{name}", status_code=204, response_model=None)
     async def delete_skill(name: str, core: CoreServices = Depends(services)) -> None:
         core.skills.delete_skill(name)
+
+    @app.get("/api/plugins")
+    async def list_plugins(core: CoreServices = Depends(services)) -> list[dict[str, Any]]:
+        return core.plugins.descriptions()
+
+    @app.put("/api/plugins/{plugin_id}/enabled")
+    async def set_plugin_enabled(
+        plugin_id: str,
+        payload: PluginEnabledUpdate,
+        core: CoreServices = Depends(services),
+    ) -> dict[str, Any]:
+        return core.plugins.set_enabled(plugin_id, payload.enabled)
+
+    @app.put("/api/plugins/{plugin_id}/config")
+    async def set_plugin_config(
+        plugin_id: str,
+        payload: PluginConfigUpdate,
+        core: CoreServices = Depends(services),
+    ) -> dict[str, Any]:
+        return core.plugins.set_config(plugin_id, payload.settings)
+
+    @app.post("/api/plugins/reload")
+    async def reload_plugins(core: CoreServices = Depends(services)) -> dict[str, Any]:
+        """Pick up plugin folders that appeared after startup.
+
+        Only additive: folders already imported keep their module, because
+        re-importing live code mid-process is how two versions of one class
+        end up sharing a heap. Code changes to a loaded plugin take a restart.
+        """
+        outcome = core.plugins.reload()
+        core.plugins.mount_into(app)
+        return {**outcome, "plugins": core.plugins.descriptions()}
 
     @app.get("/api/projects")
     async def list_projects(core: CoreServices = Depends(services)) -> list[dict[str, Any]]:
@@ -733,6 +793,12 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     @app.delete("/api/trash/{trash_id}", status_code=204, response_model=None)
     async def discard_trash_item(trash_id: str, core: CoreServices = Depends(services)) -> None:
         core.store.discard_trash_item(trash_id)
+
+    # Plugin routers go up when the app was created with services already
+    # alive; the first-run path mounts them in the setup endpoint instead,
+    # because until a data directory is chosen there is nothing to load.
+    if app.state.runtime.configured:
+        app.state.runtime.services().plugins.mount_into(app)
 
     _mount_frontend(app)
     return app

@@ -82,8 +82,8 @@ input {
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   transition:
-    background 0.12s ease,
-    color 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .icon-button:hover {
@@ -97,7 +97,7 @@ input {
 }
 
 .icon-button.is-on {
-  color: var(--accent-strong);
+  color: var(--accent-ink);
 }
 
 /* ---------- shell ---------- */
@@ -114,7 +114,7 @@ input {
   display: flex;
   flex-direction: column;
   background: var(--bg-sidebar);
-  transition: width 0.16s ease;
+  transition: width var(--dur-base) var(--ease);
 }
 
 .sidebar.is-collapsed {
@@ -149,7 +149,7 @@ input {
 }
 
 /* The search row lives between the top bar and the new-chat item, and reads
-   as a quiet field, not a box with a border - batch D removed the borders. */
+   as a quiet field, not a box with a border. */
 .sidebar-search {
   padding: 0 10px 2px;
 }
@@ -158,15 +158,16 @@ input {
   width: 100%;
   padding: 7px 10px;
   border: none;
-  border-radius: var(--radius-sm);
-  background: var(--bg-hover);
+  border-radius: var(--radius-md);
+  background: var(--bg-active);
   font-size: 13px;
   outline: none;
-  transition: background 0.12s ease;
+  transition: background var(--dur-fast) var(--ease);
 }
 
 .sidebar-search input:focus {
-  background: var(--bg-active);
+  box-shadow: var(--ring-accent-tight);
+  background: color-mix(in srgb, var(--bg-active) 60%, var(--bg));
 }
 
 .sidebar-search input::placeholder {
@@ -179,18 +180,20 @@ input {
   color: var(--text-muted);
 }
 
+/* A nav row is a standard control: R12, the DSH role for H32 rows. */
 .sidebar-item {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
   padding: 8px 10px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   color: var(--text-secondary);
   text-align: left;
   text-decoration: none;
   white-space: nowrap;
   overflow: hidden;
+  transition: background var(--dur-fast) var(--ease);
 }
 
 .sidebar-item:hover {
@@ -262,7 +265,11 @@ input {
 /* Top right, because the bottom middle of the screen belongs to the composer.
    The stack is as wide as its widest toast and ignores the pointer, so only the
    toasts themselves are clickable and the page underneath is not covered by an
-   invisible panel. */
+   invisible panel.
+
+   Ink, not paper: a dark slab with light text is how mainstream clients say
+   "a note from the system", and it keeps the note legible over any content
+   it happens to hover above. */
 .toast-stack {
   position: fixed;
   top: 16px;
@@ -282,9 +289,9 @@ input {
   max-width: 320px;
   padding: 10px 14px;
   border-radius: var(--radius-md);
-  background: var(--bg);
+  background: var(--toast-bg);
   box-shadow: var(--shadow-pop);
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.92);
   font-size: 13px;
   text-align: left;
   pointer-events: auto;
@@ -292,10 +299,11 @@ input {
 }
 
 .toast:hover {
-  color: var(--text);
+  color: #ffffff;
 }
 
-/* Which kind of note this is, before the words are read. */
+/* Which kind of note this is, before the words are read. The dots take the
+   brighter ramp steps: on the dark slab the 500s go muddy. */
 .toast-dot {
   flex: 0 0 auto;
   width: 6px;

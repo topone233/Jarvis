@@ -1,10 +1,13 @@
 /**
- * The right-side drawer a citation opens.
+ * The right-side panel a citation opens.
  *
- * Two states, one column: the excerpt the answer drew from by default, and -
- * on 查看原文 - the whole document, rendered section by section so the cited
- * one can be scrolled to and held highlighted. The drawer docks rather than
- * floats: opening it narrows the conversation, it never covers it.
+ * Two tabs: 引用 holds the excerpt the answer drew from; 文档 holds the whole
+ * document, rendered section by section so the cited one can be scrolled to
+ * and held highlighted. The panel docks rather than floats: opening it
+ * narrows the conversation, it never covers it. The tabs are the same two
+ * states the panel has always had - the button that used to move between them
+ * is now the tab strip, so the second surface is discoverable, not hidden
+ * behind a click.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -15,29 +18,43 @@ import { Markdown } from './Markdown'
 import { CloseIcon } from './icons'
 
 export function CitationPanel({ citation, onClose }: { citation: Citation; onClose(): void }) {
-  // A new citation resets the panel to the excerpt; the full document is a
+  // A new citation resets the panel to the excerpt; the document is a
   // deliberate step the user takes again for the next citation.
   const key = citation.chunk_id
-  const [mode, setMode] = useState<'excerpt' | 'document'>('excerpt')
+  const [tab, setTab] = useState<'cite' | 'doc'>('cite')
   useEffect(() => {
-    setMode('excerpt')
+    setTab('cite')
   }, [key])
 
   return (
-    <aside className="citation-panel">
-      <header className="citation-panel-header">
-        <div className="citation-panel-heading">
-          {citation.number !== undefined && <span className="badge">{citation.number}</span>}
-          <span className="citation-panel-title" title={citation.title}>
-            {citation.title}
-          </span>
-        </div>
+    <aside className="right-panel">
+      <header className="right-panel-head">
+        <nav className="right-panel-tabs" role="tablist" aria-label="引用面板">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'cite'}
+            className={`right-panel-tab${tab === 'cite' ? ' is-active' : ''}`}
+            onClick={() => setTab('cite')}
+          >
+            引用
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'doc'}
+            className={`right-panel-tab${tab === 'doc' ? ' is-active' : ''}`}
+            onClick={() => setTab('doc')}
+          >
+            文档
+          </button>
+        </nav>
         <button type="button" className="icon-button" title="关闭" onClick={onClose}>
           <CloseIcon size={16} />
         </button>
       </header>
-      {mode === 'excerpt' ? (
-        <ExcerptView citation={citation} onOpenDocument={() => setMode('document')} />
+      {tab === 'cite' ? (
+        <ExcerptView citation={citation} onOpenDocument={() => setTab('doc')} />
       ) : (
         <DocumentView citation={citation} />
       )}
@@ -48,6 +65,12 @@ export function CitationPanel({ citation, onClose }: { citation: Citation; onClo
 function ExcerptView({ citation, onOpenDocument }: { citation: Citation; onOpenDocument(): void }) {
   return (
     <div className="citation-panel-body">
+      <div className="citation-panel-heading">
+        {citation.number !== undefined && <span className="badge">{citation.number}</span>}
+        <span className="citation-panel-title" title={citation.title}>
+          {citation.title}
+        </span>
+      </div>
       {citation.section_title !== null && citation.section_title !== undefined && (
         <p className="citation-panel-section">{citation.section_title}</p>
       )}

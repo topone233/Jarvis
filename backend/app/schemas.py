@@ -248,6 +248,9 @@ class RetrievalThresholdsUpdate(BaseModel):
     memory_floor: float | None = Field(default=None, ge=0.0, le=RETRIEVAL_FLOOR_CEILING)
     semantic_floor: float | None = Field(default=None, ge=0.0, le=RETRIEVAL_FLOOR_CEILING)
     rerank_floor: float | None = Field(default=None, ge=0.0, le=RETRIEVAL_FLOOR_CEILING)
+    # On the keyword blend's own scale (0.45 ceiling), but the same 0..1 gate
+    # keeps one slider shape for all four floors.
+    fts_floor: float | None = Field(default=None, ge=0.0, le=RETRIEVAL_FLOOR_CEILING)
 
 
 class RetrievalSettingsUpdate(BaseModel):
@@ -283,3 +286,19 @@ class RetrievalTestRequest(BaseModel):
 
 class FeedbackCreate(BaseModel):
     kind: Literal["up", "down"]
+
+
+class PluginEnabledUpdate(BaseModel):
+    """One plugin's switch."""
+
+    enabled: bool
+
+
+class PluginConfigUpdate(BaseModel):
+    """One plugin's configuration patch, keyed by its schema's setting keys.
+
+    A key left out of the request is untouched; the values are validated
+    against the plugin's own schema in the host.
+    """
+
+    settings: dict[str, Any]

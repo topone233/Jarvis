@@ -106,7 +106,8 @@ function ThresholdsCard({
   const isDefault =
     settings.thresholds.memory_floor.is_default &&
     settings.thresholds.semantic_floor.is_default &&
-    settings.thresholds.rerank_floor.is_default
+    settings.thresholds.rerank_floor.is_default &&
+    settings.thresholds.fts_floor.is_default
 
   const edit = (key: ThresholdKey, text: string) => {
     setDraft({ ...draft, [key]: text })
@@ -211,6 +212,7 @@ const THRESHOLD_HINTS: Record<ThresholdKey, string> = {
   memory_floor: '注入记忆前，记忆内容与这次提问的相似度下限。无关记忆常被召回时调高。',
   semantic_floor: '知识库语义命中的相似度下限，未配置嵌入模型时不生效。',
   rerank_floor: '重排结果的相关性下限，未配置 Rerank 模型时不生效；全部低于门槛就宁可不引用。',
+  fts_floor: '关键词命中的分数下限，Rerank 未配置或失败时它是唯一的垃圾过滤器，命中太少可调低。',
 }
 
 /** One kind's boxes, test button, save button, and clear action. */

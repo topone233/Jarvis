@@ -121,6 +121,7 @@ export const RETRIEVAL_THRESHOLDS = {
   memory_floor: { label: '记忆相关下限', min: 0, max: 0.99 },
   semantic_floor: { label: '知识语义下限', min: 0, max: 0.99 },
   rerank_floor: { label: '重排相关下限', min: 0, max: 0.99 },
+  fts_floor: { label: '关键词下限', min: 0, max: 0.99 },
 } as const
 
 export type ThresholdKey = keyof typeof RETRIEVAL_THRESHOLDS
@@ -133,6 +134,7 @@ export function thresholdsDraftFrom(settings: RetrievalSettings): ThresholdDraft
     memory_floor: String(settings.thresholds.memory_floor.value),
     semantic_floor: String(settings.thresholds.semantic_floor.value),
     rerank_floor: String(settings.thresholds.rerank_floor.value),
+    fts_floor: String(settings.thresholds.fts_floor.value),
   }
 }
 
@@ -176,5 +178,5 @@ export function thresholdsPayload(
 
 /** 恢复默认's body: nulls, which delete the rows. */
 export const THRESHOLDS_DEFAULT_PATCH: RetrievalSettingsPatch = {
-  thresholds: { memory_floor: null, semantic_floor: null, rerank_floor: null },
+  thresholds: { memory_floor: null, semantic_floor: null, rerank_floor: null, fts_floor: null },
 }

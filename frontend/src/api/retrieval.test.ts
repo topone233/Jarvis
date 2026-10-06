@@ -27,6 +27,7 @@ const SETTINGS: RetrievalSettings = {
     memory_floor: { value: 0.55, default: 0.55, is_default: true },
     semantic_floor: { value: 0.5, default: 0.5, is_default: true },
     rerank_floor: { value: 0.25, default: 0.25, is_default: true },
+    fts_floor: { value: 0.15, default: 0.15, is_default: true },
   },
 }
 
@@ -113,7 +114,12 @@ describe('the retrieval floors', () => {
   const draft: ThresholdDraft = thresholdsDraftFrom(SETTINGS)
 
   it('seeds the draft from the stored values', () => {
-    expect(draft).toEqual({ memory_floor: '0.55', semantic_floor: '0.5', rerank_floor: '0.25' })
+    expect(draft).toEqual({
+      memory_floor: '0.55',
+      semantic_floor: '0.5',
+      rerank_floor: '0.25',
+      fts_floor: '0.15',
+    })
   })
 
   it('accepts a draft that parses inside the range', () => {
@@ -139,7 +145,7 @@ describe('the retrieval floors', () => {
 
   it('restoring the default sends nulls for every floor', () => {
     expect(THRESHOLDS_DEFAULT_PATCH).toEqual({
-      thresholds: { memory_floor: null, semantic_floor: null, rerank_floor: null },
+      thresholds: { memory_floor: null, semantic_floor: null, rerank_floor: null, fts_floor: null },
     })
   })
 })

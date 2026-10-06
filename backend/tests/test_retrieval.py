@@ -41,6 +41,7 @@ def test_settings_start_empty(client: TestClient) -> None:
         "memory_floor": {"value": 0.55, "default": 0.55, "is_default": True},
         "semantic_floor": {"value": 0.5, "default": 0.5, "is_default": True},
         "rerank_floor": {"value": 0.25, "default": 0.25, "is_default": True},
+        "fts_floor": {"value": 0.15, "default": 0.15, "is_default": True},
     }
 
 
@@ -410,3 +411,82 @@ async def test_a_semantic_hit_below_the_floor_is_no_citation(
     monkeypatch.setattr(core.knowledge.provider, "embed", orthogonal)
 
     assert await core.knowledge.search("今天天气怎么样", project_id=None) == []
+
+
+# --- the keyword floor ------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_keyword_hit_below_the_floor_is_no_citation(core: CoreServices) -> None:
+    """A keyword hit's score falls with its rank, and nothing else judges it
+    when no reranker is configured. The deep tail of an OR query - every
+    document sharing one bigram with the query, scoring 0.11 and less - is
+    exactly the junk the floor exists to stop."""
+    await core.knowledge.import_items(
+        [
+            ImportItem(filename="甲.txt", content="性能压测的第一天。".encode()),
+            ImportItem(filename="乙.txt", content="性能压测的第二天。".encode()),
+            ImportItem(filename="丙.txt", content="性能压测的第三天。".encode()),
+            ImportItem(filename="丁.txt", content="性能压测的第四天。".encode()),
+        ],
+        project_id=None,
+    )
+
+    results = await core.knowledge.search("性能", project_id=None)
+
+    # Rank four's 0.45 / 4 = 0.1125 sits under the 0.15 floor; the top three stand.
+    assert [result["title"] for result in results] == ["甲", "乙", "丙"]
+
+
+@pytest.mark.asyncio
+async def test_a_dead_reranker_still_leaves_the_keyword_floor_standing(
+    core: CoreServices, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rerank failure path keeps the mixed order, but the candidates that
+    order is cut from were already floored - a reranker dying must not reopen
+    the door the floor closed."""
+    core.store.set_retrieval_spec("rerank", RERANK, has_api_key=False)
+    await core.knowledge.import_items(
+        [
+            ImportItem(filename="甲.txt", content="部署的第一篇笔记。".encode()),
+            ImportItem(filename="乙.txt", content="部署的第二篇笔记。".encode()),
+            ImportItem(filename="丙.txt", content="部署的第三篇笔记。".encode()),
+            ImportItem(filename="丁.txt", content="部署的第四篇笔记。".encode()),
+        ],
+        project_id=None,
+    )
+
+    async def broken(
+        spec: dict[str, str], query: str, documents: list[str], top_n: int
+    ) -> list[tuple[int, float]]:
+        del spec, query, documents, top_n
+        raise ProviderError("重排服务不可用。")
+
+    monkeypatch.setattr(core.knowledge.provider, "rerank", broken)
+
+    results = await core.knowledge.search("部署", project_id=None)
+
+    assert [result["title"] for result in results] == ["甲", "乙", "丙"]
+    assert all(result["source"] != "reranked" for result in results)
+
+
+@pytest.mark.asyncio
+async def test_a_low_keyword_floor_admits_the_tail(
+    core: CoreServices, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The floor is a setting, not a constant: lowered to zero, the same tail
+    the default filters comes back - which is what the slider means."""
+    core.store.set_setting("retrieval_fts_floor", 0.0)
+    await core.knowledge.import_items(
+        [
+            ImportItem(filename="甲.txt", content="性能压测的第一天。".encode()),
+            ImportItem(filename="乙.txt", content="性能压测的第二天。".encode()),
+            ImportItem(filename="丙.txt", content="性能压测的第三天。".encode()),
+            ImportItem(filename="丁.txt", content="性能压测的第四天。".encode()),
+        ],
+        project_id=None,
+    )
+
+    results = await core.knowledge.search("性能", project_id=None)
+
+    assert [result["title"] for result in results] == ["甲", "乙", "丙", "丁"]

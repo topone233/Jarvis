@@ -22,7 +22,8 @@ import { Composer } from '../components/Composer'
 import { CitationPanel } from '../components/CitationPanel'
 import { MessageList, type LastRun } from '../components/MessageList'
 import { ModelControls } from '../components/ModelControls'
-import { Outline } from '../components/Outline'
+import { TurnRail } from '../components/Outline'
+import { ArrowDownIcon } from '../components/icons'
 import { UserInputCard } from '../components/UserInputCard'
 import type { FeedbackKind } from '../components/AssistantTurn'
 import type { ConversationsController } from '../hooks/useConversations'
@@ -64,10 +65,56 @@ export function ChatPage({
   const [pendingUser, setPendingUser] = useState<{ text: string; images: string[] } | null>(null)
   const [lastRun, setLastRun] = useState<LastRun | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  // The citation whose excerpt or document the right drawer shows. Null is
-  // the drawer closed - the conversation owns the full width again.
+  // The citation whose excerpt or document the right panel shows. Null is
+  // the panel closed - the conversation owns the full width again.
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null)
+  // The back-to-bottom button exists once the reader has scrolled away from
+  // the newest message, and takes them back with one click.
+  const [awayFromBottom, setAwayFromBottom] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const frameRef = useRef<HTMLDivElement | null>(null)
+  // The composer card, delivered by the Composer itself so the frame can
+  // publish its height: the turn rail's visible band and the back-to-bottom
+  // button both hang above the card, and the card grows with its draft.
+  const [composerBox, setComposerBox] = useState<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const frame = frameRef.current
+    if (frame === null) {
+      return
+    }
+    if (composerBox === null) {
+      frame.style.removeProperty('--composer-h')
+      return
+    }
+    const publish = () =>
+      frame.style.setProperty('--composer-h', `${Math.round(composerBox.offsetHeight)}px`)
+    publish()
+    const observer = new ResizeObserver(publish)
+    observer.observe(composerBox)
+    return () => observer.disconnect()
+  }, [composerBox])
+
+  useEffect(() => {
+    const element = scrollRef.current
+    if (element === null) {
+      return
+    }
+    const measure = () =>
+      setAwayFromBottom(element.scrollHeight - element.scrollTop - element.clientHeight > 80)
+    measure()
+    element.addEventListener('scroll', measure, { passive: true })
+    return () => element.removeEventListener('scroll', measure)
+  }, [])
+
+  function toBottom() {
+    const element = scrollRef.current
+    if (element === null) {
+      return
+    }
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    element.scrollTo({ top: element.scrollHeight, behavior: reduced ? 'auto' : 'smooth' })
+  }
 
   const reload = conversations.reload
   const refresh = useCallback(async () => {
@@ -261,7 +308,7 @@ export function ChatPage({
 
   return (
     <div className="chat">
-      <div className="chat-body">
+      <div className="chat-frame" ref={frameRef}>
         <div className="messages" ref={scrollRef}>
           <div className="messages-inner">
             {loadError !== null && (
@@ -287,32 +334,39 @@ export function ChatPage({
           </div>
         </div>
 
-        <Outline containerRef={scrollRef} />
-        {activeCitation !== null && (
-          <CitationPanel citation={activeCitation} onClose={() => setActiveCitation(null)} />
+        <TurnRail containerRef={scrollRef} busy={busy} />
+        {awayFromBottom && messages.length > 0 && (
+          <button type="button" className="to-bottom" title="回到底部" onClick={toBottom}>
+            <ArrowDownIcon size={17} />
+          </button>
         )}
+
+        {turn?.pendingInput != null && (
+          <div className="composer">
+            <div className="composer-inner">
+              <UserInputCard request={turn.pendingInput} onResolve={onResolveInput} />
+            </div>
+          </div>
+        )}
+
+        <Composer
+          busy={busy}
+          controls={<ModelControls choice={choice} />}
+          quickPrompts={quickPrompts}
+          inputBudget={
+            choice.profile === null
+              ? null
+              : choice.profile.context_window - choice.profile.output_token_reserve
+          }
+          boxRef={setComposerBox}
+          onSend={send_}
+          onStop={cancel}
+        />
       </div>
 
-      {turn?.pendingInput != null && (
-        <div className="composer">
-          <div className="composer-inner">
-            <UserInputCard request={turn.pendingInput} onResolve={onResolveInput} />
-          </div>
-        </div>
+      {activeCitation !== null && (
+        <CitationPanel citation={activeCitation} onClose={() => setActiveCitation(null)} />
       )}
-
-      <Composer
-        busy={busy}
-        controls={<ModelControls choice={choice} />}
-        quickPrompts={quickPrompts}
-        inputBudget={
-          choice.profile === null
-            ? null
-            : choice.profile.context_window - choice.profile.output_token_reserve
-        }
-        onSend={send_}
-        onStop={cancel}
-      />
     </div>
   )
 }

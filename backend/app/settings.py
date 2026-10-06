@@ -111,6 +111,15 @@ RETRIEVAL_RERANK_FLOOR_DEFAULT = 0.25
 #: All three are cosine/relevance scores on 0..1, so one shared ceiling.
 RETRIEVAL_FLOOR_CEILING = 0.99
 
+#: The keyword (FTS) hit floor. A keyword hit's blended score tops out at
+#: 0.45 (FTS_WEIGHT at rank one with every query term matched) and falls with
+#: rank and unmatched terms, so this floor's scale is that blend's, not a
+#: cosine's. It is what stands in when the reranker is absent or dead: without
+#: it the tail of an OR query - single coincidental bigrams scoring 0.01 -
+#: fills the citations whenever the rerank stage never runs.
+RETRIEVAL_FTS_FLOOR = "retrieval_fts_floor"
+RETRIEVAL_FTS_FLOOR_DEFAULT = 0.15
+
 
 def read_prompt(store: Store, key: str) -> str:
     """The text in force: what the user saved, or the one the code ships."""
@@ -186,24 +195,27 @@ def read_bash_settings(store: Store) -> BashSettings:
 
 @dataclass(frozen=True)
 class RetrievalThresholds:
-    """The three relevance floors a retrieval pass applies.
+    """The relevance floors a retrieval pass applies.
 
     Read per call rather than per process: a settings change reaches the very
-    next search. Values are raw cosine similarities (memory, semantic) or a
-    rerank relevance score, all on 0..1.
+    next search. memory/semantic are raw cosine similarities and rerank is a
+    reranker relevance, all on 0..1; fts_floor is on the keyword blend's own
+    scale (0.45 at its ceiling - see RETRIEVAL_FTS_FLOOR).
     """
 
     memory_floor: float = RETRIEVAL_MEMORY_FLOOR_DEFAULT
     semantic_floor: float = RETRIEVAL_SEMANTIC_FLOOR_DEFAULT
     rerank_floor: float = RETRIEVAL_RERANK_FLOOR_DEFAULT
+    fts_floor: float = RETRIEVAL_FTS_FLOOR_DEFAULT
 
 
 def read_retrieval_thresholds(store: Store) -> RetrievalThresholds:
-    """The three floors in force. No row means the code default."""
+    """The four floors in force. No row means the code default."""
     stored = store.list_settings()
     memory = stored.get(RETRIEVAL_MEMORY_FLOOR)
     semantic = stored.get(RETRIEVAL_SEMANTIC_FLOOR)
     rerank = stored.get(RETRIEVAL_RERANK_FLOOR)
+    fts = stored.get(RETRIEVAL_FTS_FLOOR)
     return RetrievalThresholds(
         memory_floor=memory
         if isinstance(memory, (int | float))
@@ -211,9 +223,10 @@ def read_retrieval_thresholds(store: Store) -> RetrievalThresholds:
         semantic_floor=(
             semantic if isinstance(semantic, (int | float)) else RETRIEVAL_SEMANTIC_FLOOR_DEFAULT
         ),
-        rerank_floor=rerank
-        if isinstance(rerank, (int | float))
-        else RETRIEVAL_RERANK_FLOOR_DEFAULT,
+        rerank_floor=(
+            rerank if isinstance(rerank, (int | float)) else RETRIEVAL_RERANK_FLOOR_DEFAULT
+        ),
+        fts_floor=fts if isinstance(fts, (int | float)) else RETRIEVAL_FTS_FLOOR_DEFAULT,
     )
 
 

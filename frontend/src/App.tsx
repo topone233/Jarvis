@@ -20,6 +20,7 @@ import { KnowledgePage } from './pages/KnowledgePage'
 import { MemoryPage } from './pages/MemoryPage'
 import { NewChatPage } from './pages/NewChatPage'
 import { SetupPage } from './pages/SetupPage'
+import { usePluginFrontends } from './plugins/registry'
 
 const COLLAPSED_KEY = 'jarvis.sidebar.collapsed'
 
@@ -80,6 +81,7 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
   const conversations = useConversations()
   const confirm = useConfirm()
   const toast = useToast()
+  const { frontends: plugins, ready: pluginsReady } = usePluginFrontends()
   // Subscribes the shell to navigation, so the highlighted row follows the URL.
   const location = useLocation()
   const navigate = useNavigate()
@@ -91,16 +93,25 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
   const [backTo, setBackTo] = useState('/')
 
   useEffect(() => {
-    // Both full-screen pages are excluded: what came before either one is what
-    // its close button goes back to.
+    // Every full-screen page is excluded: what came before it is what its close
+    // button goes back to. Plugins' pages belong in that company - their paths
+    // come from the plugins' own meta. The wait for `pluginsReady` matters: on
+    // a fresh load of /notes the registry is still empty, the exclusion list
+    // would not name it, and /notes would be remembered as its own close
+    // target - the close button would then navigate to where it already is.
+    if (!pluginsReady) {
+      return
+    }
+    const pluginPaths = plugins.map((plugin) => plugin.meta.navPath)
     if (
       location.pathname !== '/setup' &&
       location.pathname !== '/memories' &&
-      location.pathname !== '/knowledge'
+      location.pathname !== '/knowledge' &&
+      !pluginPaths.includes(location.pathname)
     ) {
       setBackTo(location.pathname)
     }
-  }, [location.pathname])
+  }, [location.pathname, plugins, pluginsReady])
 
   function toggleSidebar() {
     setCollapsed((current) => {
@@ -141,6 +152,12 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
         onDelete={remove}
         search={conversations.search}
         onSearchChange={conversations.setSearch}
+        plugins={plugins.map((plugin) => ({
+          id: plugin.id,
+          label: plugin.meta.navLabel,
+          path: plugin.meta.navPath,
+          Icon: plugin.meta.navIcon,
+        }))}
       />
       <main className="main">
         <Routes>
@@ -159,9 +176,26 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
           />
           <Route path="/memories" element={<MemoryPage onClose={() => navigate(backTo)} />} />
           <Route path="/knowledge" element={<KnowledgePage onClose={() => navigate(backTo)} />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {/* Each plugin's page is the plugin's own component on its own path;
+              onClose behaves like the other full-screen pages' close buttons. */}
+          {plugins.map((plugin) => (
+            <Route
+              key={plugin.id}
+              path={plugin.meta.navPath}
+              element={<plugin.Page onClose={() => navigate(backTo)} />}
+            />
+          ))}
+          {/* The catch-all waits for the plugin registry: redirecting before
+              the plugin routes exist would bounce a deep link like /notes
+              home on every fresh load. */}
+          {pluginsReady && <Route path="*" element={<Navigate to="/" replace />} />}
         </Routes>
       </main>
+      {/* The popups plugins summon globally - a hotkey-driven quick note, for
+          one - live at the shell so they work on every page. */}
+      {plugins.map((plugin) =>
+        plugin.quickCapture === undefined ? null : <plugin.quickCapture key={plugin.id} />,
+      )}
       {confirm.dialog}
     </div>
   )
