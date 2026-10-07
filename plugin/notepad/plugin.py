@@ -11,9 +11,13 @@ notes_store 的存储和 tagging 的后台任务接成一个 APIRouter。接口�
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from app.errors import NotFoundError, ValidationError
 from app.plugin_host import PluginContext
@@ -26,12 +30,33 @@ MANIFEST = {
     "name": "便签",
     "description": "随手记 markdown 便签：快捷键呼出、AI 自动打标签、全文检索；文件是纯 markdown，Typora 可直接打开。",
     "version": "0.1.0",
+    "quick_capture": True,
 }
 
 SETTINGS_SCHEMA: list[dict[str, Any]] = [
     {"key": "capture_hotkey", "label": "呼出便签弹窗", "type": "hotkey", "default": "Alt+N"},
     {"key": "auto_tag", "label": "AI 自动打标签", "type": "bool", "default": True},
 ]
+
+#: 便签里的图片资产。编辑器（Milkdown）默认把上传的图片落成 blob: URL——
+#: 只在创建它的那次页面会话里有效，落盘即死链。这里提供 /assets：服务端
+#: 生成文件名（绝不使用客户端文件名），markdown 里写稳定 URL，重开依然
+#: 可见。文件本体在 ``notes/.assets/`` 下：点前缀与 .deleted 同一先例，
+#: 也不进 ``*.md`` 的索引扫描。
+_ASSET_DIRNAME = ".assets"
+#: 接受的图片类型 → 扩展名。svg 能带脚本，不在名单里。
+_ASSET_MIME_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/avif": ".avif",
+}
+_ASSET_EXTENSIONS = {extension: mime for mime, extension in _ASSET_MIME_TYPES.items()}
+_ASSET_MAX_BYTES = 10 * 1024 * 1024
+#: 文件名即 id：服务端生成的 32 位 hex + 已知扩展名。GET 用它挡住
+#: 路径拼接之外的一切名字。
+_ASSET_NAME_RE = re.compile(r"[0-9a-f]{32}\.(?:png|jpg|gif|webp|avif)")
 
 
 def _index(context: PluginContext) -> NoteIndex:
@@ -146,5 +171,28 @@ def create_router(context: PluginContext) -> APIRouter:
     @router.get("/tags")
     async def list_tags() -> dict[str, Any]:
         return {"items": _index(context).tags()}
+
+    @router.post("/assets", status_code=201)
+    async def upload_asset(file: UploadFile) -> dict[str, str]:
+        extension = _ASSET_MIME_TYPES.get(file.content_type or "")
+        if extension is None:
+            raise HTTPException(status_code=415, detail="只接受图片文件。")
+        data = await file.read(_ASSET_MAX_BYTES + 1)
+        if len(data) > _ASSET_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="图片太大（上限 10MB）。")
+        directory = context.data_directory / "notes" / _ASSET_DIRNAME
+        directory.mkdir(parents=True, exist_ok=True)
+        name = uuid4().hex + extension
+        (directory / name).write_bytes(data)
+        return {"url": f"/api/plugins/notepad/assets/{name}"}
+
+    @router.get("/assets/{name}")
+    async def get_asset(name: str) -> FileResponse:
+        if _ASSET_NAME_RE.fullmatch(name) is None:
+            raise HTTPException(status_code=404, detail="图片不存在。")
+        path: Path = context.data_directory / "notes" / _ASSET_DIRNAME / name
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="图片不存在。")
+        return FileResponse(path, media_type=_ASSET_EXTENSIONS[path.suffix])
 
     return router

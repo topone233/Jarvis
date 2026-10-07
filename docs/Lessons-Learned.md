@@ -757,3 +757,162 @@ line boxes with `Range.getClientRects()` when the answer matters.
 session at the *same* deviceScaleFactor. Reading a screenshot from one run
 against numbers from another cost two rounds here: the layouts were 50px
 apart and the arithmetic kept insisting the fourth line could not be visible.
+
+## 派发一个合成按键不等于送达：效果必须被确认，而不是被假设
+
+**Symptom.** 桌面壳的全局热键第一次按下：弹窗窗口出现了，但里面是空白页——
+合成 keydown 明明已经 `evaluate_js` 派发，页内 QuickCapture 却没有打开。
+
+**Root cause.** 插件的快捷键监听要等它自己的配置请求返回才挂上
+（QuickCapture mount → fetch 配置 → setCombo → 才有 listener）。弹窗窗口是
+懒创建的：Python 在 `events.loaded` 后立刻 show 并派发，此刻 React 刚挂载、
+配置 fetch 还在路上——派发落在无人监听的窗口上，事件不会排队，静默丢失。
+浏览器里的同一段代码从不出错，因为监听早已就位。
+
+**Fix.** 送达以"效果"为准：Python 派发后轮询核心自己拥有的 DOM 信号
+（`.popup-holder` 的子节点——插件组件渲染出来的东西），没出现就有界补发
+（6 次 × 280ms），超限打日志。竞速不可能在发送侧根治，只能在确认侧闭环。
+
+**Invariant.** 任何"发出去就当生效"的跨边界派发（synthetic event、
+evaluate_js、js_api 单向调用）都要找一个核心拥有的可观测信号确认落地，
+并带重试上限。对方"还没准备好"不是异常路径，是首次交互的常态。
+
+## 改共享配置清单：追加条目，不要重写清单
+
+**Symptom.** 给 pyproject.toml 的 `[[tool.mypy.overrides]]` 加 webview 时
+直接替换了 module 列表，mypy 立刻冒出 5 个与本次改动无关的
+`import-untyped`（sqlite_vec/yaml/mammoth/pymupdf4llm），像是改动引入的。
+
+**Root cause.** 那个列表是给无 stub 依赖的白名单，我误以为它是本次任务的
+占位。共享配置里的清单几乎总是别人的决定，重写 = 静默撤销。
+
+**Fix.** 恢复原条目、追加新条目；用 `git stash` + 重跑对比确认基线，把
+"既有失败"和"我引入的失败"分开记账（本仓 HEAD 本就有 15 个 mypy 既有错）。
+
+**Invariant.** 动任何共享清单（mypy overrides、ruff select、tsconfig
+paths、vitest include）前先确认它管着谁；验证基线的手段是 stash 后重跑，
+不是凭印象。
+
+## 重定向后的 stdout 是全缓冲的：启动日志要显式 flush
+
+**Symptom.** 壳启动 6 秒后日志文件仍是空的，第一轮排查（窗口是否存在）
+全靠 Win32 API 盲猜。
+
+**Root cause.** `Start-Process -RedirectStandardOutput` 下 Python 的 stdout
+是块缓冲，`print` 不 flush 就滞留在进程内存里；进程不退出日志就不落地。
+
+**Invariant.** 会被重定向的常驻进程，日志一律 `print(..., flush=True)` 或
+logging 到 stderr。排障时若日志缺失，先怀疑缓冲而不是"没执行到"。
+
+## Windows 进程清理的两条纪律（本次实测）
+
+- Git Bash 会把 `taskkill /PID` 的 `/PID` 改写成路径——用 `cmd //c
+  "taskkill /PID <pid> /T /F"`（双斜杠或套 cmd）。
+- `taskkill /T` 对 uv → python 的进程树不可靠（孙进程可能幸存）。杀完用
+  `FindWindowW`/`tasklist` 按窗口名和 PID 复核，见窗口还在就定点补杀；
+  只杀自己启动的 PID，永不按映像名。
+
+## pythonnet 的命名空间导入要等程序集就绪：借已加载它的模块导
+
+**Symptom.** `from Microsoft.Win32 import SystemEvents` 写在 `webview.start()`
+之前执行，报 `No module named 'Microsoft'`——而 pywebview 自己的 winforms.py
+第 33 行就是同一条导入，看起来应该没问题。
+
+**Root cause.** pythonnet 的命名空间导入依赖程序集已加载。pywebview 是懒加载
+winforms 后端的（`webview.start()` 时才 import），在那之前 clr/System.dll 都
+没就绪；同样的导入在 winforms.py 模块体内成功，在我的模块顶层失败。
+
+**Fix.** `from webview.platforms.winforms import SystemEvents`——借 pywebview
+的模块导入顺带完成程序集装载。pywebview 若换程序集布局，它自己的导入会更着
+变，我跟着走比自己 AddReference 稳。
+
+**Invariant.** 跨包的扩展机制（clr、C 扩展、懒加载插件）依赖宿主的初始化顺序；
+需要宿主的符号时，从宿主已初始化的模块借，而不是重复其初始化条件。
+
+## GUI 线程回调里不要走封送：pywebview 的 hide() 是无条件 Invoke
+
+**Symptom.** closing 事件里想把「关闭」变成「隐藏到托盘」，担心在 GUI 线程
+里调 `window.hide()` 死锁或重入。
+
+**Root cause.** pywebview 的 `hide()` 实现是**无条件** `self.Invoke(...)`
+（show/maximize 等都带 `InvokeRequired` 分支，hide 没带）。GUI 线程内再进
+消息泵封送，属于可避免的重入。
+
+**Fix.** closing handler 同步跑在 GUI 线程，直接调原生
+`window.native.Hide()`——这正是 WinForms「e.Cancel + Hide 收托盘」的官方写法，
+零封送。先读后端库源码确认哪些方法带 InvokeRequired 分支，别按 API 一致性猜。
+
+**Invariant.** 事件回调的宿主线程要先确认（pywebview 的 closing 是
+should_lock 同步 GUI 线程），回调体内只做同线程操作或直接原生调用；
+跨线程封送只留给真正的异线程调用方（托盘线程、热键线程）。
+
+## pythonw 下 print 是静默空操作：自启动进程要行为验证而不是日志验证
+
+**Symptom.** 模拟注册表自启动（`pythonw autostart_launch.pyw --hidden`）后
+拿不到任何日志，无法确认壳真的起来了。
+
+**Root cause.** pythonw 的 `sys.stdout` 是 `None`，CPython 3 的 `print` 对
+None 目标静默跳过（不报错也不落盘）——代码不会崩，但所有日志蒸发。
+
+**Fix/Probe.** 行为验证代替日志验证：进程存活（`Get-Process -Id`）、无可见
+主窗口（`MainWindowTitle == ''` + `IsWindowVisible`）。排障手段：临时改用
+`python.exe` 跑同一入口收集日志。
+
+**Invariant.** 无控制台的宿主（pythonw/服务/托盘进程）不能依赖 stdout 排障；
+要么落文件日志，要么按进程行为断言。写"静默运行"的入口时就要想好它坏了怎么查。
+
+## 启动脚本只在 dist 缺失时构建 = 静默提供过期应用
+
+**Symptom.** 按热键唤出便签，弹出的是 520×500 的"缩小版整个对话窗口"；
+右上角 ✕ 关不掉它（点的是主窗口的 WindowControls——整页聊天被渲染进了
+弹窗）；从任务栏关掉弹窗后，热键从此唤不出任何东西。
+
+**Root cause.** 三个症状一条链。`start-desktop.ps1` 只在 `frontend/dist`
+**不存在**时构建，弹窗路由写完之后壳一直在服务没有该路由的旧 bundle：
+`/popup/notepad` 落进 SPA catch-all 被重定向到 `/`。错误内容引出后两个：
+✕ 是主窗口的控制钮（`hide_main` 隐藏的是主窗口）；而任务栏关闭暴露了
+Python 侧从未有过的清理——弹窗的 `closed` 事件没人订阅，`Shell.popups`
+留着已销毁的窗口，热键从此在对僵尸窗口操作。
+
+**Invariant.** 启动脚本用「最新源码 mtime vs `dist/index.html`」判断过期
+（覆盖 `frontend/src`、前端配置、`plugin/*/frontend`——插件前端被
+import.meta.glob 折进主 bundle），过期即重建。弹窗创建时必须订阅
+`closed`：`Shell.popups`/`Shell.visible` 里只允许存在活着的窗口，壳外
+关闭（任务栏、Alt+F4）与主动销毁共用同一个清理。
+
+## 无 BOM 的 UTF-8 脚本会被 PowerShell 5.1 当 GBK 读
+
+**Symptom.** `start-desktop.ps1`（UTF-8、中文注释）解析报 3 个错误——
+「字符串缺少终止符」，报错行与出错行相距很远（43/47/58 行互相连坐）。
+
+**Root cause.** Windows PowerShell 5.1 对无 BOM 文件按 ANSI 代码页（本机
+GBK）解码，多字节 UTF-8 序列被重新配对后字节错位，可能吞掉引号；语法
+错误在离肇因很远的地方冒出来。PowerShell 7 默认 UTF-8，同一份文件在
+pwsh 下正常、在 `powershell` 下报错——"在我机器上能跑"的经典来源。
+
+**Invariant.** 含非 ASCII 字符的 `.ps1` 一律存成 UTF-8 **带 BOM**。改完
+脚本用 `[System.Management.Automation.Language.Parser]::ParseFile` 做一次
+解析验证，别等运行时暴露。
+
+## pywebview 的 loaded 事件跑在 worker 线程：处理器里碰会 Invoke 回 GUI 的属性 = 全壳死锁
+
+**Symptom.** 修弹窗任务栏图标的第一版（loaded 事件里设
+`window.native.ShowInTaskbar = False`）让整个壳死锁：按一次热键后主窗口
+"未响应"，弹窗永不出示，热键线程永远卡在 `loaded.wait()`，控制台连一行
+都不打印。py-spy 抓到三向互等：MainThread 卡在 `create_window` 的
+`i.Invoke` 同步等待（winforms.py:834），`generate_js_object` 线程在等事件
+处理器返回，处理器线程在等 `ShowInTaskbar` 的 Invoke 回 GUI——循环等待。
+
+**Root cause.** pywebview 的 `loaded` 事件把处理器派发到 **worker 线程**
+（event.py 的 set 为每个处理器起线程），而 `shown`/`closing` 在 GUI 线程
+上同步跑。WinForms 控制属性从非拥有线程设置会 Invoke 回 GUI 线程，
+`ShowInTaskbar` 的 setter 还会 RecreateHandle。GUI 此时正处于
+create_window 的同步等待中，谁也动不了。
+
+**Invariant.** 摸 pywebview 窗口的原生侧只有一条安全路：**GUI 线程上的
+事件（shown）+ 原地 SetWindowLongW 位操作**（`_restore_sizing_styles` /
+`_strip_taskbar_icon` 的模式）——不重建句柄、不跨线程封送。拿不准某个
+事件在哪个线程触发时，先 `uvx py-spy dump --pid <pid>` 看各线程的栈再
+动手；凡是会"等 GUI"的调用（同步属性 setter、Invoke）都不能出现在事件
+处理器里，除非确认处理器已在 GUI 线程上。查"窗口未响应"用
+`IsHungAppWindow`，一个 ctypes 调用就能定位是哪条线程停了泵。

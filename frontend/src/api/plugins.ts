@@ -18,6 +18,13 @@ export interface PluginInfo {
   name: string
   description: string | null
   version: string | null
+  /**
+   * 桌面壳的全局唤出契约（MANIFEST 可选字段）：声明了 quick_capture 的
+   * 插件有全局弹窗窗口；否则唤出主窗口并跳到 summon_path（没有就只唤出）。
+   * 只有配了 hotkey 类型设置的插件才会真的注册全局键。
+   */
+  quick_capture: boolean
+  summon_path: string | null
   settings_schema: PluginSettingField[]
   config: Record<string, string | number | boolean>
   enabled: boolean

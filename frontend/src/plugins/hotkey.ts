@@ -30,6 +30,12 @@ export function parseHotkey(text: string): HotkeyCombo | null {
     .filter((part) => part !== '')
   const combo: HotkeyCombo = { ctrl: false, alt: false, shift: false, meta: false, key: '' }
   for (const part of parts) {
+    // "win" 是 formatHotkey 输出的显示词（Win+9），必须能被原样读回来，
+    // 否则录制下的大小写键永远解析失败。
+    if (part === 'win') {
+      combo.meta = true
+      continue
+    }
     if (MODIFIERS.includes(part as (typeof MODIFIERS)[number])) {
       combo[part as (typeof MODIFIERS)[number]] = true
       continue
@@ -84,6 +90,28 @@ export function hotkeyMatches(combo: HotkeyCombo, event: KeyboardEvent): boolean
     combo.meta === event.metaKey &&
     eventKeyOf(combo.key, event) === combo.key
   )
+}
+
+/**
+ * 合成事件的 init：桌面壳把"全局热键"翻译成一次派发到 window 的 keydown，
+ * 让页内监听（hotkeyMatches）像真的按了键一样命中。字段必须与 eventKeyOf
+ * 对齐——字母靠 code 命中（对输入法和 Shift 稳定），功能键靠 key 名，
+ * 数字落在 key 上。
+ */
+export function syntheticInit(combo: HotkeyCombo): KeyboardEventInit {
+  const modifiers: KeyboardEventInit = {
+    ctrlKey: combo.ctrl,
+    altKey: combo.alt,
+    shiftKey: combo.shift,
+    metaKey: combo.meta,
+  }
+  if (FUNCTION_KEY.test(combo.key)) {
+    return { ...modifiers, key: combo.key, code: combo.key }
+  }
+  if (/^[A-Z]$/.test(combo.key)) {
+    return { ...modifiers, key: combo.key.toLowerCase(), code: `Key${combo.key}` }
+  }
+  return { ...modifiers, key: combo.key, code: `Digit${combo.key}` }
 }
 
 /**

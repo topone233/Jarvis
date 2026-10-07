@@ -11,12 +11,15 @@ import { useEffect, useRef } from 'react'
 import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { InputRule } from '@milkdown/kit/prose/inputrules'
-import { $inputRule } from '@milkdown/kit/utils'
+import { $inputRule, $remark } from '@milkdown/kit/utils'
+import { useToast } from '../../../frontend/src/hooks/useToast'
 // Crepe 的样式是两层：common 是所有组件的结构（block 菜单、链接工具条、
 // 拖放指示线的定位），frame 只是调色盘。只导 frame 的话，这些组件会以
 // 无样式的块裸排在文档流里。调色盘在 notepad.css 里映射到 Jarvis tokens。
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
+
+import { uploadNoteAsset } from './api'
 
 export interface NoteEditorProps {
   value: string
@@ -48,8 +51,41 @@ const lenientTaskRule = $inputRule(
     }),
 )
 
+// crepe 的 remark-image-block 把「段落里唯一一张图」改写成 image-block，但
+// remark 给无标题图片的 title 是 null，而 image-block（caption）与 image
+// （title/alt）两个 schema 都声明 validate: 'string'——prosemirror 校验抛
+// RangeError，节点被 transformer 的 try/catch 静默吞掉。所有没写标题的图片
+// （本应用写出的所有图片都是）保存重开即消失。这条插件排在 crepe 那条改写
+// 之后，把 null 补成空串：和刚粘贴时 parseDOM 给出的默认值完全一致。
+export interface MdastImageNode {
+  type: string
+  alt?: unknown
+  title?: unknown
+  url?: unknown
+  value?: unknown
+  children?: MdastImageNode[]
+}
+
+export function guardMdastImageStrings(tree: MdastImageNode): void {
+  const walk = (node: MdastImageNode): void => {
+    if (node.type === 'image' || node.type === 'image-block') {
+      if (node.title == null) {
+        node.title = ''
+      }
+      if (node.type === 'image' && node.alt == null) {
+        node.alt = ''
+      }
+    }
+    node.children?.forEach(walk)
+  }
+  walk(tree)
+}
+
+const imageTitleGuard = $remark('jarvis-image-title-guard', () => () => guardMdastImageStrings)
+
 export function NoteEditor({ value, onChange, placeholder }: NoteEditorProps) {
   const rootRef = useRef<HTMLDivElement>(null)
+  const toast = useToast()
   // The callback rides a ref so the effect can stay mount-only: the editor's
   // own lifetime is the note's lifetime (the parent keys us by note id).
   const onChangeRef = useRef(onChange)
@@ -75,9 +111,22 @@ export function NoteEditor({ value, onChange, placeholder }: NoteEditorProps) {
         // （随文字色），和标题输入框、聊天框是同一支光标。
         [Crepe.Feature.Cursor]: { virtual: false },
         [Crepe.Feature.Placeholder]: { text: placeholder ?? '写点什么……' },
+        // Milkdown 默认把上传的图片落成 blob: URL——只在本次页面会话里
+        // 有效，落盘即死链，重开便签图就没了。改走插件后端的 /assets 换
+        // 稳定 URL；这个配置同时覆盖块图片和行内图片两条上传路径。
+        [Crepe.Feature.ImageBlock]: {
+          onUpload: (file: File) =>
+            uploadNoteAsset(file)
+              .then(({ url }) => url)
+              .catch((cause: unknown) => {
+                toast.show(cause instanceof Error ? cause.message : '图片上传失败，请再试一次。', 'bad')
+                throw cause
+              }),
+        },
       },
     })
     crepe.editor.use(lenientTaskRule)
+    crepe.editor.use(imageTitleGuard)
     let disposed = false
     crepe.on((listener) => {
       listener.markdownUpdated((_previous, next) => {

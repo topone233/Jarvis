@@ -102,6 +102,61 @@ input {
 
 /* ---------- shell ---------- */
 
+/* app-root 是无边框主窗口的纵向外壳：标题条在上，页面内容占满其余高度。
+   无边框窗口的页内一半。窗口控制是右上角的悬浮层（absolute，不占布局
+   高度，页面内容顶到窗口上缘）；没有专门的拖拽条，pywebview-drag-region
+   挂在页面空白容器上（Sidebar/ChatPage/NewChatPage 等，它只认直接目标，
+   子元素照常点击）。 */
+.app-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 页面铺满 app-root；悬浮的窗口控制层不参与布局。 */
+.app-root > :not(.window-controls) {
+  flex: 1;
+  min-height: 0;
+}
+
+.window-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  /* 盖过页面内容（菜单 20 / 悬浮条 8），低于 toast 60；原生 <dialog>
+     在 top layer，天然再盖一层。 */
+  z-index: 30;
+  display: flex;
+  user-select: none;
+}
+
+/* Windows 的 caption 按钮：方形、无圆角、hover 变灰，关闭是红的——这里
+   偏离 DSH 的圆角语言是刻意的，窗口控制的形状由操作系统说了算。 */
+.window-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 34px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: default;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.window-button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.window-button.is-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
 .app {
   display: flex;
   height: 100%;
@@ -128,14 +183,14 @@ input {
   padding: 12px 10px;
 }
 
-.sidebar-logo {
+/* The new-chat link leads the top row, taking the width the Jarvis wordmark
+   left behind; the search and collapse buttons sit after it. Collapsed, the
+   60px rail cannot hold all three, so new-chat drops back to its own row
+   below - the shape the rail always had. */
+.sidebar-top .sidebar-item {
   flex: 1;
-  padding-left: 6px;
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  overflow: hidden;
+  width: auto;
+  min-width: 0;
 }
 
 .sidebar-section {
@@ -148,8 +203,8 @@ input {
   color: var(--text-muted);
 }
 
-/* The search row lives between the top bar and the new-chat item, and reads
-   as a quiet field, not a box with a border. */
+/* The search row lives right under the top row, and reads as a quiet field,
+   not a box with a border. */
 .sidebar-search {
   padding: 0 10px 2px;
 }

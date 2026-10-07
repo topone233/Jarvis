@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { describeEvent, formatHotkey, hotkeyMatches, parseHotkey } from './hotkey'
+import { describeEvent, formatHotkey, hotkeyMatches, parseHotkey, syntheticInit } from './hotkey'
 
 /** The parts of KeyboardEvent the matchers read; tests run in node. */
 function keyEvent(parts: Partial<KeyboardEvent>): KeyboardEvent {
@@ -34,6 +34,11 @@ describe('parsing the stored string', () => {
     expect(parseHotkey('Alt+Enter')).toBeNull()
     expect(parseHotkey('')).toBeNull()
   })
+
+  it('accepts win as an alias of the meta modifier, because that is what formatHotkey prints', () => {
+    expect(parseHotkey('Win+M')).toEqual({ ctrl: false, alt: false, shift: false, meta: true, key: 'M' })
+    expect(parseHotkey('Win+9')).toEqual({ ctrl: false, alt: false, shift: false, meta: true, key: '9' })
+  })
 })
 
 describe('displaying a combo', () => {
@@ -61,6 +66,31 @@ describe('matching keyboard events', () => {
     const f5 = parseHotkey('F5')!
     expect(hotkeyMatches(f5, keyEvent({ key: 'F5', code: 'F5' }))).toBe(true)
     expect(hotkeyMatches(f5, keyEvent({ key: 'F6', code: 'F6' }))).toBe(false)
+  })
+})
+
+describe('synthesizing a keydown for the desktop shell', () => {
+  it('round-trips: the synthetic event matches its combo like a real keypress would', () => {
+    for (const text of ['Alt+N', 'Ctrl+Shift+5', 'F5', 'Ctrl+F12', 'Win+M']) {
+      const combo = parseHotkey(text)!
+      expect(hotkeyMatches(combo, keyEvent(syntheticInit(combo) as Partial<KeyboardEvent>))).toBe(
+        true,
+      )
+    }
+  })
+
+  it('letters ride on event.code, the stable leg under IME and Shift', () => {
+    expect(syntheticInit(parseHotkey('Alt+N')!).code).toBe('KeyN')
+    expect(syntheticInit(parseHotkey('F5')!).key).toBe('F5')
+    expect(syntheticInit(parseHotkey('Ctrl+Shift+5')!).code).toBe('Digit5')
+  })
+
+  it('a different chord does not match the synthetic event', () => {
+    const altN = parseHotkey('Alt+N')!
+    const shifted = syntheticInit(altN)
+    expect(
+      hotkeyMatches(altN, keyEvent({ ...(shifted as Partial<KeyboardEvent>), shiftKey: true })),
+    ).toBe(false)
   })
 })
 

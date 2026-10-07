@@ -32,6 +32,7 @@ import { useQuickPrompts } from '../hooks/useQuickPrompts'
 import { useStickToBottom } from '../hooks/useStickToBottom'
 import { useToast } from '../hooks/useToast'
 import { takePendingImages } from '../pendingImages'
+import { toggleMaximize } from '../plugins/shell'
 import { useRun } from '../runs/useRun'
 
 /**
@@ -310,7 +311,12 @@ export function ChatPage({
     <div className="chat">
       <div className="chat-frame" ref={frameRef}>
         <div className="messages" ref={scrollRef}>
-          <div className="messages-inner">
+          {/* 消息列的空白处（消息上下的空档）是窗口拖拽区；点正文走子元素，
+              文本选择不受影响。 */}
+          <div
+            className="pywebview-drag-region messages-inner"
+            onDoubleClick={toggleMaximize}
+          >
             {loadError !== null && (
               <div className="load-error" role="alert">
                 <p className="load-error-title">{loadError}</p>

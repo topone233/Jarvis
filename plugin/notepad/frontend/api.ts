@@ -83,6 +83,17 @@ export function listTags(): Promise<{ items: TagCount[] }> {
   return api<{ items: TagCount[] }>(`${BASE}/tags`)
 }
 
+/**
+ * Upload an image for a note and get its stable URL back. Milkdown's
+ * default upload returns a blob: URL that dies with the page session; only
+ * a URL the backend serves survives a close-and-reopen.
+ */
+export function uploadNoteAsset(file: File): Promise<{ url: string }> {
+  const form = new FormData()
+  form.set('file', file)
+  return api<{ url: string }>(`${BASE}/assets`, { method: 'POST', body: form })
+}
+
 export function retagNote(noteId: string): Promise<NoteFull> {
   return api<NoteFull>(`${BASE}/notes/${noteId}/retag`, { method: 'POST' })
 }

@@ -11,10 +11,12 @@
  * through untouched. Images are compressed the moment they arrive, so the
  * preview is exactly what will be sent and stored.
  *
- * The card has two rows: the draft on top, the controls underneath - attach on
- * the left, model, ring and send on the right. The paperclip opens the same
- * file picker a paste would bypass, so attaching is possible without a
- * clipboard round-trip.
+ * The card is one row - attach, draft, model and send side by side - with any
+ * pasted images waiting in a strip above it. The draft grows from a single
+ * line up to the ceiling and scrolls past it, so multi-line pastes and
+ * Shift+Enter still work inside a box that reads as a single-line field. The
+ * paperclip opens the same file picker a paste would bypass, so attaching is
+ * possible without a clipboard round-trip.
  */
 
 import {
@@ -226,15 +228,7 @@ export function Composer({
               {pasteNote !== null && <span className="composer-image-note">{pasteNote}</span>}
             </div>
           )}
-          <textarea
-            ref={ref}
-            rows={1}
-            placeholder="给 Jarvis 发消息"
-            onChange={changed}
-            onPaste={(event) => void onPaste(event)}
-            onKeyDown={onKeyDown}
-          />
-          <div className="composer-toolbar">
+          <div className="composer-row">
             <div className="composer-tools">
               <button
                 type="button"
@@ -253,6 +247,14 @@ export function Composer({
                 onChange={onPicked}
               />
             </div>
+            <textarea
+              ref={ref}
+              rows={1}
+              placeholder="给 Jarvis 发消息"
+              onChange={changed}
+              onPaste={(event) => void onPaste(event)}
+              onKeyDown={onKeyDown}
+            />
             <div className="composer-side">
               {controls}
               {hasDraft && inputBudget !== null && inputBudget > 0 && (

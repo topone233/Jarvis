@@ -4,7 +4,13 @@ into a live part of Jarvis.
 A plugin is a directory holding a ``plugin.py``, whose module-level constants
 say what it is and what a user can configure for it:
 
-- ``MANIFEST`` - ``{id, name, description, version}``. The id must match the
+- ``MANIFEST`` - ``{id, name, description, version}``, plus two optional
+  keys for the desktop shell's global summon (any plugin with a ``hotkey``
+  settings field gets an OS-wide key when the desktop shell runs):
+  ``quick_capture: bool`` - the plugin ships a ``quickCapture`` frontend
+  component, so the summon opens the frameless popup window; and
+  ``summon_path: str`` - no popup, so the summon brings up the main window
+  and navigates here. The id must match the
   directory name and the skill-name charset; it is the mount point
   (``/api/plugins/<id>``), the settings key, and the hook the frontend
   registers by.
@@ -36,9 +42,10 @@ import importlib.machinery
 import importlib.util
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, Request
 
@@ -146,6 +153,10 @@ def _description(
         "name": manifest["name"] if manifest else plugin_id,
         "description": manifest["description"] if manifest else None,
         "version": manifest["version"] if manifest else None,
+        # The desktop shell's summon contract; absent keys mean the plain
+        # defaults (no popup, no navigation target).
+        "quick_capture": bool(manifest.get("quick_capture", False)) if manifest else False,
+        "summon_path": manifest.get("summon_path") if manifest else None,
         "settings_schema": schema or [],
         "config": config,
         "enabled": enabled,
@@ -232,7 +243,7 @@ class PluginService:
             package = importlib.util.module_from_spec(
                 importlib.machinery.ModuleSpec(package_name, None, is_package=True)
             )
-            package.__path__ = [str(directory)]  # type: ignore[attr-defined]
+            package.__path__ = [str(directory)]
             sys.modules[package_name] = package
         module_name = f"{package_name}.plugin"
         spec = importlib.util.spec_from_file_location(module_name, plugin_file)
@@ -259,13 +270,15 @@ class PluginService:
         )
         self._broken.pop(directory.name, None)
 
-    def _validate(self, module: Any, directory_name: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def _validate(
+        self, module: Any, directory_name: str
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         manifest = getattr(module, "MANIFEST", None)
         if not isinstance(manifest, dict):
             raise ValidationError("plugin.py 缺少 MANIFEST（应是一个字典）。")
-        for key in ("id", "name", "description", "version"):
-            if not isinstance(manifest.get(key), str) or not manifest[key].strip():
-                raise ValidationError(f"MANIFEST 缺少有效的 {key} 字段。")
+        for field_name in ("id", "name", "description", "version"):
+            if not isinstance(manifest.get(field_name), str) or not manifest[field_name].strip():
+                raise ValidationError(f"MANIFEST 缺少有效的 {field_name} 字段。")
         plugin_id = manifest["id"]
         if not NAME_PATTERN.fullmatch(plugin_id):
             raise ValidationError(
@@ -293,7 +306,9 @@ class PluginService:
             if not isinstance(label, str) or not label:
                 raise ValidationError(f"配置项 {key} 缺少 label。")
             if kind not in SETTING_TYPES:
-                raise ValidationError(f"配置项 {key} 的 type 必须是 {'、'.join(SETTING_TYPES)} 之一。")
+                raise ValidationError(
+                    f"配置项 {key} 的 type 必须是 {'、'.join(SETTING_TYPES)} 之一。"
+                )
             default = entry.get("default")
             if not isinstance(default, _DEFAULT_TYPES[kind]) or (
                 kind == "int" and isinstance(default, bool)
@@ -345,9 +360,11 @@ class PluginService:
         for plugin_id, loaded in list(self._loaded.items()):
             if plugin_id in mounted:
                 continue
-            context = PluginContext(
-                lambda app=app: app.state.runtime.services(), plugin_id
-            )
+
+            def context_services(app: FastAPI = app) -> CoreServices:
+                return app.state.runtime.services()
+
+            context = PluginContext(context_services, plugin_id)
             try:
                 router: APIRouter = loaded.module.create_router(context)
             except Exception as error:  # noqa: BLE001
@@ -505,9 +522,11 @@ class PluginService:
             if key not in schema:
                 raise ValidationError(f"插件 {plugin_id} 没有名为 {key} 的配置项。")
             kind = schema[key]["type"]
-            if not isinstance(value, _DEFAULT_TYPES[kind]) or (kind == "int" and isinstance(value, bool)):
+            if not isinstance(value, _DEFAULT_TYPES[kind]) or (
+                kind == "int" and isinstance(value, bool)
+            ):
                 raise ValidationError(f"配置项 {key} 的值应是 {kind} 类型。")
-            if kind == "hotkey" and not value.strip():
+            if kind == "hotkey" and (not isinstance(value, str) or not value.strip()):
                 raise ValidationError(f"配置项 {key} 不能为空。")
         stored = self.store.get_setting(CONFIG_PREFIX + plugin_id)
         merged = {**(stored if isinstance(stored, dict) else {}), **values}

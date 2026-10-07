@@ -147,19 +147,15 @@ export function SearchIcon(props: IconProps) {
   )
 }
 
+/**
+ * The conversation bubble. Gone from the expanded history rows - they are
+ * words, not icons - it only survives in the collapsed rail, where every row
+ * is an icon and a row with none would be a blank strip.
+ */
 export function MessageIcon(props: IconProps) {
   return (
     <Icon {...props}>
       <path d="M20 12a7.5 7.5 0 0 1-7.5 7.5H8L4 22v-4.4A7.5 7.5 0 0 1 12.5 4.5 7.5 7.5 0 0 1 20 12Z" />
-    </Icon>
-  )
-}
-
-/** A bookmark: the things Jarvis keeps. */
-export function BookmarkIcon(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M6.5 5.5A1.5 1.5 0 0 1 8 4h8a1.5 1.5 0 0 1 1.5 1.5V20l-5.5-4-5.5 4Z" />
     </Icon>
   )
 }
@@ -174,19 +170,23 @@ export function BookIcon(props: IconProps) {
   )
 }
 
-export function FolderIcon(props: IconProps) {
+/** A brain: what Jarvis keeps between conversations. */
+export function BrainIcon(props: IconProps) {
   return (
     <Icon {...props}>
-      <path d="M3 7a2 2 0 0 1 2-2h3.5l2 2.5H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+      <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+      <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
     </Icon>
   )
 }
 
-export function SparkIcon(props: IconProps) {
+/** A gear: the one icon the whole industry agrees means settings. */
+export function SettingsIcon(props: IconProps) {
   return (
     <Icon {...props}>
-      <path d="M12 4.5 13.7 9.6 18.8 11.3 13.7 13 12 18.1 10.3 13 5.2 11.3 10.3 9.6Z" />
-      <path d="M18.5 4.5v3M20 6h-3" />
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
     </Icon>
   )
 }
@@ -253,6 +253,33 @@ export function ArrowDownIcon(props: IconProps) {
   return (
     <Icon {...props}>
       <path d="M12 4v16M5.5 13.5 12 20l6.5-6.5" />
+    </Icon>
+  )
+}
+
+/* --- 窗口标题条的 caption 图形：跟随 Windows 的按钮形状，故无隐喻注释 --- */
+
+export function MinusIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M5 12h14" />
+    </Icon>
+  )
+}
+
+export function MaximizeIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    </Icon>
+  )
+}
+
+export function WindowRestoreIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="8.5" y="8.5" width="10" height="10" rx="1.5" />
+      <path d="M5.5 15.5v-8a2 2 0 0 1 2-2h8" />
     </Icon>
   )
 }

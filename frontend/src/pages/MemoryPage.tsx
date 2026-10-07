@@ -24,6 +24,7 @@ import type { Memory, TrashItem } from '../api/types'
 import { CloseIcon, TrashIcon } from '../components/icons'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
+import { toggleMaximize } from '../plugins/shell'
 
 const KIND_LABELS: Record<string, string> = {
   profile: '个人信息',
@@ -139,7 +140,7 @@ export function MemoryPage({ onClose }: { onClose(): void }) {
   }
 
   return (
-    <div className="setup">
+    <div className="pywebview-drag-region setup" onDoubleClick={toggleMaximize}>
       <div className="setup-card is-manager">
         <button
           type="button"

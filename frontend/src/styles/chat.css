@@ -1209,9 +1209,10 @@
   background: var(--bg-hover);
 }
 
-/* The card: draft on top, controls underneath. The panel radius and the
-   hairline-in-shadow elevation are the reference's composer contract - the
-   silhouette never grows a border of its own. */
+/* The card: one row - attach, draft, model, send - with pasted images in a
+   strip above. The panel radius and the hairline-in-shadow elevation are the
+   reference's composer contract - the silhouette never grows a border of its
+   own. */
 .composer-box {
   display: flex;
   flex-direction: column;
@@ -1230,14 +1231,20 @@
   box-shadow: var(--ring-accent), var(--shadow-input);
 }
 
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .composer-box textarea {
   flex: 1;
   /* The card above gives when the window narrows - with a floor of its own
      the textarea keeps the row honest and scrolls once the ceiling is hit. */
   min-width: 0;
-  min-height: 36px;
+  min-height: 24px;
   max-height: 320px;
-  padding: 4px 10px 0 14px;
+  padding: 4px 2px;
   border: none;
   outline: none;
   resize: none;
@@ -1250,20 +1257,6 @@
   color: var(--text-muted);
 }
 
-/* The centered hero keeps a two-line floor, so an empty prompt reads as an
-   invitation rather than a sliver. */
-.hero .composer-box textarea {
-  min-height: 52px;
-}
-
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 4px 2px 6px;
-}
-
 .composer-tools,
 .composer-side {
   display: flex;
@@ -1271,13 +1264,8 @@
   gap: 6px;
 }
 
-.composer-tools {
-  justify-content: flex-start;
-}
-
 .composer-side {
-  justify-content: flex-end;
-  min-width: 0;
+  flex: 0 0 auto;
 }
 
 /* The file input is invisible; the paperclip beside it is the affordance, so
@@ -1956,6 +1944,12 @@ button.citation-chip:hover {
   position: absolute;
   top: 12px;
   right: 12px;
+}
+
+/* 壳里窗口控制三键悬浮在窗口右上角（app.css 的 .window-controls）；窄窗
+   时卡片的这个角会蹭到它们，壳态下整体下移让出角落。 */
+.is-shell .setup-close {
+  top: 44px;
 }
 
 .setup-title {

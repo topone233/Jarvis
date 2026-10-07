@@ -184,7 +184,9 @@ def test_the_tagger_tags_a_new_note(
         has_api_key=False,
     )
 
-    note = client.post(NOTES, json={"title": "nginx 上游超时", "content": "proxy_read_timeout 60s;"}).json()
+    note = client.post(
+        NOTES, json={"title": "nginx 上游超时", "content": "proxy_read_timeout 60s;"}
+    ).json()
     assert note["tag_status"] == "pending"
 
     deadline = time.time() + 5
@@ -284,3 +286,47 @@ def _use_tagger(
         return reply_text
 
     monkeypatch.setattr(core.provider, "complete_chat", reply)
+
+
+ASSETS = "/api/plugins/notepad/assets"
+
+
+def test_an_uploaded_image_gets_a_stable_url(client: TestClient, core: Any) -> None:
+    response = client.post(
+        ASSETS, files={"file": ("屏幕截图.png", b"\x89PNG-fake-bytes", "image/png")}
+    )
+    assert response.status_code == 201
+    url = response.json()["url"]
+    assert url.startswith(f"{ASSETS}/")
+    name = url.rsplit("/", 1)[1]
+
+    # The file sits next to the notes, out of the *.md index scan, under a
+    # server-generated name - the client's filename never touches disk.
+    stored = list((_notes_dir(core) / ".assets").iterdir())
+    assert [item.name for item in stored] == [name]
+    assert stored[0].read_bytes() == b"\x89PNG-fake-bytes"
+
+    # The URL survives a fresh request: that is the whole point.
+    fetched = client.get(url)
+    assert fetched.status_code == 200
+    assert fetched.headers["content-type"] == "image/png"
+    assert fetched.content == b"\x89PNG-fake-bytes"
+
+
+def test_a_non_image_upload_is_refused(client: TestClient) -> None:
+    response = client.post(ASSETS, files={"file": ("x.txt", b"hello", "text/plain")})
+    assert response.status_code == 415
+
+
+def test_an_oversized_upload_is_refused(client: TestClient) -> None:
+    blob = b"\x89PNG" + b"\x00" * (10 * 1024 * 1024)
+    response = client.post(ASSETS, files={"file": ("big.png", blob, "image/png")})
+    assert response.status_code == 413
+
+
+def test_asset_get_rejects_names_outside_the_store(client: TestClient) -> None:
+    # Not a server-generated name: rejected without touching the filesystem.
+    assert client.get(f"{ASSETS}/nope.png").status_code == 404
+    assert client.get(f"{ASSETS}/{'a' * 32}.txt").status_code == 404
+    # A well-formed name that was never uploaded is a plain miss.
+    assert client.get(f"{ASSETS}/{'b' * 32}.png").status_code == 404

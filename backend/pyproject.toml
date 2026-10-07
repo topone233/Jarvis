@@ -22,6 +22,11 @@ dependencies = [
 ]
 
 [dependency-groups]
+desktop = [
+    "pystray==0.19.5",
+    "pythonnet==3.0.5",
+    "pywebview==6.2.1",
+]
 dev = [
     "mypy==2.3.1",
     "pytest==8.3.4",
@@ -61,5 +66,8 @@ package = false
 
 
 [[tool.mypy.overrides]]
-module = ["mammoth.*", "pymupdf4llm.*", "sqlite_vec", "yaml.*"]
+# mammoth/pymupdf4llm/sqlite_vec/yaml ship no stubs; the desktop shell's GUI
+# toolkit lives in the ``desktop`` dependency group, absent on server-only
+# checkouts.
+module = ["mammoth.*", "pymupdf4llm.*", "sqlite_vec", "yaml.*", "webview", "webview.*"]
 ignore_missing_imports = true

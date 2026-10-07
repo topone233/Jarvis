@@ -31,6 +31,7 @@ import { ApiError, checkHealth } from '../api/client'
 import { sameDirectory } from '../api/paths'
 import { CloseIcon } from '../components/icons'
 import { useConfirm } from '../hooks/useConfirm'
+import { toggleMaximize } from '../plugins/shell'
 import { ModelProfilesPanel } from './settings/ModelProfilesPanel'
 import { PluginsPanel } from './settings/PluginsPanel'
 import { PromptsPanel } from './settings/PromptsPanel'
@@ -211,7 +212,7 @@ export function SetupPage({
   )
 
   return (
-    <div className="setup">
+    <div className="pywebview-drag-region setup" onDoubleClick={toggleMaximize}>
       <div className={`setup-card${configured ? ' is-manager' : ''}`}>
         {onClose !== undefined && (
           // The card is a route, so it is not a window that can be dismissed -

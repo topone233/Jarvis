@@ -1188,6 +1188,7 @@ async def test_a_bash_command_in_ask_mode_runs_only_after_approval(
     assert core.store.get_run(run["id"])["status"] == "running"
     assert not (work / "marker.txt").exists()
     broadcast = core.run_registry.broadcast(run["id"])
+    assert broadcast is not None  # 运行中的 run 必有 broadcast
     assert any(name == "user_input.requested" for name, _ in broadcast.events)
     running = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "bash_tool"][0]
     assert running["payload"]["approval"] == "ask"
@@ -1305,6 +1306,7 @@ async def test_ask_user_pauses_the_run_and_delivers_the_answer(
     assert core.store.get_run(run["id"])["status"] == "running"
     assert "ask_user" in [tool["function"]["name"] for tool in provider.last_tools or []]
     broadcast = core.run_registry.broadcast(run["id"])
+    assert broadcast is not None  # 运行中的 run 必有 broadcast
     requests = [payload for name, payload in broadcast.events if name == "user_input.requested"]
     assert requests[-1]["kind"] == "question"
     assert requests[-1]["options"] == ["方案一", "方案二"]

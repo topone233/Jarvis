@@ -1,7 +1,13 @@
 /**
- * The conversation list. New chat, switch, delete, and a search that narrows
- * the list in place to conversations whose title or any message mentions the
- * keyword.
+ * The conversation list. New chat sits at the head of the top row - the space
+ * the removed wordmark left is what the new-chat link fills - then switch,
+ * delete, and a search that narrows the list in place to conversations whose
+ * title or any message mentions the keyword.
+ *
+ * The sidebar is also the frameless window's main drag handle: the
+ * `pywebview-drag-region` class on the containers only fires when the
+ * mousedown target is the container itself (direct-target-only), so rows,
+ * inputs, and buttons keep working; double-click on empty space maximizes.
  *
  * A row is a `div` holding a link plus a delete button rather than a link with a
  * button inside it - interactive content cannot nest inside an anchor, and the
@@ -13,13 +19,15 @@ import type { ComponentType } from 'react'
 import { NavLink } from 'react-router'
 
 import type { Conversation } from '../api/types'
+import { toggleMaximize } from '../plugins/shell'
 import {
   BookIcon,
-  BookmarkIcon,
+  BrainIcon,
   MessageIcon,
   PanelIcon,
   PlusIcon,
   SearchIcon,
+  SettingsIcon,
   TrashIcon,
 } from './icons'
 
@@ -90,9 +98,19 @@ export function Sidebar({
   }
 
   return (
-    <aside className={`sidebar${collapsed ? ' is-collapsed' : ''}`}>
+    <aside
+      className={`pywebview-drag-region sidebar${collapsed ? ' is-collapsed' : ''}`}
+      onDoubleClick={toggleMaximize}
+    >
       <div className="sidebar-top">
-        {!collapsed && <span className="sidebar-logo">Jarvis</span>}
+        {/* 展开时新对话领头、吃掉 logo 让出的宽度；收起态的 60px 窄栏装不下
+            三件东西，新对话退回自己的一行（同收起态的旧行为）。 */}
+        {!collapsed && (
+          <NavLink to="/" className="sidebar-item sidebar-new" title="新对话" end>
+            <PlusIcon size={17} />
+            <span className="label">新对话</span>
+          </NavLink>
+        )}
         <button
           type="button"
           className={`icon-button${searchOpen ? ' is-on' : ''}`}
@@ -111,6 +129,13 @@ export function Sidebar({
           <PanelIcon size={17} />
         </button>
       </div>
+      {collapsed && (
+        <div className="sidebar-section">
+          <NavLink to="/" className="sidebar-item" title="新对话" end>
+            <PlusIcon size={17} />
+          </NavLink>
+        </div>
+      )}
 
       {searchOpen && !collapsed && (
         <div className="sidebar-search">
@@ -134,16 +159,9 @@ export function Sidebar({
         </div>
       )}
 
-      <div className="sidebar-section">
-        <NavLink to="/" className="sidebar-item" title="新对话" end>
-          <PlusIcon size={17} />
-          {!collapsed && <span className="label">新对话</span>}
-        </NavLink>
-      </div>
-
       {!collapsed && <div className="sidebar-label">{search !== '' ? '搜索结果' : '最近'}</div>}
 
-      <div className="sidebar-list">
+      <div className="pywebview-drag-region sidebar-list" onDoubleClick={toggleMaximize}>
         {conversations.map((conversation) => (
           <div
             key={conversation.id}
@@ -154,7 +172,7 @@ export function Sidebar({
               className="sidebar-link"
               title={conversation.title}
             >
-              <MessageIcon size={17} />
+              {collapsed && <MessageIcon size={17} />}
               {!collapsed && <span className="label">{conversation.title}</span>}
             </NavLink>
             {!collapsed && (
@@ -174,13 +192,13 @@ export function Sidebar({
         )}
       </div>
 
-      <div className="sidebar-bottom">
+      <div className="pywebview-drag-region sidebar-bottom" onDoubleClick={toggleMaximize}>
         <NavLink to="/knowledge" className="sidebar-item" title="知识库">
           <BookIcon size={17} />
           {!collapsed && <span className="label">知识库</span>}
         </NavLink>
         <NavLink to="/memories" className="sidebar-item" title="记忆">
-          <BookmarkIcon size={17} />
+          <BrainIcon size={17} />
           {!collapsed && <span className="label">记忆</span>}
         </NavLink>
         {plugins.map(({ id, label, path, Icon }) => (
@@ -190,7 +208,7 @@ export function Sidebar({
           </NavLink>
         ))}
         <NavLink to="/setup" className="sidebar-item" title="设置">
-          <PanelIcon size={17} />
+          <SettingsIcon size={17} />
           {!collapsed && <span className="label">设置</span>}
         </NavLink>
       </div>

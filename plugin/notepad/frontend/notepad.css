@@ -628,3 +628,37 @@
   font-size: 11.5px;
   color: var(--text-muted);
 }
+
+/* 弹窗窗口（桌面壳 /popup/notepad）里的快速呼出。遮罩是给主窗口内弹出
+   设计的，独立窗口里没有"背后内容"可透，只会渲染成一圈实色留白——
+   这里让卡片撑满窗口、去掉遮罩与圆角阴影，窗口边就是卡片边。
+   .popup-holder 是宿主 PopupWindow 挂载点的自有类（见其文件头）。 */
+.popup-holder .quick-note {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
+  background: none;
+}
+
+.popup-holder .quick-note-box {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 正文吃掉卡片剩余高度。内联的自动伸缩 height 不打架：flex: 1 的
+   flex-basis 是 0%，主轴尺寸由弹性分配决定，内联 height 被忽略。 */
+.popup-holder .quick-note-content {
+  flex: 1;
+  min-height: 108px;
+  max-height: none;
+}
+
+.popup-holder .quick-note-recents {
+  flex: 1;
+  max-height: none;
+}

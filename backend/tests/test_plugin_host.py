@@ -86,7 +86,7 @@ def service(core: CoreServices, plugin_root: Path) -> PluginService:
 @pytest.fixture
 def api_client(service: PluginService, tmp_path: Path) -> Iterator[TestClient]:
     runtime = Runtime(BootstrapStore(tmp_path / "bootstrap"))
-    runtime._services = service._current_services  # type: ignore[attr-defined]
+    runtime._services = service._current_services
     with TestClient(create_app(runtime)) as test_client:
         yield test_client
 

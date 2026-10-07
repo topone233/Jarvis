@@ -175,9 +175,10 @@ class CoreServices:
     skills: SkillService
     bash_tool: BashToolService
     run_registry: RunRegistry
-    # Assigned after construction: the PluginService needs this very instance
-    # to hand plugins a live context, which a constructor argument cannot be.
-    plugins: PluginService | None = None
+    # Built before the dataclass (it needs only the store) and handed in as a
+    # normal argument; the live services reach it afterwards via
+    # bind_services, which a constructor argument cannot do.
+    plugins: PluginService
 
     @classmethod
     def create(cls, data_directory: Path, secrets: SecretStore | None = None) -> CoreServices:
@@ -191,6 +192,7 @@ class CoreServices:
         context = ContextManager(store, provider, knowledge, skills)
         memory = MemoryService(store)
         bash_tool = BashToolService()
+        plugins = PluginService(store, PLUGIN_ROOT)
         services = cls(
             database=database,
             store=store,
@@ -201,11 +203,8 @@ class CoreServices:
             skills=skills,
             bash_tool=bash_tool,
             run_registry=RunRegistry(),
+            plugins=plugins,
         )
-        # Assigned before load_all: the ensure hooks resolve their context
-        # through services.plugins, which must already be in place.
-        plugins = PluginService(store, PLUGIN_ROOT)
-        services.plugins = plugins
         plugins.bind_services(services)
         plugins.load_all()
         return services

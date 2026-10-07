@@ -7,11 +7,12 @@
  * the same switch, in case the directory goes away underneath a running app.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router'
 
 import { checkHealth, onSetupRequired } from './api/client'
 import { Sidebar } from './components/Sidebar'
+import { WindowControls } from './components/WindowControls'
 import { useConfirm } from './hooks/useConfirm'
 import { useConversations } from './hooks/useConversations'
 import { useToast } from './hooks/useToast'
@@ -20,14 +21,20 @@ import { KnowledgePage } from './pages/KnowledgePage'
 import { MemoryPage } from './pages/MemoryPage'
 import { NewChatPage } from './pages/NewChatPage'
 import { SetupPage } from './pages/SetupPage'
+import { PopupWindow } from './plugins/PopupWindow'
+import { SHELL_NAVIGATE_EVENT, SHELL_NOTICE_EVENT, installShellBridge, toggleMaximize } from './plugins/shell'
 import { usePluginFrontends } from './plugins/registry'
 
 const COLLAPSED_KEY = 'jarvis.sidebar.collapsed'
 
 type Gate = { state: 'checking' } | { state: 'offline' } | { state: 'ok'; configured: boolean }
 
+/** 桌面壳弹窗窗口的路径：/popup/<pluginId>，插件 id 的字符集在 host 里钉死。 */
+const POPUP_ROUTE = /^\/popup\/([a-z0-9-]+)$/
+
 export function App() {
   const [gate, setGate] = useState<Gate>({ state: 'checking' })
+  const location = useLocation()
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -47,34 +54,77 @@ export function App() {
     return () => onSetupRequired(null)
   }, [])
 
+  // The desktop shell's bridge exists per page - the popup windows need it
+  // as much as the main one, and this is the one component every URL loads.
+  useEffect(() => {
+    installShellBridge()
+  }, [])
+
+  // 弹窗窗口的路径：过了 gate 就只渲染插件的 quickCapture，没有外壳。
+  // 未配置时桌面壳注册不出任何热键，弹窗窗口到不了这里，防御性给空白。
+  const popupMatch = POPUP_ROUTE.exec(location.pathname)
+
+  // 除弹窗外的一切状态都套上 app-root：主窗口无边框之后，拖拽区和窗口
+  // 按钮只有标题条提供，它必须在每个页面（含首次运行的全屏设置页）之上。
   if (gate.state === 'checking') {
-    return <div className="empty-state">正在连接 Jarvis…</div>
+    return (
+      <AppRoot>
+        <div className="pywebview-drag-region empty-state" onDoubleClick={toggleMaximize}>
+          正在连接 Jarvis…
+        </div>
+      </AppRoot>
+    )
   }
   if (gate.state === 'offline') {
     return (
-      <div className="empty-state">
-        <div>
-          <p>连不上 Jarvis 服务。</p>
-          <button
-            type="button"
-            className="button button-ghost"
-            onClick={() => void refreshHealth()}
-          >
-            重试
-          </button>
+      <AppRoot>
+        <div className="pywebview-drag-region empty-state" onDoubleClick={toggleMaximize}>
+          <div>
+            <p>连不上 Jarvis 服务。</p>
+            <button
+              type="button"
+              className="button button-ghost"
+              onClick={() => void refreshHealth()}
+            >
+              重试
+            </button>
+          </div>
         </div>
-      </div>
+      </AppRoot>
     )
+  }
+  if (popupMatch !== null) {
+    if (!gate.configured) {
+      return null
+    }
+    return <PopupWindow pluginId={popupMatch[1]} />
   }
   if (!gate.configured) {
     return (
-      <SetupPage
-        configured={false}
-        onConfigured={() => setGate({ state: 'ok', configured: true })}
-      />
+      <AppRoot>
+        <SetupPage
+          configured={false}
+          onConfigured={() => setGate({ state: 'ok', configured: true })}
+        />
+      </AppRoot>
     )
   }
-  return <Shell onConfigured={() => setGate({ state: 'ok', configured: true })} />
+  return (
+    <AppRoot>
+      <Shell onConfigured={() => setGate({ state: 'ok', configured: true })} />
+    </AppRoot>
+  )
+}
+
+/** 一列纵排的外壳：窗口控制是右上角的悬浮层（不占布局高度），页面内容
+ *  占满全部。弹窗不进来。 */
+function AppRoot({ children }: { children: ReactNode }) {
+  return (
+    <div className="app-root">
+      <WindowControls />
+      {children}
+    </div>
+  )
 }
 
 function Shell({ onConfigured }: { onConfigured(): void }) {
@@ -91,6 +141,24 @@ function Shell({ onConfigured }: { onConfigured(): void }) {
   // than taken from browser history: opening the app straight onto /setup leaves
   // no earlier page *inside* the app, and going back would leave it entirely.
   const [backTo, setBackTo] = useState('/')
+
+  useEffect(() => {
+    // The desktop shell talks to the main window through these: 唤出整页插件
+    // 时请求一次 SPA 跳转（整页刷新会把会话缓存丢掉），热键冲突之类的提示
+    // 则借道 toast。浏览器里这两个事件永远不来，监听是无害的空挂。
+    function onNavigate(event: Event) {
+      navigate((event as CustomEvent<string>).detail)
+    }
+    function onNotice(event: Event) {
+      toast.show((event as CustomEvent<string>).detail, 'bad')
+    }
+    window.addEventListener(SHELL_NAVIGATE_EVENT, onNavigate)
+    window.addEventListener(SHELL_NOTICE_EVENT, onNotice)
+    return () => {
+      window.removeEventListener(SHELL_NAVIGATE_EVENT, onNavigate)
+      window.removeEventListener(SHELL_NOTICE_EVENT, onNotice)
+    }
+  }, [navigate, toast])
 
   useEffect(() => {
     // Every full-screen page is excluded: what came before it is what its close

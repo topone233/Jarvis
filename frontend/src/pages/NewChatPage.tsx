@@ -9,6 +9,7 @@ import type { ConversationsController } from '../hooks/useConversations'
 import { useModelChoice } from '../hooks/useModelChoice'
 import { useQuickPrompts } from '../hooks/useQuickPrompts'
 import { setPendingImages } from '../pendingImages'
+import { toggleMaximize } from '../plugins/shell'
 
 export function NewChatPage({ conversations }: { conversations: ConversationsController }) {
   const navigate = useNavigate()
@@ -40,7 +41,7 @@ export function NewChatPage({ conversations }: { conversations: ConversationsCon
   }
 
   return (
-    <div className="hero">
+    <div className="pywebview-drag-region hero" onDoubleClick={toggleMaximize}>
       <div className="hero-inner">
         <h1 className="hero-title">有什么可以帮你的？</h1>
         <p className="hero-subtitle">问点什么，或者贴一段代码。</p>
