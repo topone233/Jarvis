@@ -110,7 +110,7 @@ export function summaryOf(row: AuditRow): string {
     parts.push(payload.reason)
   }
 
-  return parts.join(' · ')
+  return parts.join('，')
 }
 
 function compactedLine(payload: Record<string, unknown>): DetailLine[] {
@@ -326,7 +326,7 @@ function actionLine(item: unknown): string | null {
   const memory = item.memory
   const kind = KIND_LABELS[String(memory.kind ?? '')]
   const kindPart = kind === undefined ? '' : `[${kind}] `
-  let line = `${action} · ${kindPart}${String(memory.memory_key ?? '')}：${String(memory.content ?? '')}`
+  let line = `${action} ${kindPart}${String(memory.memory_key ?? '')}：${String(memory.content ?? '')}`
   if (item.action === 'forgotten' && typeof item.count === 'number' && item.count > 1) {
     line += `（连同同键的共 ${item.count} 条）`
   }

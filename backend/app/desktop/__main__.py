@@ -75,7 +75,7 @@ def _restore_sizing_styles(window: webview.Window) -> None:
     失败只意味着这个窗口退化为固定尺寸——不动启动流程，也不弹任何东西。
     """
     try:
-        hwnd = int(window.native.Handle.ToInt64())
+        hwnd = int(window.native.Handle.ToInt64())  # type: ignore[attr-defined]
         user32 = ctypes.windll.user32
         style = user32.GetWindowLongW(hwnd, GWL_STYLE)
         user32.SetWindowLongW(
@@ -99,7 +99,7 @@ def _strip_taskbar_icon(window: webview.Window) -> None:
     还在，不动启动流程。
     """
     try:
-        hwnd = int(window.native.Handle.ToInt64())
+        hwnd = int(window.native.Handle.ToInt64())  # type: ignore[attr-defined]
         user32 = ctypes.windll.user32
         exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         user32.SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle | WS_EX_TOOLWINDOW)
@@ -296,7 +296,7 @@ class Shell:
             return True
         try:
             if self.main_window is not None:
-                self.main_window.native.Hide()
+                self.main_window.native.Hide()  # type: ignore[attr-defined]
         except Exception:
             pass
         return False
@@ -420,7 +420,22 @@ class Shell:
         的配置请求挂上。派发后盯着挂载点（``.popup-holder`` 的子节点，核心
         自己拥有的类），没出现就补发，有界重试后放弃。全程占着热键线程
         ~1.6 秒的上限，对一次按键来说无感。
+
+        派发前先核对地址：弹窗页面可能被插件自己的页内跳转带离
+        ``/popup/<id>``——渲染成整个主应用、挂载点消失，唤出从此全废
+        （2026-10-08 事故）。跑偏就先拽回来，重载后的渲染竞速由下面的重试
+        循环兜底，不需要额外等 loaded。
         """
+        try:
+            pathname = window.evaluate_js("location.pathname")
+        except Exception:
+            pathname = None  # 页面尚不可读也按跑偏算：重定向是无害的
+        if pathname != f"/popup/{plugin_id}":
+            print(
+                f"[desktop] 弹窗 {plugin_id} 的页面跑偏到了 {pathname}，唤出前拽回。",
+                flush=True,
+            )
+            self._evaluate(window, f"location.href = {json.dumps(f'/popup/{plugin_id}')}")
         for _ in range(6):
             self._evaluate(
                 window,

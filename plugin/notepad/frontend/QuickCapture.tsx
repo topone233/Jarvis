@@ -2,19 +2,21 @@
  * 快速呼出弹窗：全局快捷键唤起，纯文本即记即存。
  *
  * 这是"不打断手头的事"的入口——参考系统便签的样式：新建/打开两个页签、
- * 标题可选、正文自动伸缩、底部字数，保存即关。富编辑留在 /notes 页，
- * 这里刻意只有一只 textarea。
+ * 标题可选、正文自动伸缩、底部字数，保存即关。「打开」里点一条便签就地
+ * 切到 NoteDetail 查看/编辑（NoteDetail 自己的生命周期），这里不导航——
+ * 桌面壳的弹窗窗口加载的是 /popup/notepad，一旦页内跳走，整个应用会被
+ * 塞进 520px 的小窗、唤出从此全废（2026-10-08 事故）。
  *
  * 快捷键从插件配置里读（capture_hotkey），插件设置变化时重读；解析不出
  * 有效的组合键就不挂监听，而不是猜一个。
  */
 
-import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 
 import { useToast } from '../../../frontend/src/hooks/useToast'
 import { CloseIcon } from '../../../frontend/src/components/icons'
 import { createNote, listNotes, readPluginConfig, type NoteSummary } from './api'
+import { NoteDetail } from './NoteDetail'
 import { formatHotkey, hotkeyMatches, parseHotkey, type HotkeyCombo } from '../../../frontend/src/plugins/hotkey'
 import { PLUGINS_CHANGED_EVENT } from '../../../frontend/src/plugins/registry'
 import { relativeTime } from './time'
@@ -23,11 +25,11 @@ const RECENTS_LIMIT = 8
 
 export function QuickCapture() {
   const toast = useToast()
-  const navigate = useNavigate()
 
   const [combo, setCombo] = useState<HotkeyCombo | null>(null)
   const [comboLabel, setComboLabel] = useState('')
   const [open, setOpen] = useState(false)
+  const [viewingId, setViewingId] = useState<string | null>(null)
   const [tab, setTab] = useState<'new' | 'open'>('new')
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
@@ -85,6 +87,12 @@ export function QuickCapture() {
 
   // While open: Esc closes (an IME mid-composition Esc belongs to the IME),
   // focus lands in the title, and the 打开 tab's list gets one fresh read.
+  const loadRecents = useCallback(() => {
+    listNotes({ limit: RECENTS_LIMIT })
+      .then((page) => setRecents(page.items))
+      .catch(() => setRecents([]))
+  }, [])
+
   useEffect(() => {
     if (!open) {
       return
@@ -96,10 +104,16 @@ export function QuickCapture() {
     }
     window.addEventListener('keydown', onKeyDown)
     titleRef.current?.focus()
-    listNotes({ limit: RECENTS_LIMIT })
-      .then((page) => setRecents(page.items))
-      .catch(() => setRecents([]))
+    loadRecents()
     return () => window.removeEventListener('keydown', onKeyDown)
+  }, [open, loadRecents])
+
+  // 卡片关闭时详情一并归位：Esc、✕、保存后自动收起、壳的合成热键收窗，
+  // 走到哪条路，下次唤出（或主窗口里再开）都是干净的卡片。
+  useEffect(() => {
+    if (!open) {
+      setViewingId(null)
+    }
   }, [open])
 
   // Grow with the content, capped so a pasted essay cannot cover the screen.
@@ -136,23 +150,39 @@ export function QuickCapture() {
   }
 
   function openNote(noteId: string) {
-    setOpen(false)
-    navigate(`/notes?note=${noteId}`)
+    // 就地切到详情，绝不在弹窗窗口里导航——见文件头的事故注。
+    setViewingId(noteId)
+  }
+
+  function backFromNote() {
+    setViewingId(null)
+    loadRecents() // 编辑过的标题和时间要在列表里反映出来
+  }
+
+  // 点在遮罩上（卡片外）收卡片；主窗口内的弹出和弹窗窗口里都一样。
+  function closeOnMask(event: MouseEvent<HTMLDivElement>) {
+    if (event.target === event.currentTarget) {
+      setOpen(false)
+    }
   }
 
   if (!open) {
     return null
   }
 
+  if (viewingId !== null) {
+    // 详情态：同一张卡片，内容交给 NoteDetail（头部、冲突横幅、编辑器）。
+    return (
+      <div className="quick-note" onClick={closeOnMask}>
+        <div className="quick-note-box" role="dialog" aria-label="快速记一条">
+          <NoteDetail noteId={viewingId} onBack={backFromNote} onClose={() => setOpen(false)} />
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div
-      className="quick-note"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) {
-          setOpen(false)
-        }
-      }}
-    >
+    <div className="quick-note" onClick={closeOnMask}>
       <div className="quick-note-box" role="dialog" aria-label="快速记一条">
         <div className="quick-note-tabs">
           <button

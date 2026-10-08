@@ -629,6 +629,23 @@
   color: var(--text-muted);
 }
 
+/* 单便签详情（点「打开」列表的一条进来）：头部沿用页签行的布局，标题
+   输入占掉中间的弹性空间；编辑器容器 .quick-note-editor 的高度看载体
+   ——主窗口的卡片里给正文 320px 的同款上限，弹窗里吃掉卡片剩余高度
+   （文末 popup 分支）。.notepad-editor 自带 flex:1 + 内部滚动。 */
+.quick-note-tabs .quick-note-title {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  padding: 0;
+}
+
+.quick-note-editor {
+  display: flex;
+  flex-direction: column;
+  height: 320px;
+}
+
 /* 弹窗窗口（桌面壳 /popup/notepad）里的快速呼出。遮罩是给主窗口内弹出
    设计的，独立窗口里没有"背后内容"可透，只会渲染成一圈实色留白——
    这里让卡片撑满窗口、去掉遮罩与圆角阴影，窗口边就是卡片边。
@@ -661,4 +678,10 @@
 .popup-holder .quick-note-recents {
   flex: 1;
   max-height: none;
+}
+
+.popup-holder .quick-note-editor {
+  flex: 1;
+  min-height: 0;
+  height: auto;
 }

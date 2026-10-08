@@ -15,14 +15,24 @@ import type { PendingInput } from '../runs/reducer'
 
 export interface UserInputCardProps {
   request: PendingInput
-  /** POSTs the answer. Failures are the caller's to report; the card only
-   *  stops offering buttons while the request is in flight. */
+  /** POSTs the answer. Failures surface in the card itself - the buttons wake
+   *  up again and the reason is named - because a run that is still waiting
+   *  deserves a second press, and one that is not deserves the truth. */
   onResolve(value: string): Promise<void>
+}
+
+/** The one-line reason a submission did not land, in words that invite a retry. */
+function describe(error: unknown): string {
+  if (error instanceof Error && error.message !== '') {
+    return error.message
+  }
+  return '回复没有送达，请再试一次。'
 }
 
 export function UserInputCard({ request, onResolve }: UserInputCardProps) {
   const [sending, setSending] = useState(false)
   const [draft, setDraft] = useState('')
+  const [failure, setFailure] = useState<string | null>(null)
   // The command clamps to three lines and opens on demand. A script of forty
   // lines would otherwise push the buttons below the bottom of the window,
   // where nothing can scroll to them.
@@ -58,14 +68,25 @@ export function UserInputCard({ request, onResolve }: UserInputCardProps) {
   const resolve = (value: string) => {
     if (sending || value === '') return
     setSending(true)
-    // The card clears when the server's own records say the wait is over;
-    // a failure just re-enables the buttons.
-    void onResolve(value).catch(() => setSending(false))
+    setFailure(null)
+    // A failed delivery is not the end of the conversation: the buttons wake
+    // up again and the reason is named, so the answer can be given a second
+    // time. The card clears when the server's own records say the wait is
+    // over - which is also why a success never touches `sending` here.
+    void onResolve(value).catch((cause: unknown) => {
+      setSending(false)
+      setFailure(describe(cause))
+    })
   }
 
   return (
     <div className="user-input-card" role="alertdialog" aria-label="运行在等待你的回复">
       <div className="user-input-head">模型需要你的回复才能继续</div>
+      {failure !== null && (
+        <div className="user-input-error" role="alert">
+          {failure}
+        </div>
+      )}
       {request.kind === 'bash' ? (
         <>
           <div className="user-input-command">

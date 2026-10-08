@@ -30,7 +30,6 @@ import type { ConversationsController } from '../hooks/useConversations'
 import { useModelChoice } from '../hooks/useModelChoice'
 import { useQuickPrompts } from '../hooks/useQuickPrompts'
 import { useStickToBottom } from '../hooks/useStickToBottom'
-import { useToast } from '../hooks/useToast'
 import { takePendingImages } from '../pendingImages'
 import { toggleMaximize } from '../plugins/shell'
 import { useRun } from '../runs/useRun'
@@ -144,16 +143,6 @@ export function ChatPage({
 
   const run = useRun(conversationId, () => void refresh())
   const { attach, cancel, regenerate, reconnect, resolveInput, send, turn, gaveUp } = run
-  const toast = useToast()
-
-  // A refused answer means the wait ended without us: another window answered
-  // first, or the run finished. The card clears with the server's own records;
-  // the toast is just the reason the button seemed not to work.
-  const onResolveInput = useCallback(
-    (value: string) =>
-      resolveInput(value).catch(() => toast.show('这个请求已经结束了，不需要再回复。', 'bad')),
-    [resolveInput, toast],
-  )
 
   const conversation = conversations.conversations.find((item) => item.id === conversationId)
   // What the composer is showing, and what the next turn will carry. The seed is
@@ -313,10 +302,7 @@ export function ChatPage({
         <div className="messages" ref={scrollRef}>
           {/* 消息列的空白处（消息上下的空档）是窗口拖拽区；点正文走子元素，
               文本选择不受影响。 */}
-          <div
-            className="pywebview-drag-region messages-inner"
-            onDoubleClick={toggleMaximize}
-          >
+          <div className="pywebview-drag-region messages-inner" onDoubleClick={toggleMaximize}>
             {loadError !== null && (
               <div className="load-error" role="alert">
                 <p className="load-error-title">{loadError}</p>
@@ -350,7 +336,10 @@ export function ChatPage({
         {turn?.pendingInput != null && (
           <div className="composer">
             <div className="composer-inner">
-              <UserInputCard request={turn.pendingInput} onResolve={onResolveInput} />
+              {/* The rejection reaches the card itself: it names the reason and
+                  wakes its buttons back up. Catching it here would leave a card
+                  whose buttons were pressed once and never worked again. */}
+              <UserInputCard request={turn.pendingInput} onResolve={resolveInput} />
             </div>
           </div>
         )}

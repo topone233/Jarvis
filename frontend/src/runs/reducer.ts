@@ -61,6 +61,12 @@ export interface TurnState {
   reasoning: string
   citations: Citation[]
   audits: AuditRow[]
+  /** The highest audit sequence applied. Every source of records - the store
+   *  backfill and the stream's own replay - sends the same ascending sequence,
+   *  so a record at or below this mark has already been applied and is
+   *  dropped; without the mark a reattach would lay the whole trail down a
+   *  second time. */
+  lastSequence: number
   /** What the run is waiting on, when it is waiting. */
   pendingInput: PendingInput | null
   phase: TurnPhase
@@ -90,6 +96,7 @@ export function createTurn(localId: string, seed?: TurnSeed): TurnState {
     reasoning: seed?.reasoning ?? '',
     citations: [],
     audits: [],
+    lastSequence: 0,
     pendingInput: null,
     phase: 'connecting',
     error: null,
@@ -255,21 +262,34 @@ function applyEvent(state: TurnState, event: RunEvent): TurnState {
  * ending record closes the stage's most recent open row, or opens its own when
  * it has none (a `/skill` step is announced completed, without a run-up).
  *
+ * Records reach this reducer along two roads that carry the same records -
+ * the store backfill and the stream's replay of everything it ever emitted -
+ * so a reattach delivers all of them a second time. The sequence is the
+ * producer's own per-run counter, ascending along both roads, which makes it
+ * the dedup mark: anything not ahead of what was applied is dropped. Dropping
+ * duplicates is not cosmetic - a replayed `running` record would open a second
+ * row whose closing record never comes, and that row would count seconds
+ * against the clock for the rest of the turn.
+ *
  * Audits keep arriving after the answer is complete - the memory write is
  * reported once the text is already on screen - so they are never gated on the
  * phase. Only text stops at a terminal event.
  */
 function upsertAudit(state: TurnState, record: RunEventRecord): TurnState {
+  if (record.sequence <= state.lastSequence) {
+    return state
+  }
+  const next = { ...state, lastSequence: record.sequence }
   let index = -1
   if (record.state !== 'running') {
-    for (let i = state.audits.length - 1; i >= 0; i -= 1) {
-      if (state.audits[i].stage === record.stage && state.audits[i].state === 'running') {
+    for (let i = next.audits.length - 1; i >= 0; i -= 1) {
+      if (next.audits[i].stage === record.stage && next.audits[i].state === 'running') {
         index = i
         break
       }
     }
   }
-  const previous = index === -1 ? null : state.audits[index]
+  const previous = index === -1 ? null : next.audits[index]
   const running = record.state === 'running'
   const row: AuditRow = {
     stage: record.stage,
@@ -290,11 +310,11 @@ function upsertAudit(state: TurnState, record: RunEventRecord): TurnState {
     endedAt: running ? null : record.created_at,
   }
   if (previous === null) {
-    return { ...state, audits: [...state.audits, row] }
+    return { ...next, audits: [...next.audits, row] }
   }
-  const audits = state.audits.slice()
+  const audits = next.audits.slice()
   audits[index] = row
-  return { ...state, audits }
+  return { ...next, audits }
 }
 
 function isTerminal(phase: TurnPhase): boolean {

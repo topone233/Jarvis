@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { stageMillis, toSeconds, totalMillis } from './duration'
+import { formatDuration, stageMillis, totalMillis } from './duration'
 import type { AuditRow } from './reducer'
 
 /** A stamp `seconds` after the same moment every `at()` shares. */
@@ -91,15 +91,23 @@ describe('totalMillis', () => {
   })
 })
 
-describe('toSeconds', () => {
-  it('shows two places', () => {
-    expect(toSeconds(0)).toBe('0.00')
-    expect(toSeconds(1000)).toBe('1.00')
-    expect(toSeconds(3140)).toBe('3.14')
+describe('formatDuration', () => {
+  it('keeps one decimal below ten seconds', () => {
+    expect(formatDuration(0)).toBe('0.0秒')
+    expect(formatDuration(3140)).toBe('3.1秒')
   })
 
-  it('rounds to the nearer hundredth', () => {
-    expect(toSeconds(3141)).toBe('3.14')
-    expect(toSeconds(3149)).toBe('3.15')
+  it('shows whole seconds from ten up', () => {
+    expect(formatDuration(10_400)).toBe('10秒')
+    expect(formatDuration(59_900)).toBe('59秒')
+  })
+
+  it('switches to minutes past the hour hand', () => {
+    expect(formatDuration(65_000)).toBe('1分5秒')
+    expect(formatDuration(600_000)).toBe('10分0秒')
+  })
+
+  it('never counts backwards into a negative', () => {
+    expect(formatDuration(-40)).toBe('0.0秒')
   })
 })

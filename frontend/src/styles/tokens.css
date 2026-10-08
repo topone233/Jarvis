@@ -70,9 +70,11 @@
   /* Two elevation tiers. The first layer of each is a 0.5px hairline: elevated
      surfaces draw no border of their own, the stroke rides in the shadow. The
      near layer gives the thing an edge, the far ones lift it off the page. */
-  --shadow-input: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(16, 24, 40, 0.04),
+  --shadow-input:
+    0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(16, 24, 40, 0.04),
     0 12px 32px rgba(16, 24, 40, 0.05);
-  --shadow-pop: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 2px 6px rgba(16, 24, 40, 0.05),
+  --shadow-pop:
+    0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 2px 6px rgba(16, 24, 40, 0.05),
     0 8px 24px rgba(16, 24, 40, 0.12);
   /* The small toss a knob casts on the track it rides - no hairline layer,
      just enough to lift a 16px circle off its pill. */
@@ -88,13 +90,25 @@
   --tooltip-bg: #212124;
   --toast-bg: #353638;
 
+  /* The UI stack is deepseek-harness's own (ui-theme base.css), read 2026-10-08:
+     PingFang ahead of YaHei so macOS CJK keeps its native face, and Segoe UI
+     carrying the Latin side on Windows. */
   --font-sans:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC',
-    'Hiragino Sans GB', Roboto, Helvetica, Arial, sans-serif;
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
   /* JetBrains Mono is bundled (see main.tsx) so code looks the same on every
      machine; the rest of the stack only speaks for glyphs it does not cover -
-     CJK comments, chiefly - and for the instant before the font arrives. */
-  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
+     CJK comments, chiefly - and for the instant before the font arrives. The
+     tail deliberately ends on real CJK faces rather than a bare `monospace`:
+     dsh's own code stack omits the generic family because on Windows it falls
+     back to SimSun, which is exactly the look nobody asked for. */
+  --font-mono:
+    'JetBrains Mono', 'SF Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier,
+    'PingFang SC', 'Microsoft YaHei';
+
+  /* The type scale, likewise dsh's: 14 content, 13 secondary, 12 meta, 11
+     fine print, 10 the rare badge. The sheets write these as literals; any
+     new size belongs to this scale, nothing between the rungs. */
 
   /* Motion: one curve, two durations. 0.1s for colour and opacity, 0.2s for
      anything that moves. */

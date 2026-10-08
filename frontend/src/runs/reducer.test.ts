@@ -346,6 +346,82 @@ describe('reduce', () => {
     const state = apply(run([]), { type: 'audits', records })
     expect(state.audits.map((row) => row.stage)).toEqual(['model_stream'])
   })
+
+  it('does not duplicate rows when the stream replays the backfilled records', () => {
+    // Attaching delivers every record twice - the store backfill, then the
+    // stream's own replay from zero. The same sequences must collapse onto the
+    // same rows, not lay the trail down a second time.
+    const records: RunEventRecord[] = [
+      {
+        id: 'e1',
+        run_id: 'run_1',
+        sequence: 1,
+        stage: 'context_retrieval',
+        state: 'completed',
+        payload: {},
+        created_at: RAN_AT,
+      },
+      {
+        id: 'e2',
+        run_id: 'run_1',
+        sequence: 2,
+        stage: 'model_stream',
+        state: 'completed',
+        payload: {},
+        created_at: DONE_AT,
+      },
+    ]
+    const state = apply(run([]), { type: 'audits', records })
+    // The stream replays the same two records, then the live trail goes on.
+    const replay: TurnAction[] = records.map((record) => ({
+      type: 'event',
+      event: audit(record.stage, record.state, record.sequence, record.created_at, record.payload),
+    }))
+    const replayed = apply(state, ...replay, {
+      type: 'event',
+      event: audit('knowledge_tool', 'completed', 3, DONE_AT),
+    })
+    expect(replayed.audits.map((row) => [row.sequence, row.stage])).toEqual([
+      [1, 'context_retrieval'],
+      [2, 'model_stream'],
+      [3, 'knowledge_tool'],
+    ])
+  })
+
+  it('closes the original row when a reattach lands mid-stage', () => {
+    // Backfill and replay both deliver the open stage's `running` record while
+    // the stage is still going. Without dedup that opens two rows, the closing
+    // record closes only the newer one, and the older counts seconds forever -
+    // the timer that keeps running after the answer is done.
+    const running: RunEventRecord = {
+      id: 'e4',
+      run_id: 'run_1',
+      sequence: 4,
+      stage: 'bash_tool',
+      state: 'running',
+      payload: { command: 'npm test' },
+      created_at: RAN_AT,
+    }
+    let state = apply(run([]), { type: 'audits', records: [running] })
+    // The replay delivers the same record again while the stage is open.
+    state = apply(state, {
+      type: 'event',
+      event: audit('bash_tool', 'running', 4, RAN_AT, { command: 'npm test' }),
+    })
+    expect(state.audits).toHaveLength(1)
+    // Then the stage closes on the live stream.
+    state = apply(state, {
+      type: 'event',
+      event: audit('bash_tool', 'completed', 5, DONE_AT, { command: 'npm test', output: 'ok' }),
+    })
+    expect(state.audits).toHaveLength(1)
+    expect(state.audits[0]).toMatchObject({
+      stage: 'bash_tool',
+      state: 'completed',
+      startedAt: RAN_AT,
+    })
+    expect(stageMillis(state.audits[0], 0)).toBe(3140)
+  })
 })
 
 describe('a run holding for user input', () => {

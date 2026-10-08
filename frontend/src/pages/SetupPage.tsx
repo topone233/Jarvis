@@ -40,7 +40,16 @@ import { RetrievalPanel } from './settings/RetrievalPanel'
 import { SkillsPanel } from './settings/SkillsPanel'
 import { ToolCallsPanel } from './settings/ToolCallsPanel'
 
-const TABS = ['directory', 'model', 'retrieval', 'prompts', 'quick', 'skills', 'tools', 'plugins'] as const
+const TABS = [
+  'directory',
+  'model',
+  'retrieval',
+  'prompts',
+  'quick',
+  'skills',
+  'tools',
+  'plugins',
+] as const
 
 type Tab = (typeof TABS)[number]
 

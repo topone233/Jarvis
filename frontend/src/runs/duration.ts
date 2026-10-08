@@ -8,8 +8,8 @@
  * afterwards, which is why a reloaded page shows the same seconds the live one
  * showed.
  *
- * Everything is in milliseconds; `toSeconds` is the one place that decides how
- * many places the screen shows.
+ * Everything is in milliseconds; `formatDuration` is the one place that
+ * decides how the screen says a length of time.
  */
 
 import type { AuditRow } from './reducer'
@@ -42,9 +42,23 @@ export function totalMillis(audits: AuditRow[], now: number): number | null {
   return Math.max(Math.max(...ends) - Math.min(...starts), 0)
 }
 
-/** Milliseconds as seconds to two places, which is the precision shown. */
-export function toSeconds(millis: number): string {
-  return (millis / 1000).toFixed(2)
+/**
+ * Milliseconds as the compact duration the strip shows, whole seconds up:
+ * `0.4秒` below a second, `3秒` up to the first minute, `1分5秒` past it -
+ * the step timers redraw many times a second, and a wall of hundredths makes
+ * every row twitch. The caller renders the digits in the mono stack; the
+ * units stay in the running text.
+ */
+export function formatDuration(millis: number): string {
+  const clamped = Math.max(0, millis)
+  const total = Math.floor(clamped / 1000)
+  if (total >= 60) {
+    return `${Math.floor(total / 60)}分${total % 60}秒`
+  }
+  if (clamped < 10_000) {
+    return `${(clamped / 1000).toFixed(1)}秒`
+  }
+  return `${total}秒`
 }
 
 function parsed(stamp: string | null): number | null {

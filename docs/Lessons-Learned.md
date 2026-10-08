@@ -916,3 +916,33 @@ create_window 的同步等待中，谁也动不了。
 动手；凡是会"等 GUI"的调用（同步属性 setter、Invoke）都不能出现在事件
 处理器里，除非确认处理器已在 GUI 线程上。查"窗口未响应"用
 `IsHungAppWindow`，一个 ctypes 调用就能定位是哪条线程停了泵。
+
+## 弹窗窗口里不允许存在任何页内导航出口
+
+**Symptom.** 呼出弹窗里点「打开」页签的一条便签后，弹窗变成"缩小版的
+整个对话窗口"，闪烁、✕ 关不掉、热键从此唤不出正常卡片，控制台反复
+`插件 notepad 的弹窗内容迟迟没有渲染`。
+
+**Root cause.** QuickCapture 的 `openNote` 用 `navigate('/notes?…')` 跳转
+——在弹窗窗口自己的 SPA 里离开了 `/popup/notepad`，App.tsx 随路由渲染
+整个主应用进 520px 小窗。`.popup-holder` 随之消失：`_deliver_summon` 的
+6 次合成热键每次都命中主应用挂的页内 quickCapture（一开一关 = 闪烁）
+然后宣告失败；窗口控制 ✕ 调 `hide_main()` 隐藏的是主窗口；弹窗被摘出
+任务栏后又无从壳外关闭——坏窗口永久滞留，每次热键重新示出。
+
+**Invariant.** 壳弹窗窗口（`/popup/<id>`）内的组件**永远不做 router
+导航**；"跳到别处看" 的需求一律变成组件内的视图切换（本次：
+NoteDetail 就地查看/编辑）。Python 侧配 `_deliver_summon` 的地址核对
+（跑偏先 `location.href` 拽回）作自愈护栏——前端约束防发生，护栏防复发。
+排查这类问题先看 `location.pathname` 是否还在 `/popup/<id>`。
+
+## CDP 探针里 `el.click() ?? false` 恒为 false
+
+**Symptom.** 探针的点击步全部报"没有落点"，但页面行为（卡片切换）明明
+发生了。
+
+**Root cause.** DOM 的 `click()` 返回 `undefined`，`?? false` 把它兜成
+false——点击生效了，表达式却在说谎。
+
+**Invariant.** CDP 派发点击用 IIFE 包装返回真实成败：
+`(() => { const el = …; if (el) { el.click(); return true } return false })()`。

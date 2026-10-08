@@ -220,7 +220,9 @@ export function TurnRail({
         </div>
         {preview !== null && (
           <div className="turn-preview" style={{ top: preview.top }}>
-            {preview.mark.prompt !== '' && <div className="turn-preview-q">{preview.mark.prompt}</div>}
+            {preview.mark.prompt !== '' && (
+              <div className="turn-preview-q">{preview.mark.prompt}</div>
+            )}
             {preview.mark.response !== '' && (
               <div className="turn-preview-a">{preview.mark.response}</div>
             )}

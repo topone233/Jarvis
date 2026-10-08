@@ -121,6 +121,15 @@ export function ThumbDownIcon(props: IconProps) {
   )
 }
 
+export function ArrowLeftIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M19 12H5" />
+      <path d="m11 6-6 6 6 6" />
+    </Icon>
+  )
+}
+
 export function ChevronRightIcon(props: IconProps) {
   return (
     <Icon {...props}>
@@ -280,6 +289,69 @@ export function WindowRestoreIcon(props: IconProps) {
     <Icon {...props}>
       <rect x="8.5" y="8.5" width="10" height="10" rx="1.5" />
       <path d="M5.5 15.5v-8a2 2 0 0 1 2-2h8" />
+    </Icon>
+  )
+}
+
+/* --- 执行步骤条的阶段图标：一类一步，见 ProgressStrip 的 STAGE_ICONS --- */
+
+/** Stacked sheets: folding old turns into a compaction summary. */
+export function LayersIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 2 2 7l10 5 10-5Z" />
+      <path d="m2 12 10 5 10-5" />
+      <path d="m2 17 10 5 10-5" />
+    </Icon>
+  )
+}
+
+/** A shell prompt: a command about to run. */
+export function TerminalIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m4 17 6-6-6-6" />
+      <path d="M12 19h8" />
+    </Icon>
+  )
+}
+
+/** A lightning bolt: loading a skill. */
+export function ZapIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M13 2 3 14h9l-1 8 10-12h-9Z" />
+    </Icon>
+  )
+}
+
+/** A wrench: the generic tool call. */
+export function WrenchIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+    </Icon>
+  )
+}
+
+/** A question mark in a circle: the model asking the user. */
+export function HelpCircleIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9.5" />
+      <path d="M9.2 9a3 3 0 0 1 5.8 1c0 2-3 2.6-3 4" />
+      <path d="M12 17.5h.01" />
+    </Icon>
+  )
+}
+
+/** A warning triangle: the run hit a ceiling it cannot pass. */
+export function AlertTriangleIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+      <path d="M12 9v4" />
+      <path d="M12 17.5h.01" />
     </Icon>
   )
 }

@@ -36,8 +36,8 @@ describe('detailLines', () => {
       }),
     )
     expect(lines).toEqual([
-      text('新增 · [偏好] 回复风格：喜欢简洁回答'),
-      text('忘记 · [事实] 主题：喜欢深色主题'),
+      text('新增 [偏好] 回复风格：喜欢简洁回答'),
+      text('忘记 [事实] 主题：喜欢深色主题'),
     ])
   })
 
@@ -54,7 +54,7 @@ describe('detailLines', () => {
         ],
       }),
     )
-    expect(lines[0]).toEqual(text('忘记 · [事实] 主题：旧内容（连同同键的共 2 条）'))
+    expect(lines[0]).toEqual(text('忘记 [事实] 主题：旧内容（连同同键的共 2 条）'))
   })
 
   it('shows a memory call as raw JSON plus the result the model read', () => {
@@ -77,7 +77,7 @@ describe('detailLines', () => {
         '{\n  "id": "call_1",\n  "name": "save_memory",\n  "arguments": "{\\"key\\":\\"主题\\"}"\n}',
       ),
       code('执行结果', '已保存记忆：主题'),
-      text('新增 · [事实] 主题：旧内容'),
+      text('新增 [事实] 主题：旧内容'),
     ])
   })
 
@@ -252,7 +252,7 @@ describe('summaryOf', () => {
       'rm -rf build',
     )
     expect(summaryOf(row('tool_call', 'failed', { reason: '重复命令已拦截' }))).toBe(
-      '失败 · 重复命令已拦截',
+      '失败，重复命令已拦截',
     )
   })
 })

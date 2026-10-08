@@ -22,7 +22,12 @@ import { MemoryPage } from './pages/MemoryPage'
 import { NewChatPage } from './pages/NewChatPage'
 import { SetupPage } from './pages/SetupPage'
 import { PopupWindow } from './plugins/PopupWindow'
-import { SHELL_NAVIGATE_EVENT, SHELL_NOTICE_EVENT, installShellBridge, toggleMaximize } from './plugins/shell'
+import {
+  SHELL_NAVIGATE_EVENT,
+  SHELL_NOTICE_EVENT,
+  installShellBridge,
+  toggleMaximize,
+} from './plugins/shell'
 import { usePluginFrontends } from './plugins/registry'
 
 const COLLAPSED_KEY = 'jarvis.sidebar.collapsed'

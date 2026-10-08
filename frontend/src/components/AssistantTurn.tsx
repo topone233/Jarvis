@@ -13,7 +13,7 @@ import type { Citation } from '../api/types'
 import { useCopy } from '../hooks/useCopy'
 import type { TurnState } from '../runs/reducer'
 import { MarkdownWithCitations } from './Markdown'
-import { ProgressStrip } from './ProgressStrip'
+import { ProgressStrip, type StripOutcome } from './ProgressStrip'
 import { ReasoningPanel } from './ReasoningPanel'
 import { CheckIcon, CopyIcon, RefreshIcon, ThumbDownIcon, ThumbUpIcon } from './icons'
 
@@ -47,6 +47,18 @@ export function AssistantTurn({
   // failure, because the answer below it is real and simply unfinished.
   const interrupted = turn.status === 'interrupted'
   const messageId = turn.assistantMessageId
+  // What the strip's header sentence says about how this turn ended - the
+  // interrupted verdict is checked before `failed`, exactly as the notice
+  // below is.
+  const outcome: StripOutcome = busy
+    ? 'running'
+    : turn.phase === 'cancelled'
+      ? 'cancelled'
+      : interrupted
+        ? 'interrupted'
+        : turn.phase === 'failed'
+          ? 'failed'
+          : 'completed'
   // Thinking moved onto the trail rows (one block per round, in position).
   // Runs that finished before that change have no reasoning in any row
   // payload - their thinking exists only as the accumulated metadata string,
@@ -60,7 +72,12 @@ export function AssistantTurn({
 
   return (
     <div className="turn">
-      <ProgressStrip audits={turn.audits} liveThinking={busy ? turn.reasoning : ''} />
+      <ProgressStrip
+        audits={turn.audits}
+        liveThinking={busy ? turn.reasoning : ''}
+        live={busy}
+        outcome={outcome}
+      />
       {!busy && turn.reasoning !== '' && !hasRowThinking && (
         <ReasoningPanel reasoning={turn.reasoning} thinking={false} />
       )}

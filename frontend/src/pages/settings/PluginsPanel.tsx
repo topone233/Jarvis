@@ -71,9 +71,7 @@ export function PluginsPanel() {
       setLoadError(null)
       notifyPluginsChanged()
       toast.show(
-        result.added.length > 0
-          ? `新载入 ${result.added.length} 个插件`
-          : '没有发现新插件',
+        result.added.length > 0 ? `新载入 ${result.added.length} 个插件` : '没有发现新插件',
       )
     } catch (cause) {
       setError(describe(cause))
@@ -262,7 +260,9 @@ function PluginField({
             }
           }}
         />
-        <span className="hint">点击框后按下组合键，Esc 取消；字母数字要带修饰键，F1–F12 可单独使用。</span>
+        <span className="hint">
+          点击框后按下组合键，Esc 取消；字母数字要带修饰键，F1–F12 可单独使用。
+        </span>
       </div>
     )
   }

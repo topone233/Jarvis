@@ -55,7 +55,10 @@ export function parseHotkey(text: string): HotkeyCombo | null {
   // 字母和数字必须带修饰键（否则打字就触发），功能键单独一个就成立——
   // 没有人用 F9 打字。
   const isFunctionKey = FUNCTION_KEY.test(combo.key)
-  if (combo.key === '' || (!isFunctionKey && !combo.ctrl && !combo.alt && !combo.shift && !combo.meta)) {
+  if (
+    combo.key === '' ||
+    (!isFunctionKey && !combo.ctrl && !combo.alt && !combo.shift && !combo.meta)
+  ) {
     return null
   }
   return combo
@@ -64,7 +67,11 @@ export function parseHotkey(text: string): HotkeyCombo | null {
 /** 归一化的显示串，修饰键按固定顺序，主键大写。 */
 export function formatHotkey(combo: HotkeyCombo): string {
   const parts = MODIFIERS.filter((modifier) => combo[modifier]).map((modifier) =>
-    modifier === 'ctrl' ? 'Ctrl' : modifier === 'meta' ? 'Win' : modifier[0].toUpperCase() + modifier.slice(1),
+    modifier === 'ctrl'
+      ? 'Ctrl'
+      : modifier === 'meta'
+        ? 'Win'
+        : modifier[0].toUpperCase() + modifier.slice(1),
   )
   return [...parts, combo.key].join('+')
 }

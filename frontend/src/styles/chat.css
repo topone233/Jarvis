@@ -169,17 +169,55 @@
 
 /* ---------- progress strip ---------- */
 
-/* No box either. These rows are steps in a list, and the dot at the head of
-   each one is already the list's left edge - a grey rectangle around four lines
-   of small text made the execution louder than the answer it explains. Dropping
-   the fill also drops the padding that went with it, which puts the dots on the
-   same left edge as the answer and the reasoning header. */
+/* The strip is one header sentence plus, when opened, the rows beneath it.
+   The header is the summary and the toggle in one; a hairline under it keeps
+   the steps apart from the answer they produced. */
 .progress-strip {
   display: flex;
   flex-direction: column;
-  gap: 3px;
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.progress-strip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 22px;
+  padding: 0 0 6px;
+  margin-bottom: 6px;
+  border-bottom: 0.5px solid var(--border);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.progress-strip-head:hover {
+  color: var(--text);
+}
+
+.progress-strip-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The digits of a duration sit in the mono stack, tabular, so the sentence
+   does not reshuffle itself while its seconds count up. */
+.progress-strip-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .progress-row {
@@ -195,6 +233,7 @@
   color: inherit;
   text-align: left;
   cursor: default;
+  overflow: hidden;
 }
 
 /* The whole row is a button when it has something to expand into; the look
@@ -210,10 +249,10 @@
   gap: 2px;
 }
 
-/* 16px puts the detail text on the same left edge as the stage label: the dot
-   (6px + 2px margin) plus the row gap is exactly that far in. */
+/* 21px puts the detail text on the same left edge as the stage label: the
+   glyph (13px) plus the row gap is exactly that far in. */
 .progress-detail-body {
-  padding-left: 16px;
+  padding-left: 21px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -221,7 +260,7 @@
 
 .progress-detail-line {
   color: var(--text-muted);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.55;
   overflow-wrap: anywhere;
   text-align: left;
@@ -316,7 +355,7 @@
 
    Drawn as a very wide background image slid sideways rather than as an
    absolutely positioned overlay, because the overlay would have to be clipped
-   by the row - which would also cut the left half off the running dot's halo. */
+   by the row, which would cut the band off at the row's own edge. */
 .progress-row.is-running {
   background-image: linear-gradient(
     90deg,
@@ -342,28 +381,21 @@
   }
 }
 
-.progress-dot {
+/* The row's glyph is the stage's kind of work, and its colour is the stage's
+   state: quiet ink for whatever is over, amber for the one in flight, red for
+   the one that broke. Nothing here moves - the running row's shimmer band is
+   the only life signal on the strip. */
+.progress-stage-icon {
   flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  margin-left: 2px;
-  border-radius: 50%;
-  background: var(--text-muted);
+  color: var(--text-muted);
 }
 
-.progress-row.is-running .progress-dot {
-  background: var(--warn);
-  animation:
-    pulse 1.4s ease-in-out infinite,
-    halo 1.4s ease-out infinite;
+.progress-row.is-running .progress-stage-icon {
+  color: var(--warn);
 }
 
-.progress-row.is-completed .progress-dot {
-  background: var(--ok);
-}
-
-.progress-row.is-failed .progress-dot {
-  background: var(--bad);
+.progress-row.is-failed .progress-stage-icon {
+  color: var(--bad-strong);
 }
 
 /* The name and its disclosure arrow travel together, and the pair takes the
@@ -384,7 +416,16 @@
   white-space: nowrap;
 }
 
+/* One line, always: the summary is the glance, the full text lives one click
+   away in the row's own details. Without the shrink-and-ellipsis a long
+   command refuses to shrink below its longest word and pushes the seconds
+   clean out of the row. */
 .progress-detail {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -413,42 +454,11 @@
   transform: rotate(90deg);
 }
 
-.progress-total {
-  margin-top: 4px;
-  color: var(--text-muted);
-  font-size: 12px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-@keyframes pulse {
-  50% {
-    opacity: 0.5;
-  }
-}
-
-/* A ring that grows out of the dot and fades as it goes, which is closer to a
-   breath than the opacity flicker above it is. */
-@keyframes halo {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 50%, transparent);
-  }
-  70%,
-  100% {
-    box-shadow: 0 0 0 6px transparent;
-  }
-}
-
 /* Motion is decoration here; nothing above stops being readable without it. */
 @media (prefers-reduced-motion: reduce) {
   .progress-row.is-running {
     animation: none;
     background-image: none;
-  }
-
-  .progress-row.is-running .progress-dot {
-    animation: none;
-    opacity: 1;
   }
 }
 
@@ -1015,6 +1025,15 @@
   color: var(--text-secondary);
 }
 
+/* Why the last delivery did not land, named where the buttons are: the run
+   may still be waiting, so the sentence has to leave a retry open. */
+.user-input-error {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--bad-strong);
+  overflow-wrap: anywhere;
+}
+
 /* The command, in its own bordered block. The block holds the frame - the
    fold bar closes it off from the inside - and the pre is just the text. It
    clamps to three lines: an approval card that grew with the script would
@@ -1169,7 +1188,7 @@
   border-radius: var(--radius-pill);
   background: var(--bg-active);
   color: var(--text-secondary);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1;
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
@@ -1374,7 +1393,7 @@
   padding: 0 8px 0 10px;
   border-radius: var(--radius-pill);
   color: var(--text-secondary);
-  font-size: 12.5px;
+  font-size: 12px;
   transition:
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
@@ -1504,7 +1523,7 @@
 
 .think-dial-label,
 .think-dial-value {
-  font-size: 12.5px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -2284,7 +2303,7 @@ button.citation-chip:hover {
 }
 
 .plugin-name {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
@@ -2306,7 +2325,7 @@ button.citation-chip:hover {
 .plugin-description {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -2325,7 +2344,7 @@ button.citation-chip:hover {
 /* The hotkey recorder shows a chord, so it reads as one even while empty. */
 .plugin-hotkey {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 /* The deleted section sits below the list, folded: it is where things go when
@@ -2494,7 +2513,7 @@ button.citation-chip:hover {
 .form-group-title {
   margin: 24px 0 12px;
   color: var(--text-muted);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -2517,7 +2536,7 @@ button.citation-chip:hover {
   border-radius: 4px;
   background: var(--bg-subtle);
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 11px;
   overflow-wrap: anywhere;
 }
 
@@ -2616,7 +2635,7 @@ button.citation-chip:hover {
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bad) 12%, var(--bg));
   color: var(--text-secondary);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -2670,7 +2689,7 @@ button.citation-chip:hover {
 
 .button-small {
   padding: 4px 11px;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .form-error {

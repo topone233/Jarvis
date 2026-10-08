@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$projectRoot = Split-Path -Parent $scriptRoot
+$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # Plugin frontends (plugin/*/frontend) import the packages installed under
 # frontend/node_modules, but node module resolution from plugin/ walks up to

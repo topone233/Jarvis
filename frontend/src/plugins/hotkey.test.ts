@@ -18,8 +18,20 @@ function keyEvent(parts: Partial<KeyboardEvent>): KeyboardEvent {
 
 describe('parsing the stored string', () => {
   it('reads a combo with modifiers in any case and order', () => {
-    expect(parseHotkey('alt+n')).toEqual({ ctrl: false, alt: true, shift: false, meta: false, key: 'N' })
-    expect(parseHotkey('Ctrl+Shift+N')).toEqual({ ctrl: true, alt: false, shift: true, meta: false, key: 'N' })
+    expect(parseHotkey('alt+n')).toEqual({
+      ctrl: false,
+      alt: true,
+      shift: false,
+      meta: false,
+      key: 'N',
+    })
+    expect(parseHotkey('Ctrl+Shift+N')).toEqual({
+      ctrl: true,
+      alt: false,
+      shift: true,
+      meta: false,
+      key: 'N',
+    })
   })
 
   it('reads function keys', () => {
@@ -36,8 +48,20 @@ describe('parsing the stored string', () => {
   })
 
   it('accepts win as an alias of the meta modifier, because that is what formatHotkey prints', () => {
-    expect(parseHotkey('Win+M')).toEqual({ ctrl: false, alt: false, shift: false, meta: true, key: 'M' })
-    expect(parseHotkey('Win+9')).toEqual({ ctrl: false, alt: false, shift: false, meta: true, key: '9' })
+    expect(parseHotkey('Win+M')).toEqual({
+      ctrl: false,
+      alt: false,
+      shift: false,
+      meta: true,
+      key: 'M',
+    })
+    expect(parseHotkey('Win+9')).toEqual({
+      ctrl: false,
+      alt: false,
+      shift: false,
+      meta: true,
+      key: '9',
+    })
   })
 })
 
@@ -58,7 +82,9 @@ describe('matching keyboard events', () => {
   it('matches the same chord, reading letters off event.code', () => {
     expect(hotkeyMatches(altN, keyEvent({ altKey: true, key: 'n', code: 'KeyN' }))).toBe(true)
     // Shift+N would be a different chord even though key is the letter.
-    expect(hotkeyMatches(altN, keyEvent({ altKey: true, shiftKey: true, key: 'N', code: 'KeyN' }))).toBe(false)
+    expect(
+      hotkeyMatches(altN, keyEvent({ altKey: true, shiftKey: true, key: 'N', code: 'KeyN' })),
+    ).toBe(false)
     expect(hotkeyMatches(altN, keyEvent({ ctrlKey: true, key: 'n', code: 'KeyN' }))).toBe(false)
   })
 

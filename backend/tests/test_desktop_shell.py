@@ -49,6 +49,8 @@ class FakeWindow:
         self.native = SimpleNamespace(Handle=SimpleNamespace(ToInt64=lambda: 0x1234))
         self.shown = False
         self.scripts: list[str] = []
+        # _deliver_summon 派发前读的地址；默认就是对的路由。
+        self.pathname = "/popup/notepad"
 
     def show(self) -> None:
         self.shown = True
@@ -58,6 +60,8 @@ class FakeWindow:
 
     def evaluate_js(self, script: str) -> object:
         self.scripts.append(script)
+        if "location.pathname" in script:
+            return self.pathname
         # _deliver_summon 轮询挂载点：答「已渲染」让它一轮就返回。
         return "document.querySelector" in script
 
@@ -142,3 +146,31 @@ class TestPopupLifecycle:
         windows[0].events.shown.fire()
 
         assert (-20, 0x00040000 | 0x00000080) in style_calls  # GWL_EXSTYLE += WS_EX_TOOLWINDOW
+
+
+class TestSummonGuard:
+    """唤出前的地址核对：跑偏的弹窗拽回，在轨的弹窗零动作。
+
+    弹窗页面被插件自己的页内跳转带离 /popup/<id> 后渲染成整个主应用，
+    挂载点消失、合成按键全打空——表现是热键按了闪几下、唤出永远无效
+    （2026-10-08 事故）。核对在派发前做：跑偏先 location.href 拽回，页面
+    重载的竞速由既有的重试循环兜底。
+    """
+
+    def test_off_route_popup_is_pulled_back_before_dispatch(self, monkeypatch) -> None:
+        shell, windows = make_shell(monkeypatch)
+        shell.on_activate("notepad")
+        windows[0].pathname = "/notes"  # 模拟弹窗被页内导航带跑
+
+        shell._deliver_summon(windows[0], "notepad")  # type: ignore[arg-type]
+
+        redirects = [script for script in windows[0].scripts if "location.href" in script]
+        assert redirects == ['location.href = "/popup/notepad"']
+        # 拽回之后照常派发，唤出链路不断。
+        assert any("summonPlugin" in script for script in windows[0].scripts)
+
+    def test_on_route_popup_is_left_alone(self, monkeypatch) -> None:
+        shell, windows = make_shell(monkeypatch)
+        shell.on_activate("notepad")
+
+        assert not any("location.href" in script for script in windows[0].scripts)
