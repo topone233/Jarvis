@@ -526,6 +526,12 @@
   font-size: 11px;
 }
 
+/* 页签行的图钉：默认跟随 icon-button 的 muted；固定开着换强调色，
+   一眼能看出当前是不是置顶。 */
+.icon-button.is-pinned {
+  color: var(--accent-ink);
+}
+
 .quick-note-title {
   width: 100%;
   padding: 6px 0;

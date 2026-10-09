@@ -229,6 +229,16 @@ export function CloseIcon(props: IconProps) {
   )
 }
 
+/** 图钉：按下（固定/置顶）还是松开，由按钮的按下态配色表达。 */
+export function PinIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z" />
+    </Icon>
+  )
+}
+
 /** Runs a code block: a play triangle. */
 export function PlayIcon(props: IconProps) {
   return (

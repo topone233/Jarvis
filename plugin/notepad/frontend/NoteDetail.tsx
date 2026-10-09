@@ -11,21 +11,29 @@
  * 组件消失那一刻立刻保存，不丢字。
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from "react";
 
-import { ApiError } from '../../../frontend/src/api/client'
-import { ArrowLeftIcon, CloseIcon } from '../../../frontend/src/components/icons'
-import { useToast } from '../../../frontend/src/hooks/useToast'
-import { getNote, updateNote } from './api'
-import { NoteEditor } from './NoteEditor'
+import { ApiError } from "../../../frontend/src/api/client";
+import {
+  ArrowLeftIcon,
+  CloseIcon,
+  PinIcon,
+} from "../../../frontend/src/components/icons";
+import { useToast } from "../../../frontend/src/hooks/useToast";
+import {
+  popupPluginId,
+  usePopupPin,
+} from "../../../frontend/src/plugins/shell";
+import { getNote, updateNote } from "./api";
+import { NoteEditor } from "./NoteEditor";
 
-type SaveState = 'saved' | 'dirty' | 'saving' | 'conflict'
+type SaveState = "saved" | "dirty" | "saving" | "conflict";
 
-const AUTOSAVE_MS = 1_500
+const AUTOSAVE_MS = 1_500;
 
 interface Draft {
-  title: string
-  content: string
+  title: string;
+  content: string;
 }
 
 export function NoteDetail({
@@ -33,156 +41,175 @@ export function NoteDetail({
   onBack,
   onClose,
 }: {
-  noteId: string
-  onBack(): void
-  onClose(): void
+  noteId: string;
+  onBack(): void;
+  onClose(): void;
 }) {
-  const toast = useToast()
-  const [draft, setDraft] = useState<Draft | null>(null)
-  const [saveState, setSaveState] = useState<SaveState>('saved')
-  const [editorKey, setEditorKey] = useState(0)
+  const toast = useToast();
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>("saved");
+  const [editorKey, setEditorKey] = useState(0);
 
   // The save path runs off refs, mirroring NotepadPage: a debounced timer
   // always touches the newest draft.
-  const draftRef = useRef<Draft | null>(null)
-  draftRef.current = draft
-  const baseRef = useRef('')
-  const dirtyRef = useRef(false)
-  const timerRef = useRef<number | null>(null)
+  const draftRef = useRef<Draft | null>(null);
+  draftRef.current = draft;
+  const baseRef = useRef("");
+  const dirtyRef = useRef(false);
+  const timerRef = useRef<number | null>(null);
 
   // Load the note. A note that vanished (deleted elsewhere) says so and goes
   // back - the list behind is the place to recover from.
   useEffect(() => {
-    let alive = true
+    let alive = true;
     getNote(noteId)
       .then((note) => {
         if (!alive) {
-          return
+          return;
         }
-        baseRef.current = note.updated_at
-        dirtyRef.current = false
-        setSaveState('saved')
-        setDraft({ title: note.title, content: note.content })
-        setEditorKey((key) => key + 1)
+        baseRef.current = note.updated_at;
+        dirtyRef.current = false;
+        setSaveState("saved");
+        setDraft({ title: note.title, content: note.content });
+        setEditorKey((key) => key + 1);
       })
       .catch((cause) => {
         if (!alive) {
-          return
+          return;
         }
         toast.show(
           cause instanceof ApiError && cause.status === 404
-            ? '这条便签不存在了。'
+            ? "这条便签不存在了。"
             : cause instanceof Error
               ? cause.message
-              : '这条便签读不出来了。',
-          'bad',
-        )
-        onBack()
-      })
+              : "这条便签读不出来了。",
+          "bad",
+        );
+        onBack();
+      });
     return () => {
-      alive = false
-    }
+      alive = false;
+    };
     // noteId never changes within a mounted instance: the parent rebuilds us
     // for another note. See the editor's own lifetime note in NoteEditor.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [noteId])
+  }, [noteId]);
 
-  useEffect(() => () => void flushSave(), [])
+  useEffect(() => () => void flushSave(), []);
 
   function scheduleSave() {
     if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current)
+      window.clearTimeout(timerRef.current);
     }
-    timerRef.current = window.setTimeout(() => void save(), AUTOSAVE_MS)
+    timerRef.current = window.setTimeout(() => void save(), AUTOSAVE_MS);
   }
 
   async function save(): Promise<void> {
     if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current)
-      timerRef.current = null
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
     if (!dirtyRef.current || draftRef.current === null) {
-      return
+      return;
     }
-    const snapshot = draftRef.current
-    dirtyRef.current = false
-    setSaveState('saving')
+    const snapshot = draftRef.current;
+    dirtyRef.current = false;
+    setSaveState("saving");
     try {
       const saved = await updateNote(noteId, {
         title: snapshot.title,
         content: snapshot.content,
         base_updated_at: baseRef.current,
-      })
-      baseRef.current = saved.updated_at
-      setSaveState('saved')
+      });
+      baseRef.current = saved.updated_at;
+      setSaveState("saved");
     } catch (cause) {
-      dirtyRef.current = true
+      dirtyRef.current = true;
       if (cause instanceof ApiError && cause.status === 409) {
-        setSaveState('conflict')
+        setSaveState("conflict");
       } else {
-        setSaveState('dirty')
-        toast.show('保存失败，稍后会自动重试。', 'bad')
+        setSaveState("dirty");
+        toast.show("保存失败，稍后会自动重试。", "bad");
       }
     }
   }
 
   async function flushSave(): Promise<void> {
     if (dirtyRef.current) {
-      await save()
+      await save();
     }
   }
 
   function markDirty(next: Partial<Draft>) {
-    setDraft((current) => (current === null ? current : { ...current, ...next }))
-    dirtyRef.current = true
-    setSaveState('dirty')
-    scheduleSave()
+    setDraft((current) =>
+      current === null ? current : { ...current, ...next },
+    );
+    dirtyRef.current = true;
+    setSaveState("dirty");
+    scheduleSave();
   }
 
   async function reloadFromDisk() {
-    const note = await getNote(noteId)
-    baseRef.current = note.updated_at
-    dirtyRef.current = false
-    setDraft({ title: note.title, content: note.content })
-    setEditorKey((key) => key + 1)
-    setSaveState('saved')
+    const note = await getNote(noteId);
+    baseRef.current = note.updated_at;
+    dirtyRef.current = false;
+    setDraft({ title: note.title, content: note.content });
+    setEditorKey((key) => key + 1);
+    setSaveState("saved");
   }
 
   async function overwriteAnyway() {
     if (draftRef.current === null) {
-      return
+      return;
     }
     try {
       const saved = await updateNote(noteId, {
         title: draftRef.current.title,
         content: draftRef.current.content,
-      })
-      baseRef.current = saved.updated_at
-      dirtyRef.current = false
-      setSaveState('saved')
-      toast.show('已按当前编辑内容覆盖保存')
+      });
+      baseRef.current = saved.updated_at;
+      dirtyRef.current = false;
+      setSaveState("saved");
+      toast.show("已按当前编辑内容覆盖保存");
     } catch (cause) {
-      toast.show(cause instanceof Error ? cause.message : '保存失败，请再试一次。', 'bad')
+      toast.show(
+        cause instanceof Error ? cause.message : "保存失败，请再试一次。",
+        "bad",
+      );
     }
   }
 
+  // 桌面壳的弹窗里头部也是标题条（与 QuickCapture 同一套契约）：行与保存
+  // 状态字挂拖拽类，图钉独立读壳的持久状态。主窗口里一切照旧。hook 必须
+  // 在下面的 draft 提前返回之前调——加载态和就绪态的 hook 数量要一致，
+  // 否则重渲染时 React 直接卸载整棵树（2026-10-09 白屏事故）。
+  const inPopup = popupPluginId(window.location.pathname) !== null;
+  const popupPin = usePopupPin();
+  const dragRegion = inPopup ? " pywebview-drag-region" : "";
+
   if (draft === null) {
-    return <p className="quick-note-empty">加载中…</p>
+    return <p className="quick-note-empty">加载中…</p>;
   }
 
   const saveLabel =
-    saveState === 'saving'
-      ? '保存中…'
-      : saveState === 'dirty'
-        ? '未保存'
-        : saveState === 'conflict'
-          ? '有冲突'
-          : '已保存'
+    saveState === "saving"
+      ? "保存中…"
+      : saveState === "dirty"
+        ? "未保存"
+        : saveState === "conflict"
+          ? "有冲突"
+          : "已保存";
 
   return (
     <>
-      <div className="quick-note-tabs">
-        <button type="button" className="icon-button" aria-label="返回列表" title="返回" onClick={onBack}>
+      <div className={`quick-note-tabs${dragRegion}`}>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="返回列表"
+          title="返回"
+          onClick={onBack}
+        >
           <ArrowLeftIcon size={15} />
         </button>
         <input
@@ -191,23 +218,54 @@ export function NoteDetail({
           placeholder="标题（可选）"
           onChange={(event) => markDirty({ title: event.target.value })}
           onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault()
+            if (event.key === "Enter") {
+              event.preventDefault();
             }
           }}
         />
-        <span className={`notepad-save-state is-${saveState}`}>{saveLabel}</span>
-        <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}>
+        <span className={`notepad-save-state is-${saveState}${dragRegion}`}>
+          {saveLabel}
+        </span>
+        {popupPin !== null && (
+          <button
+            type="button"
+            className={`icon-button${popupPin.pinned ? " is-pinned" : ""}`}
+            aria-label={
+              popupPin.pinned ? "取消固定" : "固定（切到其他应用时保持显示）"
+            }
+            aria-pressed={popupPin.pinned}
+            title={
+              popupPin.pinned ? "取消固定" : "固定：切到其他应用时保持显示"
+            }
+            onClick={popupPin.toggle}
+          >
+            <PinIcon size={15} />
+          </button>
+        )}
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="关闭"
+          onClick={onClose}
+        >
           <CloseIcon size={15} />
         </button>
       </div>
-      {saveState === 'conflict' && (
+      {saveState === "conflict" && (
         <div className="form-error notepad-conflict">
           这条便签在保存前被外部修改了（可能在 Typora 或其他编辑器里）。
-          <button type="button" className="button button-ghost button-small" onClick={() => void reloadFromDisk()}>
+          <button
+            type="button"
+            className="button button-ghost button-small"
+            onClick={() => void reloadFromDisk()}
+          >
             读取磁盘上的版本
           </button>
-          <button type="button" className="button button-ghost button-small" onClick={() => void overwriteAnyway()}>
+          <button
+            type="button"
+            className="button button-ghost button-small"
+            onClick={() => void overwriteAnyway()}
+          >
             用我的版本覆盖
           </button>
         </div>
@@ -217,13 +275,16 @@ export function NoteDetail({
           key={editorKey}
           value={draft.content}
           onChange={(markdown) => {
-            if (draftRef.current !== null && markdown !== draftRef.current.content) {
-              markDirty({ content: markdown })
+            if (
+              draftRef.current !== null &&
+              markdown !== draftRef.current.content
+            ) {
+              markDirty({ content: markdown });
             }
           }}
           placeholder="写点什么……"
         />
       </div>
     </>
-  )
+  );
 }

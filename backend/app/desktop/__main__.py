@@ -23,9 +23,12 @@ uvicorn 服务线程（复用已跑的后端，否则自己起一个）、Regist
 唤出走 ``on_activate``：``quick_capture`` 插件切换无边框置顶弹窗窗口
 （``/popup/<id>`` 页面只渲染插件的 quickCapture 组件）；其余插件唤出主
 窗口并跳到 ``summon_path``。弹窗不占任务栏，被壳外关闭（任务栏、Alt+F4）
-时由 ``closed`` 事件清账，下次唤出重建新窗。Python 只发 pluginId——组合
-键到合成 keydown 的翻译在前端 ``frontend/src/plugins/shell.ts``，热键语
-义仍然只有 hotkey.ts 一处。
+时由 ``closed`` 事件清账，下次唤出重建新窗。弹窗卡片的页签行是拖拽区
+（「只认直接目标」的契约与主窗口一致，类由插件前端在弹窗页里挂），拖动
+后的位置与图钉的固定（置顶）状态持久化在 bootstrap 目录的
+``shell_windows.json``（``window_state.py``），重建新窗与壳重启都恢复。
+Python 只发 pluginId——组合键到合成 keydown 的翻译在前端
+``frontend/src/plugins/shell.ts``，热键语义仍然只有 hotkey.ts 一处。
 """
 
 from __future__ import annotations
@@ -43,8 +46,10 @@ import httpx
 import uvicorn
 import webview
 
+from app.config import default_bootstrap_dir
 from app.desktop import autostart, tray
 from app.desktop.hotkeys import HotkeyManager
+from app.desktop.window_state import PopupWindowState, WindowStateStore
 
 BACKEND_PORT = 8787
 
@@ -116,6 +121,13 @@ FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 POPUP_WIDTH = 520
 POPUP_HEIGHT = 500
 
+#: 拖动后位置的落盘防抖：moved 事件在拖动中连发，停手这才算数。
+POPUP_SAVE_DELAY_SECONDS = 0.4
+#: 恢复保存位置时的可见性门槛：窗口至少要露出这么一块（够抓住拖回来），
+#: 显示器拔了、分辨率变了才不至于把弹窗恢复到看不见的地方。
+POPUP_MIN_VISIBLE_WIDTH = 80
+POPUP_MIN_VISIBLE_HEIGHT = 48
+
 
 @dataclass
 class SummonInfo:
@@ -184,6 +196,16 @@ class DesktopBridge:
     def hide_popup(self, plugin_id: str) -> None:
         self._shell.hide_popup(plugin_id)
 
+    # 弹窗页签行的图钉（frontend/src/plugins/shell.ts 的 usePopupPin），
+    # 两端各写一半的契约，同上面几个方法。
+
+    def get_popup_pin(self, plugin_id: str) -> bool:
+        """弹窗页挂载时读「固定」的当前值；没有记录给默认（固定开）。"""
+        return self._shell.window_state.popup(plugin_id).pinned
+
+    def set_popup_pin(self, plugin_id: str, pinned: bool) -> None:
+        self._shell.set_popup_pin(plugin_id, bool(pinned))
+
     # 窗口控制（frontend/src/components/WindowControls.tsx）的三个入口。
 
     def minimize_main(self) -> None:
@@ -216,6 +238,12 @@ class Shell:
         # （WinForms 的 on_resize 触发，Win+方向键这类系统操作也会经过），
         # 所以标题条的 □/❐ 和系统状态不会走散。
         self.maximized = False
+        # 弹窗的持久状态（位置/固定）：文件在 bootstrap 目录，几何是机器级
+        # UI 状态，不随数据目录走。
+        self.window_state = WindowStateStore(default_bootstrap_dir() / "shell_windows.json")
+        # 拖动落盘的防抖 Timer 与最新位置，按插件各一条（见 _on_popup_moved）。
+        self._popup_save_timers: dict[str, threading.Timer] = {}
+        self._popup_positions: dict[str, tuple[int, int]] = {}
 
     def run(self, hidden: bool = False) -> None:
         self.backend.ensure()
@@ -412,6 +440,19 @@ class Shell:
             window.show()
             self.visible.add(plugin_id)
             self._deliver_summon(window, plugin_id)
+            # 固定（置顶）在窗口完全显示后再落实：创建参数 on_top= 在
+            # winforms 后端不生效（2026-10-09 实测 WS_EX_TOPMOST 不在），
+            # shown 一响就动窗口也太早——那时 SetWindowPos 直接失败
+            # （rc=0）。运行期的公开 setter 实测可靠，此刻窗口已安定，
+            # 与图钉切换走的是同一条路。
+            self._apply_popup_pin(window, plugin_id)
+
+    def _apply_popup_pin(self, window: webview.Window, plugin_id: str) -> None:
+        """按持久状态落实置顶。每次唤出都做一遍：自愈，也覆盖重建的新窗。"""
+        try:
+            window.on_top = self.window_state.popup(plugin_id).pinned
+        except Exception as error:
+            print(f"[desktop] 落实弹窗置顶失败：{error}", flush=True)
 
     def _deliver_summon(self, window: webview.Window, plugin_id: str) -> None:
         """把唤出可靠地送进插件：派发合成按键，直到插件内容真的渲染出来。
@@ -452,15 +493,35 @@ class Shell:
                 return
         print(f"[desktop] 插件 {plugin_id} 的弹窗内容迟迟没有渲染，唤出可能没有生效。", flush=True)
 
-    def _create_popup(self, plugin_id: str) -> webview.Window:
-        x = None
-        y = None
+    def _default_popup_position(self) -> tuple[int | None, int | None]:
+        """首次出现的位置：主屏水平居中、垂直 18%。拿不到屏幕信息就给
+        None，让 pywebview 自己居中。"""
         try:
             screen = webview.screens[0]
             x = screen.x + (screen.width - POPUP_WIDTH) // 2
             y = screen.y + int(screen.height * 0.18)
+            return x, y
         except Exception:
-            pass  # 拿不到屏幕信息就让 pywebview 自己居中
+            return None, None
+
+    def _popup_position(self, state: PopupWindowState) -> tuple[int | None, int | None]:
+        """恢复保存的位置，前提是它仍然可见：窗口至少露出 80×48px 的一块
+        （够抓住拖回来）。显示器拔了、分辨率变了就回默认位置。"""
+        if state.x is None or state.y is None:
+            return self._default_popup_position()
+        try:
+            visible = any(
+                screen.x <= state.x < screen.x + screen.width - POPUP_MIN_VISIBLE_WIDTH
+                and screen.y <= state.y < screen.y + screen.height - POPUP_MIN_VISIBLE_HEIGHT
+                for screen in webview.screens
+            )
+        except Exception:
+            return self._default_popup_position()
+        return (state.x, state.y) if visible else self._default_popup_position()
+
+    def _create_popup(self, plugin_id: str) -> webview.Window:
+        state = self.window_state.popup(plugin_id)
+        x, y = self._popup_position(state)
         window = webview.create_window(
             f"Jarvis · {plugin_id}",
             f"{self.base}/popup/{plugin_id}",
@@ -471,7 +532,7 @@ class Shell:
             y=y,
             frameless=True,
             easy_drag=False,
-            on_top=True,
+            on_top=state.pinned,
             hidden=True,
             focus=False,
         )
@@ -487,9 +548,37 @@ class Shell:
         # worker 线程上派发，任何会 Invoke 回 GUI 的属性调用都会和
         # create_window 的同步等待互相卡死（2026-10-07 实测）。
         window.events.shown += lambda: _strip_taskbar_icon(window)
+        # 拖动落盘：moved 带逻辑像素坐标（winforms 的 on_move 除过 DPI 缩放，
+        # 与 create_window 的 x/y 同一坐标系）。拖动中连发，防抖见
+        # _on_popup_moved；回调闭包住 plugin_id。
+        window.events.moved += lambda x, y: self._on_popup_moved(plugin_id, x, y)
         if not window.events.loaded.wait(10.0):
             print(f"[desktop] 弹窗页面 {plugin_id} 加载超时。", flush=True)
         return window
+
+    def _on_popup_moved(self, plugin_id: str, x: int, y: int) -> None:
+        """拖动中的位置记下、防抖落盘。回调跑在 pywebview 的事件线程里，
+        文件 IO 交给 Timer；连发的 moved 只留最新一个待写值。"""
+        self._popup_positions[plugin_id] = (x, y)
+        previous = self._popup_save_timers.get(plugin_id)
+        if previous is not None:
+            previous.cancel()
+        timer = threading.Timer(POPUP_SAVE_DELAY_SECONDS, self._flush_popup_save, args=(plugin_id,))
+        self._popup_save_timers[plugin_id] = timer
+        timer.start()
+
+    def _flush_popup_save(self, plugin_id: str) -> None:
+        """把待写位置立刻落盘（防抖 Timer 到点，或销毁弹窗前的收尾）。"""
+        timer = self._popup_save_timers.pop(plugin_id, None)
+        if timer is not None:
+            timer.cancel()
+        position = self._popup_positions.get(plugin_id)
+        if position is None:
+            return
+        try:
+            self.window_state.update_popup(plugin_id, x=position[0], y=position[1])
+        except Exception as error:
+            print(f"[desktop] 弹窗 {plugin_id} 的位置保存失败：{error}", flush=True)
 
     def _on_popup_closed(self, plugin_id: str) -> None:
         """弹窗被壳外关闭：摘掉引用与可见标记，下一次唤出重建新窗。"""
@@ -507,7 +596,26 @@ class Shell:
             pass
         self.visible.discard(plugin_id)
 
+    def set_popup_pin(self, plugin_id: str, pinned: bool) -> None:
+        """图钉开关：改运行中窗口的置顶并持久化。
+
+        先存后应用：应用失败（窗口正巧没了）时状态文件已经对齐，下次
+        重建照恢复。弹窗不在则跳过应用——页面比窗口活得久的滞后调用。
+        """
+        try:
+            self.window_state.update_popup(plugin_id, pinned=pinned)
+        except Exception as error:
+            print(f"[desktop] 弹窗 {plugin_id} 的固定状态保存失败：{error}", flush=True)
+        window = self.popups.get(plugin_id)
+        if window is None:
+            return
+        try:
+            window.on_top = pinned
+        except Exception as error:
+            print(f"[desktop] 弹窗 {plugin_id} 的置顶切换失败：{error}", flush=True)
+
     def destroy_popup(self, plugin_id: str) -> None:
+        self._flush_popup_save(plugin_id)  # 拖完就 Alt+F4，最后 0.4s 的位移不能丢
         window = self.popups.pop(plugin_id, None)
         self.visible.discard(plugin_id)
         if window is not None:

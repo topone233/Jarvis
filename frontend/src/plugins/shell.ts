@@ -11,6 +11,8 @@
  * 不受影响。
  */
 
+import { useCallback, useEffect, useState } from 'react'
+
 import { listPlugins } from '../api/plugins'
 import { parseHotkey, syntheticInit } from './hotkey'
 import { PLUGINS_CHANGED_EVENT } from './registry'
@@ -20,6 +22,9 @@ interface PywebviewApi {
   api: {
     refresh_hotkeys(): unknown
     hide_popup(pluginId: string): unknown
+    /** 弹窗页签行图钉（usePopupPin）→ Shell 的持久状态，两端各写一半。 */
+    get_popup_pin(pluginId: string): boolean | Promise<boolean>
+    set_popup_pin(pluginId: string, pinned: boolean): unknown
     /** 窗口控制按钮（WindowControls.tsx）→ Python Shell 的同名方法，两端各写一半。 */
     minimize_main(): unknown
     toggle_maximize_main(): unknown
@@ -96,4 +101,81 @@ export function installShellBridge(): void {
   window.addEventListener(PLUGINS_CHANGED_EVENT, () => {
     void shellApi()?.refresh_hotkeys()
   })
+}
+
+/** 弹窗页（/popup/<pluginId>）里的 pluginId；非弹窗路径给 null。 */
+export function popupPluginId(pathname: string): string | null {
+  const match = /^\/popup\/(.+?)\/?$/.exec(pathname)
+  return match === null ? null : match[1]
+}
+
+export interface PopupPin {
+  pinned: boolean
+  toggle(): void
+}
+
+/**
+ * 弹窗页签行的「固定」（置顶）状态。返回 null 表示这里没有图钉可渲染：
+ * 不在弹窗页（主窗口的页内卡片、浏览器 dev），或还没从壳读到初始值。
+ *
+ * 固定的真相在 Python（Shell 的 window_state），这里只镜像给按钮着色：
+ * 挂载时读一次（pywebview 注入迟于页面脚本，没就绪就等 pywebviewready），
+ * 切换时乐观翻转、失败回滚。同一弹窗的新建/详情两个视图各自调一次挂载，
+ * 读到的都是 Python 里的最新值，不需要互相穿 props。
+ */
+export function usePopupPin(): PopupPin | null {
+  const [pluginId] = useState(() =>
+    typeof window === 'undefined' ? null : popupPluginId(window.location.pathname),
+  )
+  const [pinned, setPinned] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    if (pluginId === null) {
+      return
+    }
+    let alive = true
+    function read() {
+      try {
+        const value = window.pywebview?.api.get_popup_pin(pluginId as string)
+        Promise.resolve(value)
+          .then((result) => {
+            if (alive && typeof result === 'boolean') {
+              setPinned(result)
+            }
+          })
+          .catch(() => {})
+      } catch {
+        // 页面跑在无壳环境（浏览器 dev 的 /popup 降级入口）：没有图钉。
+      }
+    }
+    if (window.pywebview?.api) {
+      read()
+    } else {
+      window.addEventListener('pywebviewready', read, { once: true })
+    }
+    return () => {
+      alive = false
+      window.removeEventListener('pywebviewready', read)
+    }
+  }, [pluginId])
+
+  const toggle = useCallback(() => {
+    if (pluginId === null || pinned === null) {
+      return
+    }
+    const next = !pinned
+    setPinned(next)
+    try {
+      Promise.resolve(window.pywebview?.api.set_popup_pin(pluginId, next)).catch(() => {
+        setPinned(pinned) // 壳没接住：回滚到切换前的真相
+      })
+    } catch {
+      setPinned(pinned)
+    }
+  }, [pluginId, pinned])
+
+  if (pluginId === null || pinned === null) {
+    return null
+  }
+  return { pinned, toggle }
 }
