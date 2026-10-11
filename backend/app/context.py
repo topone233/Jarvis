@@ -181,7 +181,20 @@ class ContextManager:
         conversation_id: str,
         profile: dict[str, Any],
         user_query: str,
+        *,
+        has_documents: bool | None = None,
     ) -> ContextBundle:
+        """This turn's prompt: history fitted to the budget, memories, and
+        whatever the knowledge base contributed.
+
+        `has_documents` is the caller's answer to "does this project have any
+        knowledge documents at all", read once per run for the tool list and
+        handed in so the build does not ask the database the same question
+        again; None (every direct caller but the run loop) means look it up
+        here. With no documents there is nothing to search, so the whole
+        search - FTS, the query embedding, the rerank pass - is skipped
+        instead of paying an API call for an empty index.
+        """
         conversation = self.store.get_conversation(conversation_id)
         artifact = self.store.get_latest_context_artifact(conversation_id)
         candidates = self.store.list_memories(
@@ -191,6 +204,8 @@ class ContextManager:
         # An image-only message has no words to search with; an empty query is
         # not an answer to any question, so nothing is looked up at all.
         has_query = bool(user_query.strip())
+        if has_documents is None:
+            has_documents = self.store.has_knowledge_documents(conversation["project_id"])
         embedding_spec = self.store.get_retrieval_spec("embedding")
         query_vector: list[float] | None = None
         if embedding_spec and has_query and candidates and not self.is_forget_request(user_query):
@@ -206,7 +221,7 @@ class ContextManager:
                 project_id=conversation["project_id"],
                 query_vector=query_vector,
             )
-            if has_query
+            if has_query and has_documents
             else []
         )
         # The number the system instruction shows is the number the screen

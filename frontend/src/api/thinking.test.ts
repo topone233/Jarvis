@@ -3,12 +3,12 @@ import { describe, expect, it } from 'vitest'
 import { THINKING_LEVELS, levelAt, levelIndex } from './thinking'
 
 describe('the thinking dial', () => {
-  // The backend validates this against a Python Literal with the same four
+  // The backend validates this against a Python Literal with the same six
   // values, and nothing links the two languages. So this is the only place the
-  // contract is written down on this side: reorder the slider and the wire
+  // contract is written down on this side: reorder the segments and the wire
   // changes with it, silently.
-  it('has the four stops the backend accepts, in the order the slider draws them', () => {
-    expect(THINKING_LEVELS).toEqual(['off', 'low', 'high', 'max'])
+  it('has the six stops the backend accepts, in the order the segments draw them', () => {
+    expect(THINKING_LEVELS).toEqual(['off', 'low', 'medium', 'high', 'xhigh', 'max'])
   })
 
   // The slider's value is a number and everything else is a level, so the two

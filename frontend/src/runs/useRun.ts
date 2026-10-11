@@ -38,6 +38,10 @@ let localCounter = 0
 export interface RunChoice {
   chatModel: string
   level: ThinkingLevel
+  /** The profile the choice pinned, when it pinned one. Left out of the wire
+   *  entirely while null: the backend then falls back to the conversation's
+   *  own profile, which is what "never picked anything" means. */
+  profileId?: string | null
 }
 
 /** The body of a request that starts a run: the choice plus whatever else. */
@@ -45,6 +49,9 @@ function choiceBody(choice: RunChoice, rest: Record<string, unknown>): string {
   return JSON.stringify({
     ...rest,
     thinking: choice.level,
+    // The pinned profile goes first because the model name is only meaningful
+    // on the endpoint it was listed from.
+    ...(choice.profileId ? { model_profile_id: choice.profileId } : {}),
     // Left out rather than sent empty: the schema refuses a blank model name,
     // and naming no model is how "the profile's own" is said.
     ...(choice.chatModel === '' ? {} : { chat_model: choice.chatModel }),

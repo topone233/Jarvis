@@ -18,7 +18,11 @@ from app.settings import (
 # to think has no single spelling, so the profile's "thinking off" fragment goes
 # out as written. The other three are one name this server sets itself, so they
 # send `reasoning_effort` and nothing else. See `provider._thinking_fields`.
-ThinkingLevel = Literal["off", "low", "high", "max"]
+# The thinking dial's stops. "off" is the profile's own business; the rest go
+# on the wire verbatim as `reasoning_effort`, in the providers' own vocabulary -
+# which is why the ladder is theirs to extend (xhigh and max are spellings some
+# endpoints know and others will refuse, a choice the caller makes per run).
+ThinkingLevel = Literal["off", "low", "medium", "high", "xhigh", "max"]
 
 
 class SetupRequest(BaseModel):

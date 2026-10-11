@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
+
+_last_stamp_us = 0
+_stamp_lock = threading.Lock()
 
 
 def new_id() -> str:
@@ -12,7 +16,27 @@ def new_id() -> str:
 
 
 def utc_now() -> str:
-    return datetime.now(UTC).isoformat()
+    """A UTC ISO stamp, strictly increasing within the process.
+
+    The coarse Windows clock (15.6ms ticks on CPython 3.12) hands identical
+    stamps to writes that land in the same tick, and lists everywhere sort on
+    these strings - two notes saved back-to-back would order by whatever the
+    filesystem glob feels like. A repeat is bumped by one microsecond, which
+    makes the sort total. The value is a sort key and a conflict token, not a
+    clock reading, so the invisible skew inside one tick costs nothing.
+    """
+    global _last_stamp_us
+    with _stamp_lock:
+        now = datetime.now(UTC)
+        stamp_us = int(now.timestamp()) * 1_000_000 + now.microsecond
+        if stamp_us <= _last_stamp_us:
+            stamp_us = _last_stamp_us + 1
+        _last_stamp_us = stamp_us
+    return (
+        datetime.fromtimestamp(stamp_us // 1_000_000, UTC)
+        .replace(microsecond=stamp_us % 1_000_000)
+        .isoformat()
+    )
 
 
 def json_dump(value: Any) -> str:

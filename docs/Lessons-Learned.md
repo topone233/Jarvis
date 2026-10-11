@@ -946,3 +946,34 @@ false——点击生效了，表达式却在说谎。
 
 **Invariant.** CDP 派发点击用 IIFE 包装返回真实成败：
 `(() => { const el = …; if (el) { el.click(); return true } return false })()`。
+
+## 每次 store 调用都新开 SQLite 连接，是最大的隐性成本
+
+**Symptom.** 100 轮工具循环的测试要跑 5.5 秒上下（`_settle` 5 秒超时压线
+失败）；cProfile 显示 commit/close 的单次耗时比预期高数倍。
+
+**Root cause.** `Database.fetchone/fetchall/transaction` 每次调用
+`connect()`：新建连接 + 加载 sqlite-vec 扩展 + `PRAGMA` + 关闭，单次
+4–6ms。一次 turn 十几次 store 调用 = 几十毫秒纯开销；测试里 662 次连接
+占了大头。逐事件的取消竞速让生产者更频繁让出循环，反而放大了测试轮询
+协程的这份成本——但机制本身只有 0.018ms/次，不是嫌疑人。
+
+**Invariant.** 共享连接 + `threading.RLock`：所有 store 方法同步、绝不
+在事务内 await，锁不跨事件循环让渡，不会死锁。新增线程化调用方时必须
+保持「锁覆盖每个入口」这条不变式；`synchronous=NORMAL`（WAL 配对）把
+每写一次 fsync 换成检查点才 fsync——断电窗口变宽是已接受的权衡（应用
+崩溃不丢，WAL 在 OS 手里）。修复后：该测试 0.22s，全套 62s → 21s。
+
+## 粗时钟 + 时间戳字符串排序 = 同刻度写入顺序随机
+
+**Symptom.** Database 提速后，notepad 列表测试偶现两条便签顺序颠倒
+——以前从未失败过。
+
+**Root cause.** CPython 3.12 的 Windows `datetime.now()` 是 15.6ms 粗
+粒度时钟。以前每次写入夹着几毫秒的连接开销，两条便签必然落在不同刻度；
+提速后落到同一刻度，`updated_at` 字符串完全相等，`sort` 退化为
+glob 的文件系统顺序。潜伏 bug，被提速揭穿。
+
+**Invariant.** `utc_now()` 进程内严格递增（重复刻度 +1µs，带锁）；它
+是排序键和冲突令牌，不是时钟读数。任何新增的「按时间戳排序的列表」
+都依赖这条性质，别用裸 `datetime.now()` 绕过它。

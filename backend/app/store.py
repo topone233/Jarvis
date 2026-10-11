@@ -1112,6 +1112,37 @@ class Store:
             parameters = (project_id,)
         return _records(self.database.fetchall(query, parameters))
 
+    def has_knowledge_documents(self, project_id: str | None = None) -> bool:
+        """Whether the project has a single non-deleted knowledge document.
+
+        The existence question runs every turn - it decides whether retrieval
+        and the knowledge tool are worth their cost - so it is answered by one
+        indexed lookup, not by listing the documents the way the settings
+        screen does.
+        """
+        row = self.database.fetchone(
+            "SELECT 1 FROM knowledge_documents WHERE project_id IS ? AND deleted_at IS NULL"
+            " LIMIT 1",
+            (project_id,),
+        )
+        return row is not None
+
+    def has_embedding_chunks(self, project_id: str | None, embedding_model: str) -> bool:
+        """Whether any chunk in the project was embedded by this model.
+
+        Chunks imported before an embedding model was configured (or while it
+        was failing) carry none, and the vector search over them would return
+        nothing - so the query embedding that feeds it is skipped too, on the
+        same lookup. `IS` rather than `=` because a global project's id is
+        NULL, and `= NULL` is never true.
+        """
+        row = self.database.fetchone(
+            "SELECT 1 FROM knowledge_chunks WHERE project_id IS ? AND embedding_model = ?"
+            " AND deleted_at IS NULL LIMIT 1",
+            (project_id, embedding_model),
+        )
+        return row is not None
+
     def finish_knowledge_document(
         self, document_id: str, status: str, chunk_count: int
     ) -> dict[str, Any]:

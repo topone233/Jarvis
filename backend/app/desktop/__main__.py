@@ -22,11 +22,15 @@ uvicorn 服务线程（复用已跑的后端，否则自己起一个）、Regist
 
 唤出走 ``on_activate``：``quick_capture`` 插件切换无边框置顶弹窗窗口
 （``/popup/<id>`` 页面只渲染插件的 quickCapture 组件）；其余插件唤出主
-窗口并跳到 ``summon_path``。弹窗不占任务栏，被壳外关闭（任务栏、Alt+F4）
-时由 ``closed`` 事件清账，下次唤出重建新窗。弹窗卡片的页签行是拖拽区
-（「只认直接目标」的契约与主窗口一致，类由插件前端在弹窗页里挂），拖动
-后的位置与图钉的固定（置顶）状态持久化在 bootstrap 目录的
-``shell_windows.json``（``window_state.py``），重建新窗与壳重启都恢复。
+窗口并跳到 ``summon_path``。热键对弹窗是「在前台=收起，被埋住=带回前台」：
+页面状态原样保留，重派发合成按键只会把卡片切关。弹窗创建时 focus=False
+（不抢焦点），首次显示时摘掉 pywebview 由此打上的「点击不激活」位
+（WS_EX_NOACTIVATE）——否则切到别的应用再点回来，键盘焦点永远回不来。
+弹窗不占任务栏，被壳外关闭（任务栏、Alt+F4）时由 ``closed`` 事件清账，
+下次唤出重建新窗。弹窗卡片的页签行是拖拽区（「只认直接目标」的契约与
+主窗口一致，类由插件前端在弹窗页里挂），拖动后的位置与图钉的固定（置顶）
+状态持久化在 bootstrap 目录的 ``shell_windows.json``（``window_state.py``），
+重建新窗与壳重启都恢复。
 Python 只发 pluginId——组合键到合成 keydown 的翻译在前端
 ``frontend/src/plugins/shell.ts``，热键语义仍然只有 hotkey.ts 一处。
 """
@@ -68,10 +72,37 @@ WS_MINIMIZEBOX = 0x00020000
 WS_MAXIMIZEBOX = 0x00010000
 #: 扩展样式：工具窗不进任务栏也不进 Alt-Tab，快搜框的定位正合适。
 WS_EX_TOOLWINDOW = 0x00000080
+#: pywebview 给 focus=False 的窗口打的"点击不激活"位。它就是便签弹窗
+#: 「切走再点回来无法输入」的根因：点击不再把窗口变成前台，键盘焦点从此
+#: 回不来。弹窗创建时确实不该抢焦点，但显示之后必须能被点回来——shown
+#: 时把它摘掉（配合把 window.focus 翻回 True，pywebview 的 on_activated
+#: 会在每次激活时把这个位重新打上）。
+WS_EX_NOACTIVATE = 0x08000000
 GWL_STYLE = -16
 GWL_EXSTYLE = -20
 #: SetWindowPos 的组合：不挪不缩不改层级，只让新样式立刻生效。
 SWP_FRAMECHANGED = 0x0001 | 0x0002 | 0x0004 | 0x0020
+
+
+def _allow_click_activation(window: webview.Window) -> None:
+    """摘掉 focus=False 带来的 WS_EX_NOACTIVATE（必须在窗口就绪后、GUI 线程调）。
+
+    pywebview 按 ``window.focus`` 的创建值给窗口打这个位：点这种窗口不会把它
+    变成前台，于是弹窗一旦失焦（用户点去别的应用）就永远拿不回键盘焦点——
+    界面还在、显示正常，但打字全部无效。程序性 ``Activate()``（show 里的那次）
+    不受这个位限制，所以第一次唤出能用，之后点回来就废了。摘位的同时要把
+    ``window.focus`` 翻回 True：pywebview 的 on_activated 每次激活都会按这个
+    属性把位重新打上。失败只意味着这条弹窗退化为旧行为，不动唤出流程。
+    """
+    try:
+        window.focus = True
+        hwnd = int(window.native.Handle.ToInt64())  # type: ignore[attr-defined]
+        user32 = ctypes.windll.user32
+        exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle & ~WS_EX_NOACTIVATE)
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAMECHANGED)
+    except Exception as error:
+        print(f"[desktop] 恢复弹窗点击激活失败（切回后可能无法输入）：{error}", flush=True)
 
 
 def _restore_sizing_styles(window: webview.Window) -> None:
@@ -111,6 +142,7 @@ def _strip_taskbar_icon(window: webview.Window) -> None:
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAMECHANGED)
     except Exception as error:
         print(f"[desktop] 摘除弹窗任务栏图标失败：{error}", flush=True)
+
 
 #: 与 app/main.py 的 FRONTEND_DIST 同一个目录；本文件深两级，所以多一层。
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
@@ -429,13 +461,21 @@ class Shell:
         if window is None:
             window = self._create_popup(plugin_id)
         if plugin_id in self.visible:
-            # 先合成 Esc 让页内弹窗走它自己的关闭路径（状态归位、观察者收窗），
-            # 再藏窗口——下次唤出一定是干净的打开。
-            self._evaluate(
-                window, "window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))"
-            )
-            window.hide()
-            self.visible.discard(plugin_id)
+            if self._is_foreground(window):
+                # 在前台：热键=收起。先合成 Esc 让页内弹窗走它自己的关闭路径
+                # （状态归位、观察者收窗），再藏窗口——下次唤出一定是干净的
+                # 打开。
+                self._evaluate(
+                    window, "window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))"
+                )
+                window.hide()
+                self.visible.discard(plugin_id)
+            else:
+                # 可见但被别的窗口埋住了：热键是「把它带回来」，不是「关掉」。
+                # 页面状态原样保留（正在编辑的便签就在原地），也不重派发合成
+                # 热键——那会把卡片本身切关。
+                window.show()
+                self._apply_popup_pin(window, plugin_id)
         else:
             window.show()
             self.visible.add(plugin_id)
@@ -446,6 +486,15 @@ class Shell:
             # （rc=0）。运行期的公开 setter 实测可靠，此刻窗口已安定，
             # 与图钉切换走的是同一条路。
             self._apply_popup_pin(window, plugin_id)
+
+    @staticmethod
+    def _is_foreground(window: webview.Window) -> bool:
+        """窗口是否已是前台。判断不了就当是——收起的语义不变。"""
+        try:
+            hwnd = int(window.native.Handle.ToInt64())  # type: ignore[attr-defined]
+            return ctypes.windll.user32.GetForegroundWindow() == hwnd
+        except Exception:
+            return True
 
     def _apply_popup_pin(self, window: webview.Window, plugin_id: str) -> None:
         """按持久状态落实置顶。每次唤出都做一遍：自愈，也覆盖重建的新窗。"""
@@ -543,11 +592,18 @@ class Shell:
         # 唤出永远无效。destroy_popup 主动销毁同样触发 closed，pop/discard
         # 幂等，两条路共用这一个清理。事件不带参数，回调闭包住 plugin_id。
         window.events.closed += lambda: self._on_popup_closed(plugin_id)
-        # 首次显示时（GUI 线程上）摘任务栏图标：快搜框不占任务栏，也从源头
-        # 断了「从任务栏关掉弹窗」这条路。必须在 shown 里做——loaded 在
-        # worker 线程上派发，任何会 Invoke 回 GUI 的属性调用都会和
-        # create_window 的同步等待互相卡死（2026-10-07 实测）。
-        window.events.shown += lambda: _strip_taskbar_icon(window)
+
+        # 首次显示时（GUI 线程上）做两件样式收尾：摘任务栏图标（快搜框不占
+        # 任务栏，也从源头断了「从任务栏关掉弹窗」这条路），并摘掉
+        # focus=False 带来的「点击不激活」位——不然用户切到别的应用再点回
+        # 弹窗，窗口永远拿不回键盘焦点，便签就没法继续编辑。都必须在 shown
+        # 里做——loaded 在 worker 线程上派发，任何会 Invoke 回 GUI 的属性
+        # 调用都会和 create_window 的同步等待互相卡死（2026-10-07 实测）。
+        def on_first_shown() -> None:
+            _strip_taskbar_icon(window)
+            _allow_click_activation(window)
+
+        window.events.shown += on_first_shown
         # 拖动落盘：moved 带逻辑像素坐标（winforms 的 on_move 除过 DPI 缩放，
         # 与 create_window 的 x/y 同一坐标系）。拖动中连发，防抖见
         # _on_popup_moved；回调闭包住 plugin_id。

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+import threading
 from collections.abc import Iterator
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 
 import sqlite_vec
@@ -223,10 +224,24 @@ def vec_table_name(dim: int) -> str:
 
 
 class Database:
+    """The process's one SQLite connection behind a lock.
+
+    Every store call used to open its own connection - connect, load the
+    sqlite-vec extension, and close on each fetch or write, several
+    milliseconds apiece, hundreds of times per turn. One shared connection
+    removes that per-call cost entirely. sqlite3 connections are not safe to
+    share across threads unchecked, so the lock below serializes every entry
+    point; every store method is synchronous and never awaits inside a
+    transaction, so the lock never spans a yield to the event loop and cannot
+    deadlock the loop against a worker thread.
+    """
+
     def __init__(self, data_directory: Path) -> None:
         self.data_directory = data_directory
         self.path = data_directory / "jarvis.sqlite3"
         self.objects_directory = data_directory / "objects"
+        self._lock = threading.RLock()
+        self._connection: sqlite3.Connection | None = None
 
     def initialize(self) -> None:
         if not self.data_directory.is_dir():
@@ -237,11 +252,10 @@ class Database:
         # Inside a directory that has just been checked, and non-recursive on
         # purpose: this must never become a way to create the data directory.
         self.objects_directory.mkdir(exist_ok=True)
-        with closing(self.connect()) as connection:
+        with self.transaction() as connection:
             # journal_mode is persisted in the database file, so it only needs to
             # be set once instead of on every connection.
             connection.execute("PRAGMA journal_mode = WAL")
-            connection.commit()
         with self.transaction() as connection:
             connection.executescript(SCHEMA_SQL)
             self._apply_migrations(connection)
@@ -506,33 +520,48 @@ class Database:
                 "project_id TEXT)"
             )
 
-    def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        # The extension is loadable per connection and cheap to load; every
-        # connection goes through here, so the vec tables work everywhere.
-        connection.enable_load_extension(True)
-        sqlite_vec.load(connection)
-        connection.enable_load_extension(False)
-        return connection
+    def _shared(self) -> sqlite3.Connection:
+        """The connection everyone shares, created on first use.
+
+        `synchronous = NORMAL` is the WAL pairing: a commit fsyncs only at
+        checkpoints instead of on every write, which drops a few milliseconds
+        from each store call. The trade is that an OS or power crash can lose
+        the newest commits (an app crash cannot - the WAL survives in the
+        OS's hands), and this app already accepts a bounded loss window on
+        crashes by design (the run checkpoint interval).
+        """
+        with self._lock:
+            if self._connection is None:
+                connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("PRAGMA synchronous = NORMAL")
+                # The extension is loadable per connection; loading it here
+                # once is what lets the vec tables work everywhere.
+                connection.enable_load_extension(True)
+                sqlite_vec.load(connection)
+                connection.enable_load_extension(False)
+                self._connection = connection
+            return self._connection
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
-        connection = self.connect()
-        try:
-            yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        # The lock is held across the yield: the caller's statements and the
+        # commit below run as one exclusive checkout. Store code is sync, so
+        # nothing inside ever awaits while holding it.
+        with self._lock:
+            connection = self._shared()
+            try:
+                yield connection
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
     def fetchone(self, query: str, parameters: tuple[object, ...] = ()) -> sqlite3.Row | None:
-        with closing(self.connect()) as connection:
-            return connection.execute(query, parameters).fetchone()
+        with self._lock:
+            return self._shared().execute(query, parameters).fetchone()
 
     def fetchall(self, query: str, parameters: tuple[object, ...] = ()) -> list[sqlite3.Row]:
-        with closing(self.connect()) as connection:
-            return list(connection.execute(query, parameters).fetchall())
+        with self._lock:
+            return list(self._shared().execute(query, parameters).fetchall())

@@ -94,6 +94,41 @@ def encode_sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json_dump(payload)}\n\n"
 
 
+#: What `stop_or` answers when a stop landed while the awaited call was still
+#: in flight. A module sentinel rather than None: the awaited call may legitimately
+#: return None, and the sentinel is never something a caller could have produced.
+_STOPPED = object()
+
+
+async def stop_or(awaitable: Awaitable[Any], registry: RunRegistry, run_id: str) -> Any:
+    """Await a call, unless a stop lands first; ``_STOPPED`` means it did.
+
+    The cooperative checks only see a stop between awaits, so one long await -
+    a context build, a compaction call, a quiet model stream - would hold a
+    stop until it finished. This races the call against the run's cancel event
+    instead: a stop closes the HTTP request under the call by cancelling it,
+    and the caller ends the run immediately.
+
+    Only calls with nothing on disk or on the wire to unwind belong here; the
+    bash tool keeps its own cooperation (the child process is killed by the
+    polling thread, which is what writes the precise audit row), and so does
+    every region whose cancelled ending says more than this helper could know.
+    """
+    inner = asyncio.ensure_future(awaitable)
+    stopper = asyncio.ensure_future(registry.wait_cancelled(run_id))
+    done, _ = await asyncio.wait({inner, stopper}, return_when=asyncio.FIRST_COMPLETED)
+    if inner in done:
+        stopper.cancel()
+        return inner.result()
+    # The stop won. Cancelling the inner task throws into whatever the call is
+    # awaiting (httpx closes the response with it); awaiting it here soaks up
+    # the unwind so no warning is left behind.
+    inner.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await inner
+    return _STOPPED
+
+
 class RepeatGuard:
     """The gate that stops one identical call being asked for over and over.
 
@@ -280,6 +315,20 @@ class RunService:
         # count seconds forever - live and, replayed from the store, after
         # every reload too.
         open_stages: list[str] = []
+        # The run's own state, declared before the try so a stop that lands in
+        # the very first await (the context build) can still be written out:
+        # `finish_cancelled` reads these wherever the stop landed, and the
+        # awaited calls below fill them in as the run proceeds. The bundle is
+        # Any rather than ContextBundle | None because it spends most of the
+        # run as the real bundle; the None spells "not built yet".
+        bundle: Any = None
+        response_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        round_reasoning: list[str] = []
+        # Whether a model_stream row is currently open: the failure paths
+        # may only emit their failed record over a row that is actually
+        # open, or an ending record with no open row opens a stray one.
+        round_row_open = False
 
         def audit(stage: str, state: str, payload: dict[str, Any]) -> None:
             nonlocal sequence
@@ -292,15 +341,53 @@ class RunService:
             event = store.create_run_event(run_id, sequence, stage, state, payload)
             broadcast.emit("audit", event)
 
-        def close_open_stages(reason: str) -> None:
-            """Shut every stage still open, as its own failed record.
+        def close_open_stages(reason: str, state: str = "failed") -> None:
+            """Shut every stage still open, as its own record.
 
             Called only from the endings a run did not plan (a tool or the
-            provider raising past every handler); the planned endings close
-            their own rows on the way out, and an empty list costs nothing.
+            provider raising past every handler) and from the cancelled
+            ending; the planned endings close their own rows on the way out,
+            and an empty list costs nothing.
             """
             for stage in list(open_stages):
-                audit(stage, "failed", {"reason": reason})
+                audit(stage, state, {"reason": reason})
+
+        def finish_cancelled(*, content: str, reasoning: str) -> None:
+            """The one ending a stopped run takes, wherever the stop landed.
+
+            Every stop writes the same shape: what the answer had said so far
+            stays on the message (a reload shows a stopped run, not a blank),
+            the run ends cancelled, the round's row - if one is open - closes
+            with its thinking attached, and whatever stages the stop
+            interrupted close as cancelled too. One body because the
+            alternatives (a stop mid-build, mid-round, between rounds) differ
+            only in what had already happened, never in what should be
+            written.
+            """
+            nonlocal round_row_open
+            metadata = {
+                "run_id": run_id,
+                "citations": bundle.citations if bundle is not None else [],
+                "reasoning": reasoning,
+                "cancelled": True,
+            }
+            store.update_message(assistant_id, content, metadata)
+            store.update_run(
+                run_id,
+                status="cancelled",
+                input_token_estimate=bundle.input_token_estimate if bundle is not None else 0,
+                output_token_estimate=estimate_tokens(content),
+                completed=True,
+            )
+            if round_row_open:
+                audit("model_stream", "cancelled", {"reasoning": "".join(round_reasoning)})
+                round_row_open = False
+            close_open_stages("运行被用户停止", state="cancelled")
+            broadcast.show_text(content=content, reasoning=reasoning)
+            broadcast.finish(
+                "run.cancelled",
+                {"run_id": run_id, "message_id": assistant_id, "content": content},
+            )
 
         try:
             run = store.get_run(run_id)
@@ -352,7 +439,14 @@ class RunService:
                 return
 
             audit("context_compaction", "running", {"trigger": "threshold_check"})
-            artifact = await self.services.context.maybe_compact(conversation["id"], profile)
+            artifact = await stop_or(
+                self.services.context.maybe_compact(conversation["id"], profile),
+                registry,
+                run_id,
+            )
+            if artifact is _STOPPED:
+                finish_cancelled(content="", reasoning="")
+                return
             if artifact is None:
                 audit("context_compaction", "completed", {"compacted": False})
             else:
@@ -366,11 +460,28 @@ class RunService:
                     },
                 )
             audit("context_retrieval", "running", {})
-            bundle = await self.services.context.build(
-                conversation["id"],
-                profile,
-                user_message["content"],
+            # Whether this project has any knowledge documents decides twice -
+            # whether retrieval runs at all, and whether the model is given the
+            # knowledge tool - so it is read once here, as one indexed lookup,
+            # and handed to the build instead of being read again inside it.
+            has_documents = self.services.store.has_knowledge_documents(conversation["project_id"])
+            # The sentinel lands on a throwaway, not on `bundle` itself:
+            # `finish_cancelled` reads the bundle wherever a stop landed, and
+            # it can only tell "not built yet" from None.
+            built = await stop_or(
+                self.services.context.build(
+                    conversation["id"],
+                    profile,
+                    user_message["content"],
+                    has_documents=has_documents,
+                ),
+                registry,
+                run_id,
             )
+            if built is _STOPPED:
+                finish_cancelled(content="", reasoning="")
+                return
+            bundle = built
             store.update_run(
                 run_id,
                 status="running",
@@ -413,9 +524,6 @@ class RunService:
             limits = read_tool_limits(store)
             guard = RepeatGuard(limits.repeat_limit, limits.repeat_window_seconds)
             knowledge_tool = KnowledgeToolService(self.services.store, self.services.knowledge)
-            has_documents = bool(
-                self.services.store.list_knowledge_documents(conversation["project_id"])
-            )
             skill_tool = SkillToolService(self.services.skills)
             # Bash settings read once per run, like the round budget: a
             # mid-run change waits for the next answer. The stored working
@@ -442,17 +550,12 @@ class RunService:
             # part in the conversation - so it does not ride anymore.
             while messages and messages[-1]["role"] == "assistant" and not messages[-1]["content"]:
                 messages.pop()
-            response_parts: list[str] = []
-            reasoning_parts: list[str] = []
             # One round's own thinking and usage, reset at each boundary - the
             # round's audit row records them, which is what puts the thinking
-            # on the trail between the tool rows it sits between.
-            round_reasoning: list[str] = []
+            # on the trail between the tool rows it sits between. The run-wide
+            # accumulators were declared before the try: `finish_cancelled`
+            # reads them wherever a stop landed.
             round_usage: dict[str, Any] | None = None
-            # Whether a model_stream row is currently open: the failure paths
-            # may only emit their failed record over a row that is actually
-            # open, or an ending record with no open row opens a stray one.
-            round_row_open = False
             usage: dict[str, Any] | None = None
             flushed = 0
             flushed_at = time.monotonic()
@@ -548,12 +651,31 @@ class RunService:
                         )
                         return message
                     audit("knowledge_tool", "running", {**call_payload, "command": command})
+
+                    async def stoppable_knowledge(*args: Any, **kwargs: Any) -> Any:
+                        # A knowledge call is one long provider round-trip with
+                        # nothing on disk to unwind, so a stop closes it
+                        # outright instead of waiting the search out.
+                        return await stop_or(
+                            knowledge_tool.execute(*args, **kwargs), registry, run_id
+                        )
+
                     output, failed = await run_tool(
                         "knowledge_tool",
-                        knowledge_tool.execute,
+                        stoppable_knowledge,
                         command,
                         project_id=conversation["project_id"],
                     )
+                    if output is _STOPPED:
+                        audit(
+                            "knowledge_tool",
+                            "cancelled",
+                            {**call_payload, "command": command, "reason": "运行被用户停止"},
+                        )
+                        # The text goes back to a run that is ending anyway:
+                        # the between-rounds check below ends it before the
+                        # model is asked anything again.
+                        return "knowledge: 用户停止了运行。"
                     if failed:
                         return output
                     audit(
@@ -799,39 +921,34 @@ class RunService:
                     {"model": choice.chat_model or profile["chat_model"]},
                 )
                 round_row_open = True
-                async for event in self.services.provider.stream_chat(
+                stream = self.services.provider.stream_chat(
                     profile,
                     messages,
                     chat_model=choice.chat_model,
                     thinking=choice.thinking,
                     tools=tools,
-                ):
-                    if registry.is_cancelled(run_id):
-                        partial = "".join(response_parts)
-                        metadata = {
-                            "run_id": run_id,
-                            "citations": bundle.citations,
-                            "reasoning": "".join(reasoning_parts),
-                            "cancelled": True,
-                        }
-                        store.update_message(assistant_id, partial, metadata)
-                        store.update_run(
-                            run_id,
-                            status="cancelled",
-                            input_token_estimate=bundle.input_token_estimate,
-                            output_token_estimate=estimate_tokens(partial),
-                            completed=True,
-                        )
-                        audit(
-                            "model_stream",
-                            "cancelled",
-                            {"reasoning": "".join(round_reasoning)},
-                        )
-                        round_row_open = False
-                        broadcast.show_text(content=partial, reasoning="".join(round_reasoning))
-                        broadcast.finish(
-                            "run.cancelled",
-                            {"run_id": run_id, "message_id": assistant_id, "content": partial},
+                )
+                while True:
+                    # Waiting for the next event is one long await - the model
+                    # can think for a long time before its first word - so the
+                    # wait races the stop button instead of checking the flag
+                    # only when an event happens to arrive.
+                    try:
+                        event = await stop_or(anext(stream), registry, run_id)
+                    except StopAsyncIteration:
+                        break
+                    if event is _STOPPED or registry.is_cancelled(run_id):
+                        # Two ways a stop shows up here: the stopper won the
+                        # race while the provider was between events, or an
+                        # event landed in the same moment as the stop and won
+                        # the race - the flag check is what makes the stop win
+                        # that tie. Either way the generator is unwound here
+                        # and the run ends with what it had already written.
+                        with contextlib.suppress(Exception):
+                            await stream.aclose()
+                        finish_cancelled(
+                            content="".join(response_parts),
+                            reasoning="".join(reasoning_parts),
                         )
                         return
                     if event.kind == "usage":
@@ -929,34 +1046,16 @@ class RunService:
                 # infer from snapshots alone: the reset tells it to replace
                 # rather than append, and follow() re-homes its own cursor.
                 broadcast.emit("round.reset", {"message_id": assistant_id})
-                # Between rounds the stream is not running, so its own cancel
-                # check cannot fire; the stop button has to work here too.
+                # Between rounds the stream is not running, so the stop has to
+                # be checked in the open. The round's own row already closed
+                # with its thinking attached, so `finish_cancelled` writes no
+                # model_stream record here: a cancelled record with no open row
+                # would open a stray one, and the stop itself is carried by the
+                # run.cancelled event.
                 if registry.is_cancelled(run_id):
-                    partial = "".join(response_parts)
-                    store.update_message(
-                        assistant_id,
-                        partial,
-                        {
-                            "run_id": run_id,
-                            "citations": bundle.citations,
-                            "reasoning": "".join(reasoning_parts),
-                            "cancelled": True,
-                        },
-                    )
-                    store.update_run(
-                        run_id,
-                        status="cancelled",
-                        input_token_estimate=bundle.input_token_estimate,
-                        output_token_estimate=estimate_tokens(partial),
-                        completed=True,
-                    )
-                    # The round's own row already closed with its thinking
-                    # attached, so no model_stream record here: a cancelled
-                    # record with no open row would open a stray one, and the
-                    # stop itself is carried by the run.cancelled event.
-                    broadcast.finish(
-                        "run.cancelled",
-                        {"run_id": run_id, "message_id": assistant_id, "content": partial},
+                    finish_cancelled(
+                        content="".join(response_parts),
+                        reasoning="".join(reasoning_parts),
                     )
                     return
             else:
@@ -1178,6 +1277,12 @@ class RunService:
         not rewrite a finished run as cancelling, or the next startup would close
         it again as interrupted and a client would be told the answer failed when
         it had actually arrived.
+
+        The flag alone is what the cooperative checks read, but they only run
+        between awaits - so the flag also wakes the run's cancel event, which
+        is what lets `stop_or` interrupt the waits that have no check of their
+        own (the context build, a quiet model stream) instead of leaving the
+        stop to wait them out.
         """
         run = self.services.store.get_run(run_id)
         if run["status"] not in {"running", "cancelling"}:

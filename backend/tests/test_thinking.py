@@ -59,18 +59,20 @@ async def send_streaming(
     [
         ("off", {"enable_thinking": False}),
         ("low", {"reasoning_effort": "low"}),
+        ("medium", {"reasoning_effort": "medium"}),
         ("high", {"reasoning_effort": "high"}),
+        ("xhigh", {"reasoning_effort": "xhigh"}),
         ("max", {"reasoning_effort": "max"}),
     ],
 )
 @pytest.mark.asyncio
-async def test_the_four_positions_of_the_dial(
+async def test_the_six_positions_of_the_dial(
     profile: dict[str, Any], level: ThinkingLevel, expected: dict[str, Any]
 ) -> None:
-    """One dial, four positions, and only one of them is the profile's business.
+    """One dial, six positions, and only one of them is the profile's business.
 
     "off" is the fragment the user wrote, because what to say to a provider that
-    is not to think has no single spelling. The three strengths are this
+    is not to think has no single spelling. The five strengths are this
     server's own name for it, so they send that name and nothing else - not even
     the profile's `thinking_on` fragment, which as written here would have said
     "medium" and turned on a switch of its own.

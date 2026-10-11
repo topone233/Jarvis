@@ -16,7 +16,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { getRun, listConversationRunEvents, listMessages, sendFeedback } from '../api/endpoints'
-import type { ThinkingLevel } from '../api/thinking'
 import type { Citation, Message, RunEventRecord } from '../api/types'
 import { Composer } from '../components/Composer'
 import { CitationPanel } from '../components/CitationPanel'
@@ -35,17 +34,14 @@ import { toggleMaximize } from '../plugins/shell'
 import { useRun } from '../runs/useRun'
 
 /**
- * What the new-chat screen hands over: the first message, and the model and
- * thinking dial that was on screen when it was sent.
+ * What the new-chat screen hands over: the first message.
  *
- * The choice has to travel with the message, because the conversation it is
- * about is created on the way: a message sent with qwen selected would
- * otherwise be answered by whatever the default profile names.
+ * The model and the dial no longer travel with it - they are one global
+ * choice that the two pages read from the same place, so whatever the
+ * composer was showing when the message left is what this page shows too.
  */
 interface SeededTurn {
   firstMessage?: string
-  chatModel?: string
-  level?: ThinkingLevel
 }
 
 export function ChatPage({
@@ -145,11 +141,11 @@ export function ChatPage({
   const { attach, cancel, regenerate, reconnect, resolveInput, send, turn, gaveUp } = run
 
   const conversation = conversations.conversations.find((item) => item.id === conversationId)
-  // What the composer is showing, and what the next turn will carry. The seed is
-  // only read on the first render, before the effect below clears the history
-  // entry it came in on.
-  const choice = useModelChoice(conversation?.model_profile_id ?? null, seeded ?? undefined)
-  const { model, level } = choice
+  // What the composer is showing, and what the next turn will carry. The global
+  // choice answers everywhere; the conversation's own profile is only the
+  // fallback while the user has never picked a model of their own.
+  const choice = useModelChoice(conversation?.model_profile_id ?? null)
+  const { model, level, profileId } = choice
 
   // Whether this page is already watching a turn, read by the load below without
   // making it re-run on every token. Kept in an effect rather than assigned
@@ -247,7 +243,7 @@ export function ChatPage({
   const send_ = useCallback(
     (text: string, images: string[] = []) => {
       setPendingUser({ text, images })
-      send(text, { chatModel: model, level }, images)
+      send(text, { chatModel: model, level, profileId }, images)
       // The answer this one replaces has just finished, which is the moment its
       // trail on disk becomes complete - the memory write is reported after the
       // answer is already on screen, so a read taken while it was running came
@@ -255,16 +251,16 @@ export function ChatPage({
       // the instant it stopped being the live one.
       void readTrail().then(setTrail)
     },
-    [readTrail, send, model, level],
+    [readTrail, send, model, level, profileId],
   )
 
   const onRegenerate = useCallback(
     (messageId: string) => {
       // Same reason as a send: the answer being replaced is over.
       void readTrail().then(setTrail)
-      regenerate(messageId, { chatModel: model, level })
+      regenerate(messageId, { chatModel: model, level, profileId })
     },
-    [readTrail, regenerate, model, level],
+    [readTrail, regenerate, model, level, profileId],
   )
 
   // A message handed over by the new-chat screen. Consumed once, and the history

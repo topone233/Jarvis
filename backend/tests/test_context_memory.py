@@ -545,3 +545,30 @@ async def test_the_memory_floor_is_a_setting(
     core.store.set_setting("retrieval_memory_floor", 0.4)
     relaxed = await core.context.build(conversation["id"], profile, "今晚买点苹果")
     assert [memory["content"] for memory in relaxed.memories] == ["用户最喜欢吃苹果"]
+
+
+@pytest.mark.asyncio
+async def test_a_project_without_knowledge_documents_skips_the_search(
+    core: CoreServices, profile: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没有知识文档的项目，检索整段跳过——连查询嵌入也不打。有没有文档
+    是每轮都要回答的问题，run 循环已经为知识工具查过一次，答案从这里
+    传进来；不传（直接调 build）就自己查一次。"""
+    conversation = core.store.create_conversation("对话", None, profile["id"], False)
+    core.store.append_message(conversation["id"], "user", "介绍一下知识库。")
+
+    async def forbidden(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        del args, kwargs
+        raise AssertionError("没有知识文档还执行了检索")
+
+    monkeypatch.setattr(core.knowledge, "search", forbidden)
+
+    # run 循环的路径：has_documents 由调用方传入。
+    bundle = await core.context.build(
+        conversation["id"], profile, "介绍一下知识库。", has_documents=False
+    )
+    assert bundle.citations == []
+
+    # 直接调用的路径：build 自己查，查出来是空，一样跳过。
+    bundle = await core.context.build(conversation["id"], profile, "介绍一下知识库。")
+    assert bundle.citations == []

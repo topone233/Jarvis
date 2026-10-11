@@ -490,3 +490,59 @@ async def test_a_low_keyword_floor_admits_the_tail(
     results = await core.knowledge.search("性能", project_id=None)
 
     assert [result["title"] for result in results] == ["甲", "乙", "丙", "丁"]
+
+
+# --- the embedding-chunk gate -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_search_without_embedded_chunks_skips_the_query_embedding(
+    core: CoreServices, use_embedding: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """嵌入模型是导入之后才配置的：块上没有这个模型的向量，喂给向量检索
+    的查询嵌入就是一次白打的 API 调用——跳过它，关键词半边照常工作。"""
+    await core.knowledge.import_items(
+        [ImportItem(filename="甲.txt", content="文档的内容".encode())],
+        project_id=None,
+    )
+    use_embedding()
+
+    async def forbidden(spec: dict[str, str], texts: list[str]) -> list[list[float]]:
+        del spec, texts
+        raise AssertionError("没有可向量化的块还打了一次查询嵌入")
+
+    monkeypatch.setattr(core.knowledge.provider, "embed", forbidden)
+
+    results = await core.knowledge.search("文档的内容", project_id=None)
+
+    assert [result["title"] for result in results] == ["甲"]
+    assert all(result["source"] == "hybrid" for result in results)
+
+
+@pytest.mark.asyncio
+async def test_a_search_with_embedded_chunks_still_queries_the_embedding(
+    core: CoreServices, use_embedding: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """有这个模型嵌过的块，查询嵌入照常发生——门槛只拦真正没有向量的
+    项目，不拦语义检索本身。"""
+    use_embedding()
+    await core.knowledge.import_items(
+        [ImportItem(filename="甲.txt", content="文档的内容".encode())],
+        project_id=None,
+    )
+
+    calls: list[list[str]] = []
+
+    async def embed(spec: dict[str, str], texts: list[str]) -> list[list[float]]:
+        del spec
+        calls.append(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(core.knowledge.provider, "embed", embed)
+
+    # 查询与文档没有共同的二字词，关键词半边给不出命中——结果只能来自
+    # 向量检索，source 才配叫 semantic。
+    results = await core.knowledge.search("毫不相干的提问", project_id=None)
+
+    assert calls == [["毫不相干的提问"]]
+    assert any(result["source"] == "semantic" for result in results)

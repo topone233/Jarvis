@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
 
@@ -184,7 +184,7 @@ class OpenAICompatibleProvider:
         chat_model: str | None = None,
         thinking: ThinkingLevel = "off",
         tools: list[dict[str, Any]] | None = None,
-    ) -> AsyncIterator[ProviderEvent]:
+    ) -> AsyncGenerator[ProviderEvent, None]:
         payload: dict[str, Any] = {
             **self._thinking_fields(profile, thinking),
             "model": chat_model or profile["chat_model"],

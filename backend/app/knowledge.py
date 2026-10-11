@@ -615,7 +615,12 @@ class KnowledgeService:
                 continue
             fts_ids.add(item["id"])
             scored[item["id"]] = (0.45 * matched / total_terms / (index + 1), item)
-        if embedding_spec:
+        # The semantic half runs only when the project actually holds chunks
+        # this model embedded: a project whose documents predate the embedding
+        # model (or imported while it failed) has a keyword index only, and
+        # the query embedding that would feed an empty vector search is a
+        # wasted API call on every turn.
+        if embedding_spec and self.store.has_embedding_chunks(project_id, embedding_spec["model"]):
             try:
                 if query_vector is None:
                     query_vector = (await self.provider.embed(embedding_spec, [query]))[0]

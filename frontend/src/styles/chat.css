@@ -1484,142 +1484,76 @@
   white-space: nowrap;
 }
 
-/* ---------- the thinking dial ---------- */
+/* ---------- the thinking segments ---------- */
 
-/* Four stops in a row - 关 and then the three strengths - so the setting is
-   where the thumb is, and nothing has to light up to say which one it is. It
-   was a switch while there were two answers to give; four is a position.
+/* One segment per stop - 关 and then the five strengths - so the setting is
+   whichever segment is lit, and reaching a far stop is one click instead of a
+   drag along a track. It was a slider while the stops were four; six is a row
+   of buttons.
 
    It sits at the foot of the model panel, under a hairline: the names above it
    are things to pick, this is a thing to set. The word that names it stays,
-   because a lone slider does not say what it sets. */
-.think-dial {
-  --thumb: 13px;
-  /* Set inline by the component, 0 at 关 and 1 at max. The filled part of a
-     range input's track is a pseudo-element, so this is the one thing about the
-     current stop that cannot be worked out here. */
-  --thumb-color: var(--text-muted);
-
+   because a lone row of stops does not say what it sets. */
+.think-segments {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
 }
 
-.think-dial.is-on {
-  --thumb-color: var(--accent-strong);
-}
-
-/* Reaching for the thumb is what darkens it - the dial has no box of its own to
-   light up. Off the leftmost stop it stays blue while hovered: there it is not
-   just a thumb any more, it is the app setting something. */
-.think-dial:hover {
-  --thumb-color: var(--text-secondary);
-}
-
-.think-dial.is-on:hover {
-  --thumb-color: var(--accent-strong);
-}
-
-.think-dial-label,
-.think-dial-value {
+.think-segments-label {
   font-size: 12px;
   white-space: nowrap;
-}
-
-.think-dial-label {
   color: var(--text-muted);
 }
 
-/* As wide as `high` and never narrower, so the model name beside it does not
-   shift left and right as the thumb moves. Muted at 关 and accented off it, for
-   the same reason the thumb is: blue is this app setting a field, grey is the
-   profile answering for itself. */
-.think-dial-value {
-  min-width: 28px;
-  color: var(--text-muted);
-  transition: color var(--dur-fast) var(--ease);
-}
-
-.think-dial.is-on .think-dial-value {
-  color: var(--accent-ink);
-}
-
-/* Takes whatever the panel leaves it, so all four stops are far enough apart to
-   land on; `min-width: 0` is what lets a flex item shrink rather than push the
-   word on its right out of the panel. */
-.think-slider {
+.think-segments-track {
+  display: flex;
   flex: 1 1 auto;
-  width: auto;
   min-width: 0;
-  height: 30px;
-  margin: 0;
-  padding: 0;
-  appearance: none;
+  /* The track is the one visible box, so the segments read as one control with
+     positions rather than six unrelated buttons. */
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-active);
+}
+
+.think-segment {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 3px 0;
+  border: none;
+  border-radius: var(--radius-pill);
   background: none;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
   cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
 }
 
-/* The thumb carries the focus halo, not the box: the composer around it is
-   already glowing, and a ring on the slider too would be two answers to the
-   same question. */
-.think-slider:focus-visible {
+.think-segment:hover {
+  color: var(--text);
+}
+
+.think-segment:focus-visible {
   outline: none;
-}
-
-.think-slider:focus-visible::-webkit-slider-thumb {
   box-shadow: var(--ring-accent);
 }
 
-.think-slider:focus-visible::-moz-range-thumb {
-  box-shadow: var(--ring-accent);
-}
-
-/* The fill stops at the centre of the thumb rather than at `--filled` of the
-   width, because an end stop does not put the thumb at an end of the track: it
-   travels from half a thumb in to half a thumb short. */
-.think-slider::-webkit-slider-runnable-track {
-  height: 3px;
-  border-radius: var(--radius-pill);
-  background: linear-gradient(
-    to right,
-    var(--accent-strong) 0 calc(var(--filled) * (100% - var(--thumb)) + var(--thumb) / 2),
-    var(--border-strong) calc(var(--filled) * (100% - var(--thumb)) + var(--thumb) / 2) 100%
-  );
-}
-
-.think-slider::-webkit-slider-thumb {
-  appearance: none;
-  width: var(--thumb);
-  height: var(--thumb);
-  /* WebKit lines the thumb's top up with the track's, so the 3px track is made
-     into the thumb's centre by hand. */
-  margin-top: calc((3px - var(--thumb)) / 2);
-  border: none;
-  border-radius: 50%;
-  background: var(--thumb-color);
-}
-
-/* Firefox draws the filled part itself, which is the same picture with none of
-   the arithmetic above. */
-.think-slider::-moz-range-track {
-  height: 3px;
-  border-radius: var(--radius-pill);
-  background: var(--border-strong);
-}
-
-.think-slider::-moz-range-progress {
-  height: 3px;
-  border-radius: var(--radius-pill);
+/* The lit segment is the whole answer to "where is it": filled with the
+   accent, in the accent's own ink, the same pair the primary button uses.
+   关 stays grey-lit on purpose - nothing is being set there, so nothing is
+   blue. */
+.think-segment.is-on {
   background: var(--accent-strong);
-}
-
-.think-slider::-moz-range-thumb {
-  width: var(--thumb);
-  height: var(--thumb);
-  border: none;
-  border-radius: 50%;
-  background: var(--thumb-color);
+  color: var(--accent-ink);
 }
 
 /* ---------- actions ---------- */

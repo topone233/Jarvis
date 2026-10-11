@@ -33,11 +33,10 @@ export function NewChatPage({ conversations }: { conversations: ConversationsCon
     if (images.length > 0) {
       setPendingImages(images)
     }
-    // The choice rides along with the first message. Without it, a first message
-    // sent with another model showing would be answered by the profile's own.
-    navigate(`/c/${conversation.id}`, {
-      state: { firstMessage: text, chatModel: choice.model, level: choice.level },
-    })
+    // Only the text travels with the handoff: the model and the dial are one
+    // global choice, and this page's composer was already writing it where
+    // the chat page reads it from.
+    navigate(`/c/${conversation.id}`, { state: { firstMessage: text } })
   }
 
   return (

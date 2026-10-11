@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -106,15 +107,30 @@ class PendingUserInput:
 class RunRegistry:
     def __init__(self) -> None:
         self._cancelled: set[str] = set()
+        # One wake-up per run: the flag alone is what the cooperative checks
+        # read, but they only run between awaits - an event is what lets a
+        # caller wait out a stop in flight (runs.stop_or) instead of noticing
+        # it after the current call returns.
+        self._cancel_events: dict[str, asyncio.Event] = {}
         self._broadcasts: dict[str, RunBroadcast] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._pending_input: dict[str, PendingUserInput] = {}
 
     def cancel(self, run_id: str) -> None:
         self._cancelled.add(run_id)
+        event = self._cancel_events.get(run_id)
+        if event is not None:
+            event.set()
 
     def is_cancelled(self, run_id: str) -> bool:
         return run_id in self._cancelled
+
+    def wait_cancelled(self, run_id: str) -> Coroutine[Any, Any, bool]:
+        """The awaitable that resolves the moment a stop lands for this run."""
+        event = self._cancel_events.get(run_id)
+        if event is None:
+            raise KeyError(run_id)
+        return event.wait()
 
     def request_user_input(
         self, run_id: str, kind: str, payload: dict[str, Any]
@@ -144,6 +160,9 @@ class RunRegistry:
     def open(self, run_id: str, assistant_message_id: str) -> RunBroadcast:
         broadcast = RunBroadcast(assistant_message_id)
         self._broadcasts[run_id] = broadcast
+        # The event lives on the same lifecycle as the broadcast: created when
+        # the run starts producing, dropped with everything else in close().
+        self._cancel_events.setdefault(run_id, asyncio.Event())
         return broadcast
 
     def broadcast(self, run_id: str) -> RunBroadcast | None:
@@ -161,6 +180,7 @@ class RunRegistry:
         self._broadcasts.pop(run_id, None)
         self._tasks.pop(run_id, None)
         self._pending_input.pop(run_id, None)
+        self._cancel_events.pop(run_id, None)
         self._cancelled.discard(run_id)
 
 

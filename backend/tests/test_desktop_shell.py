@@ -127,17 +127,36 @@ class TestPopupLifecycle:
 
     def test_toggle_keeps_one_window_across_hide_and_summon(self, monkeypatch, tmp_path) -> None:
         shell, windows = make_shell(monkeypatch, tmp_path)
+
+        def set_foreground(hwnd: int) -> None:
+            """_is_foreground 只经 __main__ 里的 ctypes 名字碰到 user32。"""
+            monkeypatch.setattr(
+                "app.desktop.__main__.ctypes",
+                SimpleNamespace(
+                    windll=SimpleNamespace(user32=SimpleNamespace(GetForegroundWindow=lambda: hwnd))
+                ),
+            )
+
+        set_foreground(0x1234)  # FakeWindow 的句柄：此刻它是前台
         shell.on_activate("notepad")
-        shell.on_activate("notepad")  # 第二次按键 = 收窗
+        shell.on_activate("notepad")  # 前台时再按 = 收窗
         assert not windows[0].shown
         assert "notepad" not in shell.visible
         assert shell.popups["notepad"] is windows[0]  # type: ignore[comparison-overlap]
         # 收窗先派发合成 Esc，让页内弹窗走它自己的关闭路径。
         assert any("Escape" in script for script in windows[0].scripts)
 
-        shell.on_activate("notepad")  # 第三次按键 = 唤回同一个窗
+        set_foreground(0x4321)  # 别的窗口在前台
+        shell.on_activate("notepad")  # 藏着的窗口：唤回同一个窗
         assert windows[0].shown
         assert len(windows) == 1
+
+        shell.on_activate("notepad")  # 可见但被埋住 = 带回前台，不是收起
+        assert windows[0].shown
+        assert "notepad" in shell.visible
+        assert len(windows) == 1
+        # 带回前台不派发 Esc：页面状态原样保留（正在编辑的便签就在原地）。
+        assert len([script for script in windows[0].scripts if "Escape" in script]) == 1
 
     def test_shown_strips_taskbar_icon(self, monkeypatch, tmp_path) -> None:
         shell, windows = make_shell(monkeypatch, tmp_path)

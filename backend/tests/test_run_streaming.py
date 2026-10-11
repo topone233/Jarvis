@@ -827,6 +827,46 @@ async def test_stopping_a_finished_run_leaves_the_record_alone(
     assert core.store.get_run(run["id"])["status"] == "completed"
 
 
+async def test_a_stop_interrupts_a_quiet_model_stream(
+    core: CoreServices, profile: dict[str, Any], paced: Any
+) -> None:
+    """A model that has gone quiet - thinking, or slow to its first token -
+    must not hold the stop button: the wait for the next event races the
+    cancel, and a stop ends the run while the model is still silent."""
+    paced([])  # 在任何一个事件之前就停在 release 上：一颗字都没给。
+    service, run = _begin(core, profile)
+    await asyncio.sleep(0.05)
+
+    service.cancel(run["id"])
+
+    assert (await _settle(core, run["id"]))["status"] == "cancelled"
+    assert core.store.get_message(run["assistant_message_id"])["content"] == ""
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "model_stream"]
+    assert [step["state"] for step in steps] == ["running", "cancelled"]
+
+
+async def test_a_stop_interrupts_the_context_build(
+    core: CoreServices, profile: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """检索、嵌入这类构建期调用卡住时点停止，run 立刻结束，而不是等它们
+    返回——构建期一个事件都不会来，协作式检查在这里本来就是瞎的。"""
+    gate = asyncio.Event()
+
+    async def stalled_build(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        await gate.wait()
+
+    monkeypatch.setattr(core.context, "build", stalled_build)
+    service, run = _begin(core, profile)
+    await asyncio.sleep(0.05)
+
+    service.cancel(run["id"])
+
+    assert (await _settle(core, run["id"]))["status"] == "cancelled"
+    steps = [e for e in core.store.list_run_events(run["id"]) if e["stage"] == "context_retrieval"]
+    assert [step["state"] for step in steps] == ["running", "cancelled"]
+
+
 def test_a_run_stranded_by_a_shutdown_is_reported_as_interrupted(
     core: CoreServices, profile: dict[str, Any]
 ) -> None:

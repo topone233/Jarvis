@@ -11,14 +11,10 @@
  * draw the same controls, so they are in one place.
  */
 
-import type { CSSProperties } from 'react'
-
-import { levelAt, levelIndex, THINKING_LABELS, THINKING_LEVELS } from '../api/thinking'
 import type { ThinkingLevel } from '../api/thinking'
+import { THINKING_LABELS, THINKING_LEVELS } from '../api/thinking'
 import type { ModelChoice } from '../hooks/useModelChoice'
 import { Menu } from './Menu'
-
-const LAST = THINKING_LEVELS.length - 1
 
 export function ModelControls({ choice }: { choice: ModelChoice }) {
   const { profile, models, model, setModel, level, setLevel } = choice
@@ -39,13 +35,13 @@ export function ModelControls({ choice }: { choice: ModelChoice }) {
       items={models.map((name) => ({ id: name, label: name }))}
       selected={model}
       onPick={setModel}
-      footer={<ThinkDial level={level} setLevel={setLevel} />}
+      footer={<ThinkSegments level={level} setLevel={setLevel} />}
     />
   )
 }
 
-/** The four stops, as one row at the foot of the panel. */
-function ThinkDial({
+/** The six stops, as one segmented row at the foot of the panel. */
+function ThinkSegments({
   level,
   setLevel,
 }: {
@@ -53,34 +49,30 @@ function ThinkDial({
   setLevel(level: ThinkingLevel): void
 }) {
   return (
-    // A range input and not four rows of the list: the stops are one setting
-    // with an order, and a slider says that where a column of words does not.
-    // It also comes with arrow keys, Home/End and touch, and `aria-valuetext`
-    // is what reads the stop instead of a number.
-    //
+    // One segment per stop, and the position is the setting: no fill to read,
+    // no thumb to land, and a strength is one click however far away it sits -
+    // a dial's six stops were getting one click too many to reach by drag.
     // Drawn for every profile rather than only for the ones that describe
-    // thinking. The three strengths are a field this app sets itself, so there
-    // is nothing a profile could have failed to configure - and a dial whose
-    // right-hand three quarters did nothing would be a worse lie than one that
-    // is honestly at its leftmost stop.
-    <div
-      className={level === 'off' ? 'think-dial' : 'think-dial is-on'}
-      style={{ '--filled': levelIndex(level) / LAST } as CSSProperties}
-      title={`思考强度：${THINKING_LEVELS.map((each) => THINKING_LABELS[each]).join(' / ')}`}
-    >
-      <span className="think-dial-label">思考</span>
-      <input
-        type="range"
-        className="think-slider"
-        min={0}
-        max={LAST}
-        step={1}
-        value={levelIndex(level)}
-        aria-label="思考强度"
-        aria-valuetext={THINKING_LABELS[level]}
-        onChange={(event) => setLevel(levelAt(Number(event.target.value)))}
-      />
-      <span className="think-dial-value">{THINKING_LABELS[level]}</span>
+    // thinking: the strengths are a field this app sets itself, so there is
+    // nothing a profile could have failed to configure - and a control whose
+    // right-hand segments did nothing would be a worse lie than one that is
+    // honestly at its leftmost stop.
+    <div className="think-segments" role="radiogroup" aria-label="思考强度">
+      <span className="think-segments-label">思考</span>
+      <div className="think-segments-track">
+        {THINKING_LEVELS.map((each) => (
+          <button
+            key={each}
+            type="button"
+            role="radio"
+            aria-checked={each === level}
+            className={`think-segment${each === level ? ' is-on' : ''}`}
+            onClick={() => setLevel(each)}
+          >
+            {THINKING_LABELS[each]}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
