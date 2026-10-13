@@ -32,6 +32,7 @@ import {
 import type { ModelProfile } from '../../api/types'
 import { EyeIcon, EyeOffIcon } from '../../components/icons'
 import { useConfirm } from '../../hooks/useConfirm'
+import { resetChoiceOnDefault } from '../../hooks/useModelChoice'
 import { useToast } from '../../hooks/useToast'
 
 export function ModelProfilesPanel({
@@ -141,6 +142,10 @@ export function ModelProfilesPanel({
     setError(null)
     try {
       await updateModelProfile(profile.id, { is_default: true })
+      // 新默认要真的接管对话窗口：压在别的配置上的全局选择不会自己让路
+      // （它只认删除不认默认），这里把它清掉，否则「设为默认」在对话窗口
+      // 里选过一次模型之后就永远是无效操作。
+      resetChoiceOnDefault(profile.id)
       await reloadProfiles()
       // The badge moves to another row, which is easy to miss in a list.
       toast.show('已设为默认')

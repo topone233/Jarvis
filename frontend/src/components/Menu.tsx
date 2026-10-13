@@ -15,7 +15,7 @@
  * it was before the panel opened and where a keyboard user expects to still be.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { CheckIcon, ChevronDownIcon } from './icons'
@@ -23,6 +23,12 @@ import { CheckIcon, ChevronDownIcon } from './icons'
 export interface MenuItem {
   id: string
   label: string
+  /**
+   * Names the section the item belongs to, rendered as a non-interactive
+   * header above the section's first row. Items of one group must be adjacent
+   * - the header is drawn wherever the label differs from the previous item's.
+   */
+  group?: string
 }
 
 export function Menu({
@@ -90,19 +96,24 @@ export function Menu({
       {open && (
         <div className="menu-panel">
           <ul className="menu-list">
-            {items.map((item) => (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  className={`menu-item${item.id === selected ? ' is-selected' : ''}`}
-                  aria-current={item.id === selected}
-                  title={item.label}
-                  onClick={() => onPick(item.id)}
-                >
-                  <span className="menu-item-label">{item.label}</span>
-                  {item.id === selected && <CheckIcon size={14} />}
-                </button>
-              </li>
+            {items.map((item, index) => (
+              <Fragment key={item.id}>
+                {item.group !== undefined && items[index - 1]?.group !== item.group && (
+                  <li className="menu-group-label">{item.group}</li>
+                )}
+                <li>
+                  <button
+                    type="button"
+                    className={`menu-item${item.id === selected ? ' is-selected' : ''}`}
+                    aria-current={item.id === selected}
+                    title={item.label}
+                    onClick={() => onPick(item.id)}
+                  >
+                    <span className="menu-item-label">{item.label}</span>
+                    {item.id === selected && <CheckIcon size={14} />}
+                  </button>
+                </li>
+              </Fragment>
             ))}
           </ul>
           {footer !== undefined && <div className="menu-foot">{footer}</div>}

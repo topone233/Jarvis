@@ -1447,6 +1447,22 @@
   list-style: none;
 }
 
+/* A section header: which profile the rows under it belong to. Text, not a
+   button - it names a group, it is not something to pick. Quieter than the
+   rows, so the model names stay the loudest thing in the list. */
+.menu-group-label {
+  padding: 8px 9px 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu-group-label:first-child {
+  padding-top: 4px;
+}
+
 /* A hairline, and one of the few left in the app: it is a separator rather than
    the outline of a box, and without it the dial reads as one more row of the
    list - something to pick, instead of something to set. */
