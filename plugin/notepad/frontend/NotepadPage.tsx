@@ -14,7 +14,7 @@ import { ApiError } from '../../../frontend/src/api/client'
 import { useConfirm } from '../../../frontend/src/hooks/useConfirm'
 import { useToast } from '../../../frontend/src/hooks/useToast'
 import { CloseIcon, PlusIcon, SearchIcon, TrashIcon } from '../../../frontend/src/components/icons'
-import { toggleMaximize } from '../../../frontend/src/plugins/shell'
+import { onBlankDoubleClick } from '../../../frontend/src/plugins/shell'
 import {
   createNote,
   deleteNote,
@@ -352,7 +352,7 @@ export default function NotepadPage({ onClose }: { onClose(): void }) {
           : '已保存'
 
   return (
-    <div className="pywebview-drag-region setup" onDoubleClick={toggleMaximize}>
+    <div className="pywebview-drag-region setup" onDoubleClick={onBlankDoubleClick}>
       <div className="setup-card is-manager notepad">
         <button
           type="button"

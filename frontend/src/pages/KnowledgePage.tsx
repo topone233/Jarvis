@@ -26,7 +26,7 @@ import type { Citation, KnowledgeDocument, KnowledgeImportResult, TrashItem } fr
 import { CloseIcon, TrashIcon } from '../components/icons'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
-import { toggleMaximize } from '../plugins/shell'
+import { onBlankDoubleClick } from '../plugins/shell'
 
 const STATUS_LABELS: Record<string, string> = {
   ready: '就绪',
@@ -166,7 +166,7 @@ export function KnowledgePage({ onClose }: { onClose(): void }) {
   }
 
   return (
-    <div className="pywebview-drag-region setup" onDoubleClick={toggleMaximize}>
+    <div className="pywebview-drag-region setup" onDoubleClick={onBlankDoubleClick}>
       <div className="setup-card is-manager">
         <button
           type="button"

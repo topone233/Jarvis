@@ -56,9 +56,23 @@ export function isShell(): boolean {
 
 /** 双击页面空白拖拽区 = 最大化/还原（无边框窗口的标题条没有了，约定跟着
  *  拖拽区走）。浏览器里是空操作。 */
-export function toggleMaximize(): void {
+function toggleMaximize(): void {
   if (isShell()) {
     void window.pywebview?.api.toggle_maximize_main()
+  }
+}
+
+/**
+ * 空白拖拽区的双击 = 最大化/还原，只认直接目标——与拖拽区
+ * direct-target-only 的契约一致：正文上的双击是选词（桌面壳放开
+ * text_select 之后的日常操作），冒泡上来的双击不触发。
+ */
+export function onBlankDoubleClick(event: {
+  target: EventTarget | null
+  currentTarget: EventTarget | null
+}): void {
+  if (event.target === event.currentTarget) {
+    toggleMaximize()
   }
 }
 

@@ -81,6 +81,7 @@ export type TurnAction =
   | { type: 'event'; event: RunEvent }
   | { type: 'snapshot'; status: RunStatus }
   | { type: 'audits'; records: RunEventRecord[] }
+  | { type: 'inputResolved' }
   | { type: 'detached' }
   | { type: 'attached' }
 
@@ -126,6 +127,13 @@ export function reduce(state: TurnState, action: TurnAction): TurnState {
       return { ...state, detached: false, awaitingContent: true, awaitingReasoning: true }
     case 'audits':
       return action.records.reduce((next, record) => upsertAudit(next, record), state)
+    case 'inputResolved':
+      // The POST carrying the answer succeeded: the server has accepted the
+      // decision, and that is what the card was waiting to learn. Work the
+      // answer set loose - a command an approval unleashed - reports itself
+      // on the audit trail; the stage's closing record still arrives later
+      // and finds no card left to clear.
+      return { ...state, pendingInput: null }
     case 'event':
       return applyEvent(state, action.event)
   }
@@ -222,8 +230,12 @@ function applyEvent(state: TurnState, event: RunEvent): TurnState {
       const next = upsertAudit(state, event.record)
       // A pending request dies with the stage it belongs to: the closing
       // record of bash_tool or ask_user is the server saying the wait is
-      // over, however it ended. Only one stage can be waiting at a time,
-      // so either closing record clears it.
+      // over, however it ended. The normal exit is `inputResolved` - the
+      // accepted answer lands long before the stage closes when the command
+      // it approved is still running - so this is the fallback for an answer
+      // delivered by another window, and for a stage that ends without one.
+      // Only one stage can be waiting at a time, so either closing record
+      // clears it.
       if (
         next.pendingInput !== null &&
         event.record.state !== 'running' &&

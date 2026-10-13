@@ -26,7 +26,7 @@ import {
   SHELL_NAVIGATE_EVENT,
   SHELL_NOTICE_EVENT,
   installShellBridge,
-  toggleMaximize,
+  onBlankDoubleClick,
 } from './plugins/shell'
 import { usePluginFrontends } from './plugins/registry'
 
@@ -74,7 +74,7 @@ export function App() {
   if (gate.state === 'checking') {
     return (
       <AppRoot>
-        <div className="pywebview-drag-region empty-state" onDoubleClick={toggleMaximize}>
+        <div className="pywebview-drag-region empty-state" onDoubleClick={onBlankDoubleClick}>
           正在连接 Jarvis…
         </div>
       </AppRoot>
@@ -83,7 +83,7 @@ export function App() {
   if (gate.state === 'offline') {
     return (
       <AppRoot>
-        <div className="pywebview-drag-region empty-state" onDoubleClick={toggleMaximize}>
+        <div className="pywebview-drag-region empty-state" onDoubleClick={onBlankDoubleClick}>
           <div>
             <p>连不上 Jarvis 服务。</p>
             <button

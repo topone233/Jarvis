@@ -4,8 +4,10 @@
  * Two shapes, one mechanism: a bash command waiting for 批准/拒绝, and the
  * model's question waiting for an option pick or free text. Whatever the
  * user answers is POSTed and the run continues; the card itself goes away
- * when the server's closing audit record lands, so what is on screen is the
- * server's verdict, not this component's optimism.
+ * when the POST succeeds - the server has accepted the answer, and the work
+ * it set loose reports itself on the audit trail. The stage's closing audit
+ * record is the fallback, not the trigger: it clears a card whose answer
+ * was delivered by another window.
  */
 
 import { useLayoutEffect, useRef, useState } from 'react'
@@ -71,8 +73,9 @@ export function UserInputCard({ request, onResolve }: UserInputCardProps) {
     setFailure(null)
     // A failed delivery is not the end of the conversation: the buttons wake
     // up again and the reason is named, so the answer can be given a second
-    // time. The card clears when the server's own records say the wait is
-    // over - which is also why a success never touches `sending` here.
+    // time. A success unmounts this card from the reducer side
+    // (`inputResolved`) - which is also why a success never touches `sending`
+    // here: there is nothing left for the flag to guard.
     void onResolve(value).catch((cause: unknown) => {
       setSending(false)
       setFailure(describe(cause))

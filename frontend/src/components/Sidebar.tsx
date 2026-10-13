@@ -19,7 +19,7 @@ import type { ComponentType } from 'react'
 import { NavLink } from 'react-router'
 
 import type { Conversation } from '../api/types'
-import { toggleMaximize } from '../plugins/shell'
+import { onBlankDoubleClick } from '../plugins/shell'
 import {
   BookIcon,
   BrainIcon,
@@ -100,7 +100,7 @@ export function Sidebar({
   return (
     <aside
       className={`pywebview-drag-region sidebar${collapsed ? ' is-collapsed' : ''}`}
-      onDoubleClick={toggleMaximize}
+      onDoubleClick={onBlankDoubleClick}
     >
       <div className="sidebar-top">
         {/* 展开时新对话领头、吃掉 logo 让出的宽度；收起态的 60px 窄栏装不下
@@ -161,7 +161,7 @@ export function Sidebar({
 
       {!collapsed && <div className="sidebar-label">{search !== '' ? '搜索结果' : '最近'}</div>}
 
-      <div className="pywebview-drag-region sidebar-list" onDoubleClick={toggleMaximize}>
+      <div className="pywebview-drag-region sidebar-list" onDoubleClick={onBlankDoubleClick}>
         {conversations.map((conversation) => (
           <div
             key={conversation.id}
@@ -192,7 +192,7 @@ export function Sidebar({
         )}
       </div>
 
-      <div className="pywebview-drag-region sidebar-bottom" onDoubleClick={toggleMaximize}>
+      <div className="pywebview-drag-region sidebar-bottom" onDoubleClick={onBlankDoubleClick}>
         <NavLink to="/knowledge" className="sidebar-item" title="知识库">
           <BookIcon size={17} />
           {!collapsed && <span className="label">知识库</span>}

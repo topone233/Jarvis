@@ -249,15 +249,24 @@ export function useRun(conversationId: string | null, onChanged: () => void): Ru
     void drive(`/api/runs/${runId}/stream`, { method: 'GET' }, runId)
   }, [commit, drive, replaceTurn])
 
-  const resolveInput = useCallback((value: string): Promise<void> => {
-    const runId = turnRef.current?.runId
-    if (!runId) {
-      return Promise.reject(new Error('没有正在进行的回合。'))
-    }
-    // The card clears when the closing audit arrives over the stream; this
-    // only has to deliver the answer.
-    return submitUserInput(runId, value).then(() => undefined)
-  }, [])
+  const resolveInput = useCallback(
+    (value: string): Promise<void> => {
+      const runId = turnRef.current?.runId
+      if (!runId) {
+        return Promise.reject(new Error('没有正在进行的回合。'))
+      }
+      // POST success is the server's verdict on the answer itself, so the
+      // card goes down the moment it lands; a command the approval set loose
+      // shows its progress on the trail, where its running row is already
+      // counting seconds. The stage's closing record still arrives later and
+      // finds nothing left to clear - and keeps clearing the card when the
+      // answer was delivered by another window instead.
+      return submitUserInput(runId, value).then(() => {
+        commit({ type: 'inputResolved' })
+      })
+    },
+    [commit],
+  )
 
   useEffect(() => {
     return () => {

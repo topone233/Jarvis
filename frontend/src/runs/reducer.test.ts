@@ -460,6 +460,35 @@ describe('a run holding for user input', () => {
     expect(state.pendingInput).toBeNull()
   })
 
+  it('clears it the moment the accepted answer is committed', () => {
+    // POST success is the server's verdict on the answer itself: an approved
+    // command can run for minutes before its closing record lands, and the
+    // card must not sit through all of it.
+    const state = apply(run([bashRequest]), { type: 'inputResolved' })
+    expect(state.pendingInput).toBeNull()
+  })
+
+  it('keeps the trail and later requests working after a local resolve', () => {
+    // Clearing the card is one answer's exit, not a latch on the turn: the
+    // command's records keep landing, and the model may hold again later in
+    // the same turn with a fresh question.
+    let state = apply(run([bashRequest]), { type: 'inputResolved' })
+    state = apply(
+      state,
+      { type: 'event', event: audit('bash_tool', 'completed', 5, DONE_AT, { output: 'ok' }) },
+      { type: 'event', event: questionRequest },
+    )
+    expect(state.audits).toHaveLength(1)
+    expect(state.audits[0]).toMatchObject({ stage: 'bash_tool', state: 'completed' })
+    expect(state.pendingInput).toEqual({
+      kind: 'question',
+      command: '',
+      cwd: '',
+      question: '用哪种方案？',
+      options: ['方案一', '方案二'],
+    })
+  })
+
   it('keeps it while the stage is merely running', () => {
     const state = run([bashRequest, audit('bash_tool', 'running', 4, RAN_AT)])
     expect(state.pendingInput).not.toBeNull()

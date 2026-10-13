@@ -287,6 +287,10 @@ class Shell:
             height=860,
             frameless=True,
             easy_drag=False,  # 整窗拖拽会吞掉正文的选择；拖拽区由标题条负责
+            # pywebview 默认 text_select=False：给 body 注入 user-select:none，
+            # 全文选不中、复制无从谈起。放开选择；前端自己挡的地方
+            # （窗口控制按钮等三处 user-select:none）不受影响。
+            text_select=True,
             hidden=hidden,  # 自启动 --hidden：直接进托盘，不弹窗
         )
         assert main is not None  # create_window 的 None 分支是内部契约，实际不发生
@@ -581,6 +585,8 @@ class Shell:
             y=y,
             frameless=True,
             easy_drag=False,
+            # 同主窗口：默认 False 会注入 user-select:none，笔记内容选不中。
+            text_select=True,
             on_top=state.pinned,
             hidden=True,
             focus=False,
